@@ -5,7 +5,7 @@
 files=$(git diff --cached --name-only --diff-filter=AM | grep -v "^\.githooks/")
 [ -z "$files" ] && exit 0
 added=$(git diff --cached -U0 -- $files | grep -E '^\+' | grep -vE '^\+\+\+')
-ok='(password|pass|secret|xxxx|\*\*\*|PASSWORD|KEY|YOUR-KEY|YOUR-STREAM-KEY|\$[A-Za-z_]+|%[A-Za-z_]+%)'
+ok='(password|pass|pw|pwd|secret|xxxx|\*\*\*|PASSWORD|KEY|YOUR-KEY|YOUR-STREAM-KEY|\$[A-Za-z_]+|%[A-Za-z_]+%)'
 bad=$(printf '%s\n' "$added" | grep -oE "://[^/:@ \"']+:[^@/ \"']+@" | grep -vE "^://[^:]+:${ok}@\$")
 bad2=$(printf '%s\n' "$added" | grep -oE "password=[^&\"' ]+" | grep -vE "^password=${ok}\$")
 bad3=$(printf '%s\n' "$added" | grep -oE "live2/[A-Za-z0-9-]+" | grep -vE "^live2/(KEY|YOUR-KEY|YOUR-STREAM-KEY|xxxx[-x]*|\\$[A-Za-z_]+)\$")

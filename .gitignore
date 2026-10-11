@@ -16,3 +16,8 @@ orig_*.tar.gz
 cameras.ini
 .nova-pids.json
 logs/
+
+# editor swap / backup files
+*.swp
+*.swo
+*~
