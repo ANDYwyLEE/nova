@@ -1,6 +1,7 @@
 """The launcher's pure logic: cameras.ini parsing, id/option splitting, GPU dealing, layouts."""
 import hashlib
 import json
+import sys
 
 import pytest
 
@@ -9,7 +10,7 @@ import cams
 INI = """\
 [defaults]
 opts = --opengl -f 30 -l ERROR
-python = /usr/bin/python3
+python = PYTHON_EXE
 stagger = 0
 
 [env]
@@ -33,7 +34,7 @@ url = rtsp://admin:pw@10.0.0.4:554/s
 
 [nourl]
 name = forgotten
-"""
+""".replace("PYTHON_EXE", sys.executable)      # an absolute path on every OS
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ def test_load(tmp_path, capsys):
     assert "%41$y" in cs[1].url                                   # no interpolation of % and $
     assert cs[0].name == "a" and cs[1].name == "Camera B"
     assert [c.enabled for c in cs] == [True, True, False, True]
-    assert cams.python_exe(defaults) == "/usr/bin/python3"
+    assert cams.python_exe(defaults) == sys.executable
     assert defaults.get("stagger") == "0"
 
 
@@ -74,7 +75,7 @@ def test_command_and_mode(cfg):
     defaults, env, cs = cfg
     a, b = cs[0], cs[1]
     argv = cams.command(a, defaults, ["-t", "rtmp://x/live2/k"])
-    assert argv[:2] == ["/usr/bin/python3", "-u"] and argv[2].endswith("nova.py")
+    assert argv[:2] == [sys.executable, "-u"] and argv[2].endswith("nova.py")
     assert argv[3:7] == ["--opengl", "-f", "30", "-l"]
     assert argv[-6:] == ["-n", "a", "-i", a.url, "-t", "rtmp://x/live2/k"]
     assert cams.mode_of(argv) == "window+stream"
