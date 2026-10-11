@@ -1,0 +1,13 @@
+# virtual environments (venv is a symlink to one of these)
+python3.*/
+venv
+# runtime output
+videos/
+snapshots/
+.uri_cache.json
+*.log
+# python
+__pycache__/
+*.pyc
+# local backups
+orig_*.tar.gz
