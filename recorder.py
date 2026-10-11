@@ -1,5 +1,6 @@
+# recorder.py
 import os, time, logging, traceback
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Slot
 from player import Player
 from recworker import AVRecWorker
 from avwriter import AVWriter
@@ -55,74 +56,78 @@ class AVRecorder(Player):
     #@abstractmethod
     def on(self):
         if self.is_on(): return
-        now = time.time()
-        self._start_segment(now, aligned=True)
+        if self.vid_worker.width() <= 0 or self.vid_worker.height() <= 0:
+            logging.warning("[AVRecorder] no video yet; cannot start recording")
+            return
+        self._drain(self.q)
+        self.flag = True
         self.worker = AVRecWorker(self, self.q)
+        self.worker.exit_sig.connect(self._on_worker_exit)
         self.worker.start()
         self.vid_worker.set_rec_on(True)
-        self.flag = True
         self.stat_sig.emit(True)
-        logging.info(f"[AVRecorder] started: {self.url_name}, interval={self.interval_s}s, next={int(self.next_ts)}")
+        logging.info(f"[AVRecorder] starting: {self.url_name}, interval={self.interval_s}s")
 
     #@abstractmethod
     def off(self):
         if self.is_off(): return
         self.vid_worker.set_rec_on(False)
+        self.flag = False
         if self.worker:
             self.worker.stop()
             self.worker.wait()
             self.worker = None
-        now = time.time()
-        self._close_and_save_segment(int(now), reason="stop")
-        self.flag = False
         self.stat_sig.emit(False)
-        logging.debug(f"[AVRecorder] stopped: {self.url_name}")
+        logging.info(f"[AVRecorder] stopped: {self.url_name}")
 
     #@abstractmethod
     def close(self):
         self.off()
 
+    @Slot(str)
+    def _on_worker_exit(self, err_msg):
+        logging.error(f"[AVRecorder] worker stopped: {err_msg}")
+        if self.flag: self.off()
+
+    # ---- called on the worker thread ------------------------------------------------
+    def _open_writer(self):
+        self._start_segment(time.time(), aligned=True)
+        logging.info(f"[AVRecorder] recording: {self.path}, next={int(self.next_ts)}")
+
+    def _close_writer(self):
+        self._close_and_save_segment(int(time.time()), reason="stop")
+
     def write(self, typ, frame):
-        if not self._on or not self.writer: return
+        if not self.flag or not self.writer: return
 
         now = time.time()
-
         if self._time_jump(now):
             logging.debug(f"[AVRecorder] time-jump: {self.url_name}, last={int(self.last_now)}, now={int(now)}")
             self._rollover("time-jump", now, end_ts=int(now))
-
         elif now >= self.next_ts:
             self._rollover("interval", now, end_ts=int(self.next_ts))
-
         self.last_now = now
 
-        try:
-            if typ == 1:
-                self.writer.write_video(frame)
-            else:
-                self.writer.write_audio(frame)
-        except Exception:
-            logging.error(f"[AVRecorder] write failed: {self.url_name}\n{traceback.format_exc()}")
+        if typ == 1:
+            self.writer.write_video(frame)
+        else:
+            self.writer.write_audio(frame)
 
     def _rollover(self, reason, now, end_ts):
         old_writer = self.writer
         old_path = self.path
         old_start = self.start_ts
-        old_next = self.next_ts
 
-        self._start_segment(now, aligned=True)
+        self._start_segment(now, aligned=True)   # open the new segment first: no frames lost
 
         try:
             old_writer.close()
         except Exception:
             logging.error(f"[AVRecorder] close failed: {self.url_name}\n{traceback.format_exc()}")
 
-        self._save_file(old_path, old_start, end_ts)
-
-        logging.debug(
-            f"[AVRecorder] chunked: {self.url_name}, reason={reason}, "
-            f"{int(old_start)}->{int(end_ts)}, next={int(self.next_ts)}"
-        )
+        self._save_file(old_path, old_start, end_ts, old_writer.frames_written)
+        logging.debug(f"[AVRecorder] chunked: {self.url_name}, reason={reason}, "
+                      f"{int(old_start)}->{int(end_ts)}, next={int(self.next_ts)}")
 
     def _start_segment(self, now, aligned):
         self.start_ts = int(now)
@@ -133,50 +138,54 @@ class AVRecorder(Player):
         os.makedirs(sub, exist_ok=True)
 
         self.path = os.path.join(sub, f"{self.url_name}_output{self.ext}")
-        fps = self.vid_worker.get_fps()
-        w = self.vid_worker.width()
-        h = self.vid_worker.height()
-        sr = self.vid_worker.get_sample_rate()
-        ch = self.vid_worker.get_channels()
-        gpu_idx = self.vid_worker.get_gpu_idx()
-        source_codec = self.vid_worker.get_stream_codec()
-        open_opts = self.vid_worker.get_open_opts()
-        enc_v_opts, enc_a_opts = self.vid_worker.get_encoder_opts()
+        vw = self.vid_worker
+        ff = vw.get_ffopts()
         self.writer = AVWriter(
                     self.accel,
-                    path=self.path, width=w, height=h, fps=fps,
-                    encoder=self.encoder,
-                    source_codec=source_codec,
-                    open_opts=open_opts,
-                    enc_v_opts=enc_v_opts,
-                    enc_a_opts=enc_a_opts,
-                    sample_rate=sr, channels=ch, audio_enable=True,
-                    gpu_idx=gpu_idx
+                    path=self.path, width=vw.width(), height=vw.height(), fps=vw.get_fps(),
+                    encoder=self.encoder or ff.v_encoder,
+                    source_codec=vw.get_stream_codec(),
+                    enc_v_opts=ff.enc_v,
+                    enc_a_opts=ff.enc_a,
+                    mux_opts=ff.mux,
+                    sample_rate=vw.get_sample_rate(), channels=vw.get_channels(),
+                    audio_enable=not ff.no_audio,
+                    gpu_idx=vw.get_gpu_idx(),
+                    v_tag=ff.v_tag, a_encoder=ff.a_encoder,
+                    vf=ff.vf, metadata=ff.metadata,
+                    live=False,
                 )
 
     def _close_and_save_segment(self, end_ts, reason=""):
         if not self.writer:
             return
-        path = self.path
-        start = self.start_ts
+        writer, path, start = self.writer, self.path, self.start_ts
+        self.writer = None
         try:
-            self.writer.close()
+            writer.close()
         except Exception:
             logging.error(f"[AVRecorder] close failed: {self.url_name}\n{traceback.format_exc()}")
-        self.writer = None
-        self._save_file(path, start, end_ts)
+        self._save_file(path, start, end_ts, writer.frames_written)
         if reason:
             logging.debug(f"[AVRecorder] saved({reason}): {self.url_name}, {int(start)}->{int(end_ts)}")
 
-    def _save_file(self, src_path, start_ts, end_ts):
-        #s = time.strftime("%Y%m%d_%H%M%S", time.localtime(start_ts))
-        #e = time.strftime("%Y%m%d_%H%M%S", time.localtime(end_ts))
+    def _save_file(self, src_path, start_ts, end_ts, frames):
+        if not os.path.exists(src_path):
+            return
+        if frames <= 0:
+            try: os.remove(src_path)
+            except OSError: pass
+            logging.warning(f"[AVRecorder] empty segment discarded: {src_path}")
+            return
         s = time.strftime("%Y%m%d_%H%M", time.localtime(start_ts))
         e = time.strftime("%H%M", time.localtime(end_ts))
-        dst = os.path.join(os.path.dirname(src_path), f"{s}_{e}{self.ext}")
-        if os.path.exists(src_path):
-            os.replace(src_path, dst)
-        logging.info(f"[AVRecorder] saved: {dst}")
+        base = os.path.join(os.path.dirname(src_path), f"{s}_{e}")
+        dst = base + self.ext
+        n = 1
+        while os.path.exists(dst):              # never overwrite an earlier segment
+            dst = f"{base}_{n}{self.ext}"; n += 1
+        os.replace(src_path, dst)
+        logging.info(f"[AVRecorder] saved: {dst} ({frames} frames)")
 
     def _next_boundary(self, now):
         i = self.interval_s
@@ -187,4 +196,3 @@ class AVRecorder(Player):
             return False
         jump = max(120, self.interval_s * 2)
         return (now - self.last_now) > jump or (self.last_now - now) > jump
-

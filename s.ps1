@@ -1,14 +1,12 @@
 # s.ps1
 
-#. .\python3.12\Scripts\Activate.ps1
-#. .\python3.12\binActivate.ps1
-. .\venv\bin\Activate.ps1
+if (Test-Path .\venv\Scripts\Activate.ps1) { . .\venv\Scripts\Activate.ps1 } else { . .\venv\bin\Activate.ps1 }
 
 # export PYTHONPATH=$PYTHONPATH:.
 $env:PYTHONPATH = "$($env:PYTHONPATH);."
 
 $env:NOVA_TIMEOUT = "5000000"  # 5 sec
-#$env NOVA_AUDIO_DEVICE_INDEX = 0
+#$env:NOVA_AUDIO_DEVICE_INDEX = "0"
 
 
 # ==============================================================================
@@ -36,7 +34,6 @@ $OPTS = @("-f", "30", "-b", "-l", "DEBUG")
 #$env:NOVA_GPU_DEVICES = "0,1"
 
 
-# python nova.py $OPTS -u "rtsp://rtsp:password@192.168.1.43:554/av_stream/ch0" "@args"
-python nova.py $OPTS -u "rtsp://admin:password@192.168.1.45:554/stream_0" "@args"
-# python nova.py $OPTS -u "rtsp://admin:password@192.168.1.26:554/av_stream/main" "@args"
-#
+# python nova.py @OPTS -i "rtsp://rtsp:password@192.168.1.43:554/av_stream/ch0" @args
+python nova.py @OPTS -i "rtsp://admin:password@192.168.1.45:554/stream_0" @args
+# python nova.py @OPTS -i "rtsp://admin:password@192.168.1.26:554/av_stream/main" @args

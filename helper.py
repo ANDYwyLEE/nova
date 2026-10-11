@@ -6,7 +6,7 @@ from PySide6.QtCore import Signal
 
 
 ARG_DESCRIPTIONS = {
-    '-i, --input': "Video source (e.g., rtsp, rtmp, srt, onvif, xmeye, '0' for USB cam)",
+    '-i, --input': "Video source: rtsp/rtmp/srt URL, onvif://, xmeye://, hik://, dahua://, '0' (USB cam), dshow://video=NAME",
     '-n, --name, --camera-name' : 'Logical camera name for output recording folders.',
     '--opengl': 'Enable hardware acceleration using OpenGL (recommended for high performance).',
     '--accel': 'HW Acceleration backend. cuda, qsv, vaapi, videotoolbox, d3d11va.',
@@ -21,7 +21,7 @@ ARG_DESCRIPTIONS = {
     '--output-dir': 'Base directory for snapshots and recordings.',
     '--snapshot-dir': 'Directory for snapshots (overrides --output-dir for snapshots).',
     '--recording-dir': 'Directory for recorded videos (overrides --output-dir for recordings).',
-    '--ffmpeg' : 'Direct FFmpeg options (e.g., "-rtsp_transport tcp -lowres 1")',
+    '--ffmpeg' : 'FFmpeg options: -rtsp_transport udp -b:v 4M -crf 23 -g 60 -s WxH -r N -vf transpose=1 -pix_fmt -ar -ac -b:a -metadata k=v -movflags (README lists what works)',
     '-t, --target': 'Live stream URL (e.g. YouTube, Twitch) or output path',
     '-l, --log-level': 'Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10; default: INFO).',
 }
@@ -108,7 +108,7 @@ class Helper(Player):
         self.hlp_sig.emit(None)
 
      #@abstractmethod
-    def aclose(self):
+    def close(self):
         self.off()
 
     def toggle_help(self):

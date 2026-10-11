@@ -16,16 +16,23 @@ class KeyHdlr:
     def get_modifier(self):
         return self.m
 
+    def _sync_modifiers(self, event):
+        # Qt's modifier state is authoritative; key press/release tracking alone gets stuck
+        # when focus is lost while a modifier is held.
+        mods = event.modifiers()
+        self.m.ctrl = bool(mods & (Qt.ControlModifier | Qt.MetaModifier))
+        self.m.alt = bool(mods & Qt.AltModifier)
+        self.m.shift = bool(mods & Qt.ShiftModifier)
+
     def press(self, event):
         k = event.key()
+        self._sync_modifiers(event)
 
         # Modifiers
         if k in (Qt.Key_Control, Qt.Key_Meta): self.m.ctrl = True
         if k == Qt.Key_Alt: self.m.alt = True
         if k == Qt.Key_Shift: self.m.shift = True
         if k == Qt.Key_Space: self.m.space = True
-
-        grid = self.p.grid
 
         # Actions
         if k ==  Qt.Key_C and self.m.ctrl:
@@ -34,6 +41,7 @@ class KeyHdlr:
         elif k == Qt.Key_Escape:
             if self.p.is_fullscreen(): self.p.show_normal()
             self.p.zoomer.reset()
+            self.p.set_bt(); self.p.update()
 
         elif k == Qt.Key_F or k == Qt.Key_F11:
             if self.p.is_fullscreen(): self.p.show_normal()
@@ -85,11 +93,11 @@ class KeyHdlr:
         # Window Size + Zoom
         elif k in [Qt.Key_Plus, Qt.Key_Equal, Qt.Key_I]:
             if self.m.ctrl: self.p.expand()
-            else: self.p.zoomer.zoom(None, 1)
+            else: self.p.zoomer.zoom(None, 1); self.p.set_bt(); self.p.update()
 
         elif k in [Qt.Key_Minus, Qt.Key_Underscore, Qt.Key_O]:
             if self.m.ctrl: self.p.shrink()
-            else: self.p.zoomer.zoom(None, -1)
+            else: self.p.zoomer.zoom(None, -1); self.p.set_bt(); self.p.update()
 
         elif k == Qt.Key_B:
             self.p.border = not self.p.border
@@ -101,4 +109,3 @@ class KeyHdlr:
         if k == Qt.Key_Alt: self.m.alt = False
         if k == Qt.Key_Shift: self.m.shift = False
         if k == Qt.Key_Space: self.m.space = False
-

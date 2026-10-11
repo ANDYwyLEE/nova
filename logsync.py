@@ -11,10 +11,8 @@ try:
     from av.codec.hwaccel import HWAccel, hwdevices_available
 except ImportError as e:
     stack_trace = traceback.format_exc()
-    print(r"Error: av is required. Run 'pip install av'(>=12.x.x)")
+    print(r"Error: av is required. Run 'pip install av'(>=14.x.x)")
     sys.exit(1)
-
-
 
 
 # Define custom logging levels
@@ -25,6 +23,28 @@ except ImportError as e:
 VERBOSE_LEVEL = 15
 #logging.DEBUG = 10
 TRACE_LEVEL = 5
+
+
+def install_custom_levels():
+    """Add logging.verbose()/logging.trace() (idempotent). Imported by every module via logsync."""
+    if getattr(logging, "_nova_levels_installed", False):
+        return
+    def verbose(self, message, *args, **kws):
+        if self.isEnabledFor(VERBOSE_LEVEL): self._log(VERBOSE_LEVEL, message, args, **kws)
+    def trace(self, message, *args, **kws):
+        if self.isEnabledFor(TRACE_LEVEL): self._log(TRACE_LEVEL, message, args, **kws)
+    logging.Logger.verbose = verbose
+    logging.Logger.trace = trace
+    logging.verbose = lambda msg, *args, **kwargs: logging.getLogger().verbose(msg, *args, **kwargs)
+    logging.trace = lambda msg, *args, **kwargs: logging.getLogger().trace(msg, *args, **kwargs)
+    logging.addLevelName(logging.WARNING, "WARN ")
+    logging.addLevelName(logging.INFO, "INFO ")
+    logging.addLevelName(TRACE_LEVEL, "TRACE")
+    logging.addLevelName(VERBOSE_LEVEL, "VERBO")
+    logging._nova_levels_installed = True
+
+install_custom_levels()
+
 
 class GlobalSingleWarningFilter(logging.Filter):
     def __init__(self, targets):
@@ -65,6 +85,15 @@ def setup_av_logging():
         "(Coded slice of a non-IDR picture)",
         "(IDR), nal_ref_idc",
         "overread 8",
+        # joining a live stream mid-GOP: libavcodec complains until the first keyframe arrives
+        "non-existing PPS",
+        "non-existing SPS",
+        "no frame!",
+        "decode_slice_header error",
+        "Invalid pkt_timebase",
+        # libavfilter: the buffer source template carries no colour range; harmless
+        "Changing video frame properties on the fly",
+        "filter context - w:",
     ]
 
     root_logger = logging.getLogger()

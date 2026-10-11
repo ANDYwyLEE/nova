@@ -4,7 +4,7 @@ import queue
 import logging
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot, QEvent, QSettings, QSize, QRect
-from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QSurfaceFormat, QRegion
+from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont, QSurfaceFormat, QRegion
 
 try: from PySide6.QtOpenGL import QOpenGLWindow
 except ImportError:
@@ -15,12 +15,15 @@ from mousehandler import MouseHdlr
 from keyhandler import KeyHdlr
 from helper import Helper
 from fonts import MONO
-from util import WSL, MAC, WINDOWS
+from util import WSL, MAC, WINDOWS, mask_url
 
-GS = 20 # grid size short variable
+GS = 20 # default grid size
+
+# OSD layers are painted premultiplied: QPainter composes them natively and the OpenGL path
+# uploads them without a per-frame format conversion.
+OSD_FORMAT = QImage.Format_RGBA8888_Premultiplied
 
 def snap_to_grid(x, grid=GS):
-    #return round(x / grid) * grid
     if grid <= 0: return x
     r = x % grid
     return x - r if r < grid / 2 else x + (grid - r)
@@ -37,13 +40,12 @@ class Nova(QOpenGLWindow):
 
 
         self.core = core
-        self.grid = GS = grid
+        self.grid = max(1, int(grid))
         self.border = border
-        self.show_help = False
         self.url_hash = self.core.hash()
         self.frame_q = core.get_frame_q()
         self.is_running = True
-        self.curr_qimg = None
+        self.curr_df = None      # DisplayFrame currently shown
         self.curr_txt = None
         self._focused = True
         app = QGuiApplication.instance()
@@ -70,7 +72,7 @@ class Nova(QOpenGLWindow):
         self.zoomer = Zoomer(320, 180, 320, 180)
         self.helper = Helper()
 
-        self.setMinimumSize(QSize(320/GS*6, 180/GS*6))
+        self.setMinimumSize(QSize(96, 54))
         self.setFlags(self.flags() | Qt.FramelessWindowHint)
         #self.setFlags(self.flags() | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
 
@@ -81,7 +83,7 @@ class Nova(QOpenGLWindow):
             try:
                 x, y, w, h = map(int, g.split(","))
                 self._geom(x, y, w, h)
-            except:
+            except Exception:
                 self.resize(320, 180)
         else: self.resize(320, 180)
 
@@ -90,12 +92,12 @@ class Nova(QOpenGLWindow):
         z = self.qset.value(zk)
         self.z_ratio = (0,0,1,1)
         if z:
-            #  x, y, w, h = map(float, z.split(","))
-            #self.z = QRect(x, y, w, h)
-            rx, ry, rw, rh = map(float, z.split(",")) #*
-            #rx = 0; ry = 0; rw = 1; rh = 1
-            self.z_ratio = (rx, ry, rw, rh)           #*
-            self.pending_zoom_coord = True
+            try:
+                rx, ry, rw, rh = map(float, z.split(","))
+                self.z_ratio = (rx, ry, rw, rh)
+                self.pending_zoom_coord = True
+            except Exception:
+                pass
 
         self.core.img_sig.connect(self.update_img)
         self.core.stat_sig.connect(self.update_stat)
@@ -105,9 +107,16 @@ class Nova(QOpenGLWindow):
         self.helper.hlp_sig.connect(self.set_hlp)
         self.core.exit_sig.connect(lambda: QTimer.singleShot(1000, self.close))
 
+        # The surface format must be fixed before the native window is created by show().
+        fmt = self._surface_format()
+        if fmt is not None:
+            self.setFormat(fmt)
         self.show()
 
 
+    def _surface_format(self):
+        """Subclasses return a QSurfaceFormat to apply before show(); None keeps the app default."""
+        return None
 
     def initializeGL(self): pass
     def resizeGL(self, w: int, h: int): pass
@@ -120,12 +129,11 @@ class Nova(QOpenGLWindow):
         self.zoomer = Zoomer(w, h, ww, wh)
         if self.pending_zoom_coord:
             self.pending_zoom_coord = False
-            #self.zoomer.set_rect(self.z)
-            rx, ry, rw, rh = self.z_ratio #*
-            #print(f"rx:{rx}, ry:{ry}, rw:{rw}, rh:{rh}")
+            rx, ry, rw, rh = self.z_ratio
             real_z = QRect(int(rx * w), int(ry * h), int(rw * w), int(rh * h))
             self.zoomer.set_rect(real_z)
-        self.setMinimumHeight(self.minimumWidth() / w * h)
+        if w > 0:
+            self.setMinimumHeight(max(1, int(self.minimumWidth() / w * h)))
         self.set_bt()
 
     @Slot(str)
@@ -138,12 +146,11 @@ class Nova(QOpenGLWindow):
     @Slot()
     def update_img(self):
         if not self.is_running: return
-        qimg = None
         try:
-            qimg = self.frame_q.pop()
+            df = self.frame_q.pop()
         except IndexError: return
-        if qimg is None: return
-        self.curr_qimg = qimg
+        if df is None: return
+        self.curr_df = df
         if not self.osd_txt.isNull():
             self.curr_txt = None
             self.osd_txt = QImage()
@@ -163,20 +170,17 @@ class Nova(QOpenGLWindow):
         if not self.is_running: return
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         ww, wh = self._widget_wh()
-        if self.curr_qimg is not None:
-            flag, img = self.curr_qimg
-            if flag != "rgba":
-                logging.error(f"[Nova: wrong image format!!")
-                return
-            if not img.isNull():
-                ww, wh = self.width(), self.height()
-                if self.zoomer.is_zoom(): img = img.copy(self.zoomer.toRect())
+        df = self.curr_df
+        if df is not None:
+            img = df.to_qimage()
+            if img is not None and not img.isNull():
+                src = self.zoomer.toRect() if self.zoomer.is_zoom() else img.rect()
                 r = self.zoomer.ratio() if self.zoomer.is_zoom() else self.core.ratio()
                 if wh < ww / r: h = wh; w = round(h * r)
                 else: w = ww; h = round(w / r)
                 x, y = (ww - w) // 2, (wh - h) // 2
-                img = img.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                p.drawImage(QRect(x, y, w, h), img)
+                # scaling is done by the GL paint engine; no per-frame CPU copy/scaled()
+                p.drawImage(QRect(x, y, w, h), img, src)
 
         if not self.osd_txt.isNull(): p.drawImage(0, 0, self.osd_txt)
         if not self.osd_bt.isNull(): p.drawImage(0, 0, self.osd_bt)
@@ -197,7 +201,7 @@ class Nova(QOpenGLWindow):
         if self.is_fullscreen(): return
 
         w, h = self._widget_wh()
-        img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        img = QImage(w, h, OSD_FORMAT)
         img.fill(Qt.transparent)
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -210,15 +214,16 @@ class Nova(QOpenGLWindow):
     def set_txt(self, text="", font=MONO, size=14, align=Qt.AlignCenter):
         if not self.is_running: return
         w, h = self._widget_wh()
-        img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        img = QImage(w, h, OSD_FORMAT)
         img.fill(Qt.transparent)
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
         bg_color = QColor(0, 0, 0, 160)
         p.fillRect(0, 0, w, h, bg_color)
-        font.setPointSize(size)
-        p.setFont(font)
+        f = QFont(font)
+        f.setPointSize(size)
+        p.setFont(f)
         p.setPen(QColor(255, 255, 255))
         p.drawText(img.rect(), align, text)
         p.end()
@@ -235,13 +240,13 @@ class Nova(QOpenGLWindow):
         if MAC: _min, _max, _base = 5, 14, 50
         if WINDOWS: _min, _max, _base = 5, 14, 70
         fsize = min(_max, max(_min, int(dim / _base)))
-        img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        img = QImage(w, h, OSD_FORMAT)
         img.fill(Qt.transparent)
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
         p.fillRect(0, 0, w, h, QColor(0, 0, 0, 160))
-        font = MONO
+        font = QFont(MONO)
         font.setPointSize(fsize)
         p.setFont(font)
         p.setPen(QColor(255, 255, 255))
@@ -283,10 +288,11 @@ class Nova(QOpenGLWindow):
         self._m_y = _y
         self._m_sz = sz
 
-        img = QImage(ww, wh, QImage.Format_ARGB32_Premultiplied)
+        img = QImage(ww, wh, OSD_FORMAT)
         img.fill(Qt.transparent)
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         if self._m_flag:
             # This gives that "grayish tone" UI feel
             x1, y1, x2, y2 = self._m_area
@@ -294,26 +300,18 @@ class Nova(QOpenGLWindow):
             p.setPen(Qt.NoPen)
             p.drawRoundedRect(x1, y1, x2-x1, y2-y1, 10, 10)
 
+        def icon_at(icon, idx):
+            _y1 = _y + (sz + gap) * idx
+            p.drawImage(QRect(_x, _y1, sz, sz), icon)
+
         if self.core.is_streamer_on() or (self._m_flag and self._m_strm):
-            icon = self.core.get_streamer_icon()
-            icon = icon.scaled(sz, sz, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            _y1 = _y + (sz + gap) * 0
-            p.drawImage(_x, _y1, icon)
+            icon_at(self.core.get_streamer_icon(), 0)
         if self.core.is_recorder_on() or self._m_flag:
-            icon = self.core.get_recorder_icon()
-            icon = icon.scaled(sz, sz, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            _y1 = _y + (sz + gap) * 1
-            p.drawImage(_x, _y1, icon)
+            icon_at(self.core.get_recorder_icon(), 1)
         if self.core.is_audio_on() or self._m_flag:
-            icon = self.core.get_audio_icon()
-            icon = icon.scaled(sz, sz, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            _y1 = _y + (sz + gap) * 2
-            p.drawImage(_x, _y1, icon)
+            icon_at(self.core.get_audio_icon(), 2)
         if self.helper.is_on() or self._m_flag:
-            icon = self.helper.get_icon()
-            icon = icon.scaled(sz, sz, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            _y1 = _y + (sz + gap) * 4
-            p.drawImage(_x, _y1, icon)
+            icon_at(self.helper.get_icon(), 4)
         p.end()
         self.osd_bt = img
 
@@ -359,10 +357,10 @@ class Nova(QOpenGLWindow):
         self.update()
 
     def snapshot(self):
-        self.core.snapshot(self.curr_qimg)
+        self.core.snapshot(self.curr_df)
 
     def print_info(self):
-        print(self.core.get_url())
+        print(self.core.get_url())   # explicit user action (P key): full URL on purpose
 
     def keyPressEvent(self, e): self.key_hdlr.press(e)
     def keyReleaseEvent(self, e): self.key_hdlr.release(e)
@@ -380,12 +378,10 @@ class Nova(QOpenGLWindow):
         self.zoomer.resize(x, y)
         txt = self.curr_txt
         if txt is not None: self.set_txt(txt)
-        if self.show_help: self.display_help()
         self.set_bt()
         if self.helper.is_on(): self.helper._on() # refresh
         if not self.is_fullscreen():
             self.set_bg("orange" if self.border else "none")
-        #print(self._m_area)
 
 
     def event(self, e):
@@ -421,6 +417,7 @@ class Nova(QOpenGLWindow):
         self.cleanup()
 
     def cleanup(self):
+        """Persist geometry/zoom. Safe to call twice (closeEvent and QGuiApplication.aboutToQuit)."""
         if self.is_running:
             self.is_running = False
             if self.helper.is_on(): self.helper.off()
@@ -441,25 +438,23 @@ class Nova(QOpenGLWindow):
             rh = zh / vh if vh > 0 else 1.0
             s = f'{rx},{ry},{rw},{rh}'
             self.qset.setValue(zk, s)
+            self.qset.sync()
 
 
 
     def _screen_wh(self):
         s = QGuiApplication.screenAt(self.position()) or QGuiApplication.primaryScreen()
-        #g = s.availableGeometry()
         g = s.geometry()
-        #TODO: window-state machine bug + fullscreen detection heuristic bug
-        #SAFE_MARGIN = 1  # avoid WM fullscreen heuristics
-        SAFE_MARGIN = 0
-        return g.width() - SAFE_MARGIN, g.height() - SAFE_MARGIN
+        return g.width(), g.height()
+
+    def _virtual_rect(self) -> QRect:
+        """Bounding rectangle of all monitors. Its origin is not (0,0) when a monitor sits
+        left of / above the primary one."""
+        return QGuiApplication.primaryScreen().virtualGeometry()
 
     def _screen_wh_multi(self):
-        s = QGuiApplication.primaryScreen()
-        g = s.virtualGeometry()
-        #TODO: window-state machine bug + fullscreen detection heuristic bug
-        #SAFE_MARGIN = 1  # avoid WM fullscreen heuristics
-        SAFE_MARGIN = 0
-        return g.width() - SAFE_MARGIN, g.height() - SAFE_MARGIN
+        g = self._virtual_rect()
+        return g.width(), g.height()
 
     def _widget_wh(self):
         return self.width(), self.height()
@@ -468,14 +463,9 @@ class Nova(QOpenGLWindow):
         sw, sh = self._screen_wh()
         return self.width(), self.height(), sw, sh
 
-    def _widget_wh_scrn_multi(self):
-        sw, sh = self._screen_wh_multi()
-        return self.width(), self.height(), sw, sh
-
     def _curr_pos(self):
         g = self.geometry()   # global geometry
         return g.x(), g.y()
-        #return self.position().x(), self.position().y()
 
     def _isFullScreen(self):
         return bool(self.windowState() & Qt.WindowFullScreen)
@@ -486,12 +476,10 @@ class Nova(QOpenGLWindow):
 
 
     def fullscreen(self):
-        vw, vh = self.core.width(), self.core.height()
         if self.is_fullscreen(): return
         self._fullscrn_flag = True
         self.set_bg("none")
         self.showFullScreen()
-        #QTimer.singleShot(500, self.set_bt)
 
     def show_normal(self):
         if not self.is_fullscreen(): return
@@ -517,8 +505,6 @@ class Nova(QOpenGLWindow):
         self._geom(x + (sw - nw) // 2, y + (sh - nh) // 2, nw, nh)
 
     def toggle_fullscreen(self):
-        w, h, sw, sh = self._widget_wh_scrn()
-        #print(f'w:{w}, h:{h}, sw:{sw}, sh:{sh}');
         if self.is_fullscreen(): self.show_normal()
         else: self.fullscreen()
 
@@ -533,7 +519,6 @@ class Nova(QOpenGLWindow):
         else: nw, nh = ow, round(ow / r)
         x, y = self._curr_pos()
         nx, ny = x + (ow - nw) // 2, y + (oh - nh) // 2
-        #print(f'nx:{nx}, ny:{ny}, nw:{nw}, nh:{nh}')
         self._geom(nx, ny, nw, nh)
 
     def center_orig(self):
@@ -552,37 +537,43 @@ class Nova(QOpenGLWindow):
     def align_grid(self):
         if self.is_fullscreen(): return
         if WSL: return
+        G = self.grid
+        vg = self._virtual_rect()
+        ox, oy = vg.left(), vg.top()                 # grid origin = top-left of the virtual desktop
+        sw, sh = vg.left() + vg.width(), vg.top() + vg.height()
         x, y = self._curr_pos()
-        w, h, sw, sh = self._widget_wh_scrn_multi()
+        w, h = self._widget_wh()
         r = w / h if h > 0 else 1
-        nh = snap_to_grid(h, GS)
+        nh = snap_to_grid(h, G)
         nw = round(nh * r)
+        snap_x = lambda v: snap_to_grid(v - ox, G) + ox
+        snap_y = lambda v: snap_to_grid(v - oy, G) + oy
         if x + nw >= sw and y + nh  >= sh:
             pass
         elif x + nw  >= sw:
-            y = snap_to_grid(y, GS)
+            y = snap_y(y)
         elif y + nh >= sh:
-            x = snap_to_grid(x, GS)
+            x = snap_x(x)
         else:
-            x = snap_to_grid(x, GS)
-            y = snap_to_grid(y, GS)
+            x = snap_x(x)
+            y = snap_y(y)
         nx, ny = min(x, sw - nw), min(y, sh - nh)
         self._geom(nx, ny, nw, nh)
 
-    def move_up(self):   self._move_d(0,-GS)
-    def move_down(self): self._move_d(0, GS)
-    def move_left(self): self._move_d(-GS, 0)
-    def move_right(self):self._move_d( GS, 0)
+    def move_up(self):   self._move_d(0,-self.grid)
+    def move_down(self): self._move_d(0, self.grid)
+    def move_left(self): self._move_d(-self.grid, 0)
+    def move_right(self):self._move_d( self.grid, 0)
 
-    def expand_right(self): self._geom_d(  0, 0, GS, 0)
-    def shrink_right(self): self._geom_d(  0, 0,-GS, 0)
-    def expand_left(self):  self._geom_d(-GS, 0,+GS, 0)
-    def shrink_left(self):  self._geom_d(+GS, 0,-GS, 0)
+    def expand_right(self): self._geom_d(  0, 0, self.grid, 0)
+    def shrink_right(self): self._geom_d(  0, 0,-self.grid, 0)
+    def expand_left(self):  self._geom_d(-self.grid, 0,+self.grid, 0)
+    def shrink_left(self):  self._geom_d(+self.grid, 0,-self.grid, 0)
 
-    def expand_down(self):  self._geom_d(0,  0, 0, +GS)
-    def shrink_down(self):  self._geom_d(0,  0, 0, -GS)
-    def expand_up(self):    self._geom_d(0,-GS, 0, +GS)
-    def shrink_up(self):    self._geom_d(0,+GS, 0, -GS)
+    def expand_down(self):  self._geom_d(0,  0, 0, +self.grid)
+    def shrink_down(self):  self._geom_d(0,  0, 0, -self.grid)
+    def expand_up(self):    self._geom_d(0,-self.grid, 0, +self.grid)
+    def shrink_up(self):    self._geom_d(0,+self.grid, 0, -self.grid)
 
     def expand_right_bottom(self): self._resize_r(1.1)   # 11/10
     def shrink_right_bottom(self): self._resize_r(0.909) # 10/11
@@ -591,13 +582,11 @@ class Nova(QOpenGLWindow):
     def shrink(self): self._resize_rc(0.909)
 
     def _geom(self, x, y, w, h):
-        sw, sh = self._screen_wh_multi()
+        vg = self._virtual_rect()
         mw, mh = self.minimumWidth(), self.minimumHeight()
-        w, h = min(sw, max(mw, w)), min(sh, max(mh, h))
-        x, y = max(0, x), max(0, y)
-        self.setGeometry(x, y, w, h)
-        #self.setPosition(x, y)
-        #self.resize(w, h)
+        w, h = min(vg.width(), max(mw, w)), min(vg.height(), max(mh, h))
+        x, y = max(vg.left(), x), max(vg.top(), y)
+        self.setGeometry(int(x), int(y), int(w), int(h))
 
     def _geom_d(self, dx, dy, dw, dh): # +delta
         x, y = self._curr_pos()
@@ -605,21 +594,22 @@ class Nova(QOpenGLWindow):
         self._geom(x + dx, y + dy, w + dw, h + dh)
 
     def _move(self, x, y):
-        w, h, sw, sh = self._widget_wh_scrn_multi()
-        x = max(0, min(x, sw - w))
-        y = max(0, min(y, sh - h))
-        self.setPosition(x, y)
+        vg = self._virtual_rect()
+        w, h = self._widget_wh()
+        x = max(vg.left(), min(x, vg.left() + vg.width() - w))
+        y = max(vg.top(), min(y, vg.top() + vg.height() - h))
+        self.setPosition(int(x), int(y))
 
     def _move_d(self, dx, dy):
         x, y = self._curr_pos()
         self._move(x + dx, y + dy)
 
     def _resize(self, w, h):
-        self.resize(w, h)
+        self.resize(int(w), int(h))
 
     def _resize_d(self, dw, dh):
-        x, y = self._curr_pos()
-        self._resize(x + dw, y + dh)
+        w, h = self._widget_wh()
+        self._resize(w + dw, h + dh)
 
     def _resize_r(self, f): # ratio
         ow, oh = self._widget_wh()
@@ -632,4 +622,3 @@ class Nova(QOpenGLWindow):
         dw, dh = w - ow, h - oh
         dx, dy = int(-dw / 2), int(-dh / 2)
         self._geom_d(dx, dy, dw, dh)
-

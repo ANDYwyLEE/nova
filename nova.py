@@ -1,36 +1,27 @@
 #!venv/bin/python3 -u
 
-
-from PySide6.QtCore import Qt, QMetaObject
-from PySide6.QtGui import QGuiApplication, QSurfaceFormat
-
-from PySide6.QtCore import QTimer
 import os
 import sys
 import signal
 import logging
 import argparse
 
-from util import parse_time
-from novacore import NovaCore
-from view import Nova
-from novagl import NovaGL
-from ffparser import NovaParser
+from PySide6.QtCore import Qt, QMetaObject, QTimer
+from PySide6.QtGui import QGuiApplication, QSurfaceFormat
 
+import logsync   # installs logging.verbose / logging.trace before any module logs
+from util import parse_time, mask_url
+from ffparser import NovaParser
 
 
 def log_level_type(value):
     try:
         return int(value)
     except (ValueError, TypeError):
-        val_str = str(value).upper()
-        if val_str in ["CRITICAL", "ERROR", "WARNING", "INFO", "VERBOSE", "DEBUG",  "TRACE"]:
-            return val_str
-        return val_str
+        return str(value).upper()
 
 
 if __name__ == "__main__":
-    #parser = argparse.ArgumentParser(description="Nova video streaming client")
     parser = NovaParser(
         description='Nova: High-performance RTSP Player',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -41,10 +32,11 @@ if __name__ == "__main__":
         dest="url",
         type=str,
         required=True,
-        help="Video source (e.g., rtsp, rtmp, srt, onvif, xmeye, '0' for USB cam)"
+        help="Video source: rtsp/rtmp/srt URL, onvif://, xmeye://, hik://, dahua://, "
+             "a capture device ('0' = /dev/video0 or avfoundation 0, 'dshow://video=NAME' on Windows)"
     )
     parser.add_argument(
-        "-n,", "--name", "--camera-name",
+        "-n", "--name", "--camera-name",
         dest="camera_name",
         type=str,
         help="Logical camera name for the window title and output folders."
@@ -52,20 +44,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--opengl",
         action="store_true",
-        help="Enable hardware acceleration using OpenGL (recommended for high performance)."
+        help="Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended)."
     )
     parser.add_argument(
         "--accel",
         type=str,
         default=None,
-        #choices=['cuda', 'qsv', 'vaapi', 'videotoolbox', 'd3d11va', 'dxva2', 'd3d12va', 'vulkan', "vdpau", "amf", "rkmpp", "omx", "mmal", "v4l2m2m", "nvmpi"],
-        help='Hardware acceleration backend. (e.g., cuda for NVIDIA, qsv for Intel)'
+        help='Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m ...)'
     )
     parser.add_argument(
         "-f", "--fps",
         type=int,
         default=30,
-        help="Target video frame rate (default: 30)."
+        help="Target display frame rate."
     )
     parser.add_argument(
         "-b", "--border",
@@ -76,7 +67,7 @@ if __name__ == "__main__":
         "-g", "--grid-size",
         type=int,
         default=20,
-        help="Grid size for window alignment in pixels (default: 20)."
+        help="Grid size for window alignment in pixels."
     )
     parser.add_argument(
         "-a", "--audio", "--enable-audio",
@@ -99,13 +90,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "-e", "--encoder",
         type=str,
-        help="Explicitly specify video encoder (e.g., h264_vaapi, hevc_nvenc)"
+        help="Explicitly specify video encoder (e.g., h264_nvenc, hevc_nvenc, libx264)"
     )
     parser.add_argument(
         "--record-interval",
         type=str,
         default="30m",
-        help="Recording segment length (e.g. 10m, 1h, 3600s; default: 30m)."
+        help="Recording segment length (e.g. 10m, 1h, 3600s)."
     )
     parser.add_argument(
         "--output-dir",
@@ -126,7 +117,7 @@ if __name__ == "__main__":
         '--ffmpeg',
         type=str,
         default='',
-        help='Direct FFmpeg options (e.g., "-rtsp_transport udp -resize 640x360")'
+        help='Direct FFmpeg options, e.g. "-rtsp_transport udp -b:v 4M -g 60 -movflags +faststart"'
     )
     parser.add_argument(
         "-t", "--target",
@@ -137,7 +128,7 @@ if __name__ == "__main__":
         "-l", "--log-level",
         type=log_level_type,  # custom function
         default="INFO",
-        help="Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10; default: INFO)."
+        help="Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10)."
     )
 
     args = parser.parse_args()
@@ -167,26 +158,9 @@ if __name__ == "__main__":
     output_dir = args.output_dir
     snapshot_dir = args.snapshot_dir or output_dir or "./snapshots"
     recording_dir = args.recording_dir or output_dir or "./videos"
-    args.accel = None if not args.accel or args.accel.lower() == "none" else args.accel
+    args.accel = None if not args.accel or args.accel.lower() == "none" else args.accel.lower()
 
-    # Set the logging level
-    VERBOSE_LEVEL = 15; TRACE_LEVEL = 5
-    def verbose(self, message, *args, **kws):
-        if self.isEnabledFor(VERBOSE_LEVEL): self._log(VERBOSE_LEVEL, message, args, **kws)
-    def trace(self, message, *args, **kws):
-        if self.isEnabledFor(TRACE_LEVEL): self._log(TRACE_LEVEL, message, args, **kws)
-    logging.Logger.verbose = verbose
-    logging.verbose = lambda msg, *args, **kwargs: logging.getLogger().verbose(msg, *args, **kwargs)
-    logging.Logger.trace = trace
-    logging.trace = lambda msg, *args, **kwargs: logging.getLogger().trace(msg, *args, **kwargs)
-    logging.addLevelName(logging.WARNING, "WARN ")
-    logging.addLevelName(logging.INFO, "INFO ")
-    logging.addLevelName(TRACE_LEVEL, "TRACE")
-    logging.addLevelName(VERBOSE_LEVEL, "VERBOSE")
-    logging.addLevelName(VERBOSE_LEVEL, "VERBO")
     logging.basicConfig(
-        #filename="nova.log",
-        #filemode="a",
         stream=sys.stdout,
         level=log_level,
         format="%(asctime)s - %(levelname)s - %(message)s",
@@ -194,11 +168,9 @@ if __name__ == "__main__":
         force=True,
     )
     logging.debug(f"log_level={log_level}")
+    logsync.setup_av_logging()
 
-    from logsync import setup_av_logging
-    setup_av_logging()
-
-    logging.debug(f"Input Arguments: {sys.argv[1:]}")
+    logging.debug(f"Input Arguments: {[mask_url(a) for a in sys.argv[1:]]}")
     logging.debug(f"headless={args.headless}, auto_record={args.auto_record}, auto_audio={args.auto_audio}")
     logging.debug(f"camera_name={args.camera_name}, snapshot_dir={snapshot_dir}, recording_dir={recording_dir}")
 
@@ -208,23 +180,24 @@ if __name__ == "__main__":
     fmt = QSurfaceFormat()
     fmt.setAlphaBufferSize(8)
     fmt.setRenderableType(QSurfaceFormat.OpenGL)
-    fmt.setProfile(QSurfaceFormat.CoreProfile)
+    if args.opengl:
+        # NovaGL's shaders need a 3.3 core context (macOS only offers 2.1 legacy otherwise)
+        fmt.setVersion(3, 3)
+        fmt.setProfile(QSurfaceFormat.CoreProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
 
     app = QGuiApplication(sys.argv)
     app.setOrganizationName("judvi")
     app.setApplicationName("Nova")
 
-    from auth import resolve_input_uri
-    url = resolve_input_uri(args.url)
-    if url is None:
-        logging.critical("Failed to resolve URI. Exiting Nova.")
-        sys.exit(1)
+    from novacore import NovaCore
+    from view import Nova
+    from novagl import NovaGL
 
-    logging.debug(f"[Nova] {url}")
+    logging.debug(f"[Nova] {mask_url(args.url)}")
 
     core = NovaCore(
-        url=url,
+        url=args.url,
         fps=args.fps,
         opengl=args.opengl,
         accel=args.accel,
@@ -239,7 +212,8 @@ if __name__ == "__main__":
         ffmpeg=args.ffmpeg,
         target_url=args.target,
     )
-    core.start()
+
+    nova = None
     if not args.headless:
         mode_name = "OpenGL (GPU)" if args.opengl else "Standard (CPU)"
         logging.info(f"Starting visual window in {mode_name} mode.")
@@ -249,14 +223,25 @@ if __name__ == "__main__":
             grid=args.grid_size,
             border=args.border,
         )
+    else:
+        # nobody owns a window: a fatal worker error must end the process
+        core.exit_sig.connect(lambda: QTimer.singleShot(500, app.quit))
 
-    t=QTimer();t.start(200);t.timeout.connect(lambda: None)
+    # Ctrl-C / SIGTERM (stopall.sh) quit through the event loop; aboutToQuit saves the window
+    # geometry/zoom that closeEvent would otherwise have persisted.
+    if nova is not None:
+        app.aboutToQuit.connect(nova.cleanup)
+
+    # the view is connected before the worker starts so the first size signal is never missed
+    core.start()
+
+    t = QTimer(); t.start(200); t.timeout.connect(lambda: None)   # let Python see signals
     def signal_handler(sig, frame):
-        app = QGuiApplication.instance()
-        if app:QMetaObject.invokeMethod(app, "quit", Qt.QueuedConnection)
+        a = QGuiApplication.instance()
+        if a: QMetaObject.invokeMethod(a, "quit", Qt.QueuedConnection)
     signal.signal(signal.SIGINT, signal_handler)
-    #signal.signal( signal.SIGINT, lambda sig, frame: \
-    #    QMetaObject.invokeMethod(app, "quit", Qt.QueuedConnection))
+    try: signal.signal(signal.SIGTERM, signal_handler)
+    except (ValueError, AttributeError): pass
 
     rt = app.exec()
     core.stop()

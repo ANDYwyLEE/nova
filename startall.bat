@@ -2,7 +2,7 @@
 
 REM call python3.12\Scripts\activate.bat
 REM call python3.12\bin\activate.bat
-call venv\bin\activate.bat
+if exist venv\Scripts\activate.bat (call venv\Scripts\activate.bat) else (call venv\bin\activate.bat)
 
 set PYTHONPATH=%PYTHONPATH%;.
 
@@ -38,51 +38,51 @@ REM set NOVA_GPU_DEVICES=0,1
 
 
 REM Vehicle Detection CAMERA
-start "" /B python nova.py %OPTS% -u "rtsp://admin:password@192.168.1.45:554/stream_0" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://admin:password@192.168.1.45:554/stream_0" %*
 
 REM Backyard etang CAM
-start "" /B python nova.py %OPTS% -u "rtsp://192.168.1.24:554/user=andy&password=password&channel=1&stream=0" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://192.168.1.24:554/user=andy&password=password&channel=1&stream=0" %*
 
 REM Backyard etong mini CAM
-REM start "" /B python nova.py %OPTS% -u "rtsp://admin:password@192.168.1.31:554/av_stream/main" "%*"
+REM start "" /B python nova.py %OPTS% -i "rtsp://admin:password@192.168.1.31:554/av_stream/main" %*
 
 REM Cavanon CAM
-REM start "" /B python nova.py %OPTS% -u "rtsp://192.168.1.22:554/user=andy&password=password&channel=1&stream=0" "%*"
-start "" /B python nova.py %OPTS% -u "rtsp://192.168.1.22:554/user=admin&password=password&channel=1&stream=0" "%*"
+REM start "" /B python nova.py %OPTS% -i "rtsp://192.168.1.22:554/user=andy&password=password&channel=1&stream=0" %*
+start "" /B python nova.py %OPTS% -i "rtsp://192.168.1.22:554/user=admin&password=password&channel=1&stream=0" %*
 
 REM Grand etang CAM
-REM start "" /B python nova.py %OPTS% -u "rtsp://192.168.1.23:554/user=andy&password=password&channel=1&stream=0" "%*"
+REM start "" /B python nova.py %OPTS% -i "rtsp://192.168.1.23:554/user=andy&password=password&channel=1&stream=0" %*
 
 REM Restaurent Cam
-start "" /B python nova.py %OPTS% -u "rtsp://rtsp:password@192.168.1.43:554/av_stream/ch0" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://rtsp:password@192.168.1.43:554/av_stream/ch0" %*
 
 REM Frontdesk Cam
-start "" /B python nova.py %OPTS% -u "rtsp://rtsp:password@192.168.1.41:554/av_stream/ch0" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://rtsp:password@192.168.1.41:554/av_stream/ch0" %*
 
 REM Salon Cam
-start "" /B python nova.py %OPTS% -u "rtsp://rtsp:password@192.168.1.44:554/av_stream/ch0" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://rtsp:password@192.168.1.44:554/av_stream/ch0" %*
 
 REM Lounge Cam
-start "" /B python nova.py %OPTS% -u "rtsp://rtsp:password@192.168.1.40:554/av_stream/ch0" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://rtsp:password@192.168.1.40:554/av_stream/ch0" %*
 
 REM Office Cat CAM-S1
-start "" /B python nova.py %OPTS% -u "rtsp://rtsp:password@192.168.1.38:554/av_stream/ch0" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://rtsp:password@192.168.1.38:554/av_stream/ch0" %*
 
 REM Poulailler CAM1
-start "" /B python nova.py %OPTS% -u "rtsp://admin:password@192.168.1.27:554/av_stream/main" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://admin:password@192.168.1.27:554/av_stream/main" %*
 
 REM Poulailler CAM2
-start "" /B python nova.py %OPTS% -u "rtsp://admin:password@192.168.1.28:554/av_stream/main" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://admin:password@192.168.1.28:554/av_stream/main" %*
 
 REM Poulailler CAM3
-start "" /B python nova.py %OPTS% -u "rtsp://admin:password@192.168.1.29:554/av_stream/main" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://admin:password@192.168.1.29:554/av_stream/main" %*
 
 REM Poulailler CAM4
-start "" /B python nova.py %OPTS% -u "rtsp://admin:password@192.168.1.30:554/av_stream/main" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://admin:password@192.168.1.30:554/av_stream/main" %*
 
 REM Portable Duck CAM
-start "" /B python nova.py %OPTS% -u "rtsp://admin:password@192.168.1.36:554/av_stream/main" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://admin:password@192.168.1.36:554/av_stream/main" %*
 
 REM Atlier CAM
-start "" /B python nova.py %OPTS% -u "rtsp://admin:password@192.168.1.26:554/av_stream/main" "%*"
+start "" /B python nova.py %OPTS% -i "rtsp://admin:password@192.168.1.26:554/av_stream/main" %*
 

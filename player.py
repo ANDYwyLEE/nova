@@ -1,5 +1,7 @@
 
 from abc import abstractmethod, ABCMeta
+import queue
+import numpy as np
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QImage, QColor
 
@@ -21,11 +23,11 @@ class Player(QObject, metaclass=QABCMeta):
         return True
 
     @abstractmethod
-    def is_on(self): 
+    def is_on(self):
         return False
 
     @abstractmethod
-    def is_off(self): 
+    def is_off(self):
         return not self.is_on()
 
     @abstractmethod
@@ -41,18 +43,25 @@ class Player(QObject, metaclass=QABCMeta):
     def get_icon(self):
         return self.icon if self.is_on() else self.icon_gray
 
+    @staticmethod
+    def _drain(q: queue.Queue):
+        """Drop stale items so a freshly started consumer begins with live data."""
+        try:
+            while True: q.get_nowait()
+        except queue.Empty:
+            pass
 
     def _make_gray(self, image):
-        # Ensure image has alpha channel
-        img = image.convertToFormat(
-            QImage.Format_ARGB32).copy()
-        for y in range(img.height()):
-            for x in range(img.width()):
-                pixel = img.pixelColor(x, y)
-                if pixel.alpha() == 0:
-                    continue
-                # Grayscale conversion using luminosity weights
-                gray = int(0.299 * pixel.red() + 0.587 * pixel.green() + 0.114 * pixel.blue())
-                img.setPixelColor(x, y, QColor(gray, gray, gray, pixel.alpha() // 2 ))
-        return img
-
+        """Half-transparent grayscale copy of the icon (vectorised with numpy)."""
+        img = image.convertToFormat(QImage.Format_RGBA8888)
+        if img.isNull():
+            return img
+        w, h = img.width(), img.height()
+        raw = np.frombuffer(img.constBits(), dtype=np.uint8)
+        px = raw.reshape(h, img.bytesPerLine())[:, :w * 4].reshape(h, w, 4)
+        rgb = px[..., :3].astype(np.float32)
+        gray = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.uint8)
+        out = np.empty((h, w, 4), dtype=np.uint8)
+        out[..., 0] = out[..., 1] = out[..., 2] = gray
+        out[..., 3] = px[..., 3] // 2
+        return QImage(out.data, w, h, w * 4, QImage.Format_RGBA8888).copy()

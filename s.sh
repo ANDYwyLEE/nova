@@ -9,12 +9,15 @@ unset C_INCLUDE_PATH
 
 
 export PYTHONPATH=$PYTHONPATH:.
-export LD_LIBRARY_PATH=$HOME/deps/lib:$LD_LIBRARY_PATH
-export DYLD_LIBRARY_PATH=$HOME/deps/lib:$DYLD_LIBRARY_PATH # for macOS
-export PATH=$HOME/deps/bin:$PATH
+# Only needed with a custom FFmpeg build in ~/deps (README section 6: SRT / VAAPI).
+# The PyPI av wheel ships its own FFmpeg and ignores these.
+if [ -d "$HOME/deps/lib" ]; then
+    export LD_LIBRARY_PATH=$HOME/deps/lib:$LD_LIBRARY_PATH
+    export DYLD_LIBRARY_PATH=$HOME/deps/lib:$DYLD_LIBRARY_PATH # macOS
+    export PATH=$HOME/deps/bin:$PATH
+fi
 
 
-export NOVA_AUDIO_DEBUG=1
 #export NOVA_ONVIF_XML_TRACE=1
 #export NOVA_TIMEOUT=5000000 # 5 sec
 export NOVA_TIMEOUT=10000000 # 10 sec

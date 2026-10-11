@@ -1,26 +1,20 @@
+# avwriter.py
 import re
-import av
-import sys
 import os
-import traceback
+import sys
+import time
 import threading
 import tempfile
-import numpy as np
 import logging
 from fractions import Fraction
-from util import LINUX, WINDOWS, MAC, WSL, IS_PI, SOLARIS, AIX, HPUX, get_os_type
 
+import av
+from util import LINUX, WINDOWS, MAC, WSL, IS_PI, MSYS, get_os_type
 
 try: from filelock import FileLock
 except ImportError:
-    print("Error: requests is required. Run 'pip install filelock'")
+    print("Error: filelock is required. Run 'pip install filelock'")
     sys.exit(1)
-
-def _get_best_pix_fmt(encoder_name: str) -> str:
-    e = encoder_name.lower()
-    if any(x in e for x in ["nvenc", "qsv", "rkmpp", "videotoolbox", "amf", "vaapi", ]):
-        return "nv12"
-    return "yuv420p"
 
 PATTERN = re.compile(r'^\[[^\]]+\]\s*([^:]+)')
 
@@ -28,302 +22,605 @@ def _short_err(e: Exception) -> str:
     m = PATTERN.search(str(e))
     return m.group(1).strip() if m else str(e)
 
+def _get_best_pix_fmt(encoder_name: str) -> str:
+    e = encoder_name.lower()
+    if any(x in e for x in ["nvenc", "qsv", "rkmpp", "videotoolbox", "amf", "vaapi", "_mf"]):
+        return "nv12"
+    return "yuv420p"
+
+def _family(name: str) -> str:
+    n = (name or "").lower()
+    if "265" in n or "hevc" in n: return "hevc"
+    if "av1" in n: return "av1"
+    if "vp9" in n: return "vp9"
+    return "h264"
+
+LIVE_FORMATS = ("flv", "mpegts", "hls", "rtsp", "rtp_mpegts")
+
+# Codec families each container can carry (and that typical ingest servers accept).
+# YouTube/Twitch RTMP: H.264 only.  YouTube HLS: H.264 / HEVC.
+FORMAT_FAMILIES = {
+    "flv": ("h264",),
+    "mpegts": ("h264", "hevc"),
+    "hls": ("h264", "hevc"),
+    "mp4": ("h264", "hevc", "av1"),
+    "mov": ("h264", "hevc", "av1"),
+    "matroska": ("h264", "hevc", "av1", "vp9"),
+}
+# --ffmpeg keys that AVWriter interprets itself; they are not codec options
+NON_CODEC_OPTS = ('s', 'r', 'g', 'gop_size')
+
+SOFTWARE_ENCODERS = {"h264": ["libx264"], "hevc": ["libx265"], "av1": ["libsvtav1", "libaom-av1"], "vp9": ["libvpx-vp9"]}
+
+def _hw_suffixes(accel):
+    a = (accel or "").lower()
+    if IS_PI:
+        base = ["rkmpp", "v4l2m2m", "nvmpi", "omx"]
+    elif WINDOWS or MSYS:
+        base = ["nvenc", "qsv", "amf", "mf"]
+    elif MAC:
+        base = ["videotoolbox"]
+    else:
+        base = ["nvenc", "qsv", "vaapi", "amf"]
+    # try the encoder that matches the decoder's vendor first
+    pref = {"cuda": "nvenc", "cuvid": "nvenc", "nvdec": "nvenc", "qsv": "qsv", "vaapi": "vaapi",
+            "amf": "amf", "videotoolbox": "videotoolbox", "rkmpp": "rkmpp", "v4l2m2m": "v4l2m2m"}.get(a)
+    if pref in base:
+        base.remove(pref); base.insert(0, pref)
+    return base
+
 
 class EncoderManager:
+    """Picks a working encoder once per (accel, user encoder, format) and caches it.
+    A cross-process file lock keeps 15 simultaneously starting cameras from probing the GPU at once."""
     _instance = None
     _lock = threading.Lock()
-    _best_encoder_cache = None
 
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super(EncoderManager, cls).__new__(cls)
+                cls._instance._cache = {}
             return cls._instance
 
-    def get_encoder(self, accel, user_encoder, source_codec, enc_opts):
-        if self._best_encoder_cache:
-            logging.debug(f"[EncoderManager] ⚡ Cache Hit! Returning: {self._best_encoder_cache}")
-            return self._best_encoder_cache
+    def get_encoder(self, accel, user_encoder, source_codec, enc_opts, allowed=None):
+        allowed = tuple(allowed) if allowed else ("h264", "hevc", "av1", "vp9")
+        key = (accel, user_encoder, _family(source_codec), allowed, tuple(sorted(enc_opts.items())))
+        hit = self._cache.get(key)
+        if hit:
+            logging.debug(f"[EncoderManager] ⚡ cached encoder: {hit}")
+            return hit
         lock_path = os.path.join(tempfile.gettempdir(), "nova_encoder_init.lock")
         file_lock = FileLock(lock_path, timeout=15)
         with self._lock:
-            if self._best_encoder_cache:
-                logging.debug(f"[EncoderManager] ⚡ Using cached encoder: {self._best_encoder_cache}")
-                return self._best_encoder_cache
+            hit = self._cache.get(key)
+            if hit: return hit
             try:
                 with file_lock:
-                    if self._best_encoder_cache:
-                        logging.debug(f"[EncoderManager] ⚡ Using cached encoder: {self._best_encoder_cache}")
-                        return self._best_encoder_cache
-
                     old_level = av.logging.get_level()
                     av.logging.set_level(av.logging.PANIC)
-                    self._best_encoder_cache = self._perform_hw_test(accel, user_encoder, source_codec, enc_opts)
-                    av.logging.set_level(old_level)
-                    return self._best_encoder_cache
+                    try:
+                        enc = self._perform_hw_test(accel, user_encoder, source_codec, enc_opts, allowed)
+                    finally:
+                        av.logging.set_level(old_level)
+                    self._cache[key] = enc
+                    return enc
             except Exception as e:
-                logging.error(f"[EncoderManager] Lock acquisition failed: {e}")
+                logging.error(f"[EncoderManager] encoder probe failed: {e}")
                 return "libx264"
 
-    def _perform_hw_test(self, accel, encoder, source_codec, enc_opts):
-        os_name = get_os_type()
-        logging.debug(f"[EncoderManager] Platform Check - OS:{os_name}")
-        target = "hevc" if any(x in source_codec.lower() for x in ["265", "hevc"]) else "h264"
-        candidates = []
+    def _candidates(self, accel, user_encoder, source_codec, allowed):
+        src_fam = _family(source_codec)
+        families = [f for f in dict.fromkeys([src_fam, "h264", "hevc", "av1", "vp9"]) if f in allowed]
+        out = []
+        if user_encoder:
+            out.append(user_encoder)
         if accel:
-            if IS_PI:
-                candidates += [
-                        "libsvtav1", "libdav1d",
-                        f"{target}_rkmpp", f"{target}_v4l2m2m",
-                        f"{target}_nvmpi", f"{target}_omx"
-                ]
-            elif WINDOWS or LINUX or WSL:
-                candidates += [
-                    "av1_nvenc", "av1_qsv", "av1_vaapi", "av1_amf",
-                    "hevc_nvenc", "hevc_qsv", "hevc_vaapi", "hevc_amf",
-                    "h264_nvenc", "h264_qsv", "h264_vaapi", "h264_amf",
-                    f"{target}_nvenc", f"{target}_qsv",
-                ]
-            elif MAC:
-                candidates += ["av1_videotoolbox", "hevc_videotoolbox", "h264_videotoolbox"]
-            elif SOLARIS or AIX or HPUX:
-                candidates += [f"{target}_vaapi"]
-            candidates += ["libx264"]
-        else:
-            candidates += ["libx264", "h264"]
+            for fam in families:
+                for suf in _hw_suffixes(accel):
+                    out.append(f"{fam}_{suf}")
+        # software: libx264 first (fast enough for live use), then the others
+        if "h264" in allowed: out.append("libx264")
+        for fam in families:
+            out += SOFTWARE_ENCODERS.get(fam, [])
+        if not out: out.append("libx264")
+        return list(dict.fromkeys(out))
 
-        u_enc = encoder or enc_opts.get('c:v') or enc_opts.get('vcodec')
-        encoder_list = [u_enc] if u_enc else []
-        for c in candidates:
-            if c not in encoder_list: encoder_list.append(c)
-        for encoder_name in encoder_list:
-            ctx = None
-            try:
-                logging.debug(f"[EncoderManager] 🔍 Testing encoder: {encoder_name}...")
-                codec = av.Codec(encoder_name, "w")
-                ctx = av.CodecContext.create(codec)
-                test_pix_fmt = _get_best_pix_fmt(encoder_name)
-                ctx.width = 640
-                ctx.height = 360
-                ctx.pix_fmt = test_pix_fmt
-                ctx.time_base = Fraction(1, 30)
-                ctx.options.update(enc_opts)
-                ctx.open()
-                if hasattr(ctx, 'close'): ctx.close()
-                del ctx
-                logging.verbose(f"[EncoderManager] 🚀 Success! Using {encoder_name} (Format: {test_pix_fmt})")
+    def _perform_hw_test(self, accel, user_encoder, source_codec, enc_opts, allowed):
+        logging.debug(f"[EncoderManager] OS:{get_os_type()} accel:{accel} source:{source_codec} allowed:{allowed}")
+        test_opts = {k: v for k, v in enc_opts.items() if k not in NON_CODEC_OPTS}
+        for encoder_name in self._candidates(accel, user_encoder, source_codec, allowed):
+            err = self._try_open(encoder_name, test_opts)
+            if err is None:
+                logging.verbose(f"[EncoderManager] 🚀 using {encoder_name}")
                 return encoder_name
-            except Exception as e:
-                if ctx is not None:
-                    if hasattr(ctx, 'close'): ctx.close()
-                    del ctx
-                logging.debug(f"[EncoderManager] ❌ {encoder_name} check failed: {e}")
-                continue
-        logging.debug(f"[EncoderManager] ⚠️ All candidates failed. Final fallback: libx264")
+            logging.debug(f"[EncoderManager] ❌ {encoder_name}: {err}")
+            if test_opts and self._try_open(encoder_name, {}) is None:
+                # the encoder itself works: the user's options are what it rejects
+                logging.warning(f"[EncoderManager] ⚠️ {encoder_name} rejects your --ffmpeg options {test_opts}: {err}. "
+                                f"Trying the next encoder (preset/tune names differ per encoder: nvenc p1-p7, x264 ultrafast..veryslow).")
+        logging.warning("[EncoderManager] ⚠️ no candidate opened; falling back to libx264")
         return "libx264"
 
+    @staticmethod
+    def _try_open(encoder_name, opts):
+        """Returns None when the encoder opens with these options, else the error text."""
+        ctx = None
+        try:
+            codec = av.Codec(encoder_name, "w")
+            ctx = av.CodecContext.create(codec)
+            ctx.width = 640
+            ctx.height = 360
+            ctx.pix_fmt = opts.get('pix_fmt') or _get_best_pix_fmt(encoder_name)
+            ctx.time_base = Fraction(1, 30)
+            ctx.framerate = Fraction(30, 1)
+            ctx.options.update({k: v for k, v in opts.items() if k != 'pix_fmt'})
+            ctx.open()
+            return None
+        except Exception as e:
+            return _short_err(e)
+        finally:
+            if ctx is not None:
+                try:
+                    if hasattr(ctx, 'close'): ctx.close()
+                except Exception: pass
+                del ctx
 
-def _build_conn_options(path, accel, user_open_opts, gpu_idx):
+
+def _build_conn_options(path, mux_opts):
     v = os.getenv("NOVA_TIMEOUT", "10000000")
-    logging.trace(f"[AVWriter] NOVA_TIMEOUT={v}")
     s = str(v)
-
     options = {}
     p = path.lower()
-    if any(p.startswith(proto) for proto in ['rtmp', 'srt', 'http', 'https', 'tcp', 'udp']):
-        options.update({
-            'rw_timeout': s,  # 10sec
-            'stimeout':   s,    # connection timetout
-        })
+    if p.startswith(('rtmp', 'srt', 'http', 'tcp', 'udp')):
+        options['rw_timeout'] = s
     if p.startswith('rtmp'):
         options['tcp_nodelay'] = '1'
         options['rtmp_live'] = 'live'
     elif p.startswith('srt'):
-        options.update({
-            'transtype': 'live',
-            'latency': '200000',  # 200ms
-            'mode': 'caller'
-        })
+        options.update({'transtype': 'live', 'latency': '200000', 'mode': 'caller'})
     elif p.startswith('http'):
-        options['method'] = 'POST' # or PUT
-    if p.endswith('.mp4') or p.endswith('.mkv'):
-        pass
-    #if accel == 'qsv':
-    #    options['qsv_device'] = str(gpu_idx)
-    options.update(user_open_opts)
-
+        options['method'] = 'POST'
+    options.update({k: v for k, v in mux_opts.items() if k != 'f'})
     return options
 
 def _determine_output_format(path, user_fmt=None):
     if user_fmt: return user_fmt
     p = path.lower()
-    if p.startswith(('rtmp://', 'rtmps://')):
-        return 'flv'
-    if p.startswith('srt://'):
-        return 'mpegts'
+    if p.startswith(('rtmp://', 'rtmps://')): return 'flv'
+    if p.startswith('srt://'): return 'mpegts'
     if p.startswith(('http://', 'https://')):
         if '.m3u8' in p: return 'hls'
         if '.ts' in p: return 'mpegts'
+    if p.startswith('udp://') or p.startswith('rtp://'): return 'mpegts'
     if p.endswith('.mp4'): return 'mp4'
+    if p.endswith('.mov'): return 'mov'
     if p.endswith('.mkv'): return 'matroska'
+    if p.endswith('.ts'): return 'mpegts'
+    if p.endswith('.flv'): return 'flv'
     return None
 
+
+class _Timeline:
+    """Maps source timestamps (pts * time_base, seconds) onto the output clock.
+
+    Within a continuous run the exact source timing is preserved (no drift, no jitter).
+    On a discontinuity (reconnect, pts reset, >5 s jump, missing pts) the stream is re-anchored
+    to the wall clock shared by all streams of this writer, so audio and video stay aligned and
+    outages show up as gaps instead of speeding up the recording."""
+    MAX_JUMP = 5.0
+
+    def __init__(self, origin):
+        self.origin = origin
+        self.src0 = None
+        self.out0 = 0.0
+        self.last_src = None
+        self.last_out = 0.0
+
+    def map(self, src_t):
+        now = time.monotonic() - self.origin
+        if src_t is None:
+            self.src0 = None
+            out = max(now, self.last_out)
+        else:
+            src_t = float(src_t)
+            if (self.src0 is None or src_t < self.last_src - 0.001
+                    or (src_t - self.last_src) > self.MAX_JUMP):
+                # re-anchor to the wall clock, but never behind what was already written
+                self.src0, self.out0 = src_t, max(now, self.last_out)
+            self.last_src = src_t
+            out = self.out0 + (src_t - self.src0)
+        self.last_out = out
+        return out
+
+def _src_time(frame):
+    try:
+        if frame.pts is not None and frame.time_base:
+            return frame.pts * frame.time_base
+    except Exception:
+        pass
+    return None
+
+def _parse_filtergraph(vf):
+    """'transpose=1,scale=640:-2' -> [('transpose','1'), ('scale','640:-2')] (commas inside [] or quotes kept)."""
+    items, buf, depth, quote = [], "", 0, None
+    for ch in vf:
+        if quote:
+            buf += ch
+            if ch == quote: quote = None
+            continue
+        if ch in "'\"": quote = ch; buf += ch; continue
+        if ch in "([": depth += 1
+        elif ch in ")]": depth -= 1
+        if ch == ',' and depth == 0:
+            items.append(buf); buf = ""
+        else:
+            buf += ch
+    if buf.strip(): items.append(buf)
+    out = []
+    for it in items:
+        it = it.strip()
+        if not it: continue
+        name, _, args = it.partition('=')
+        out.append((name.strip(), args.strip() or None))
+    return out
+
+def _parse_size(s):
+    m = re.match(r'^\s*(\d+)\s*[xX:]\s*(\d+)\s*$', str(s or ""))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 class AVWriter:
-    _cached_encoder = None
+    """Encodes decoded frames into a file or a live stream.
+
+    live=True (RTMP/SRT/HLS targets) additionally synthesises a silent AAC track when the
+    camera has no audio, because YouTube and most ingest servers reject video-only streams."""
+    V_TB = Fraction(1, 90000)
 
     def __init__(
             self, accel,
             path, width, height, fps,
             encoder=None,
             source_codec="h264",
-            open_opts={},
-            enc_v_opts={},
-            enc_a_opts={},
+            open_opts=None,
+            enc_v_opts=None,
+            enc_a_opts=None,
+            mux_opts=None,
             sample_rate=0, channels=0, audio_enable=True,
-            gpu_idx=0
+            gpu_idx=0,
+            v_tag=None, a_encoder=None,
+            live=False,
+            vf=None, metadata=None,
         ):
         self.path = path
-        self.width = width
-        self.height = height
-        self.fps = fps
+        self.src_width, self.src_height = width, height
+        self.width, self.height = width, height
+        self.fps = max(1, int(round(fps or 30)))
         self.encoder = encoder
         self.source_codec = source_codec
-        self.open_opts = open_opts
-        self.enc_v_opts = enc_v_opts
-        self.enc_a_opts = enc_a_opts
-        self.sample_rate = sample_rate or 0
-        self.channels = channels or 0
-        self.audio_enable = audio_enable and self.sample_rate > 0 and self.channels > 0
+        self.enc_v_opts = dict(enc_v_opts or {})
+        self.enc_a_opts = dict(enc_a_opts or {})
+        self.mux_opts = dict(mux_opts or {})
+        self.sample_rate = int(sample_rate or 0)
+        self.channels = int(channels or 0)
         self.gpu_idx = gpu_idx
-        self.encoder_initialized = False
+        self.live = live
         self.run_flag = True
         self.first_packet_sent = False
+        self.v_frames = 0
+        self.a_frames = 0
+        self.last_v_pts = -1
+        self.last_a_end = 0
+        self.a_time_base = None
+        self.silence = False
+        self.metadata = dict(metadata or {})
+        self.vf = (vf or "").strip() or None
+        self.graph = None               # libavfilter graph for -vf, built on the first frame
+        self._v_opts_checked = False
+        self._a_opts_checked = False
+        self._video_started = False
+        self._held_audio = []
 
-        user_f = self.enc_v_opts.get('f')
-        fmt = _determine_output_format(self.path, user_f)
+        out_size = _parse_size(self.enc_v_opts.pop('s', None))
+        if out_size: self.width, self.height = out_size
+        self.width -= self.width % 2
+        self.height -= self.height % 2
 
-        open_opts = _build_conn_options(self.path, accel, self.open_opts, self.gpu_idx)
-        self.container = av.open(self.path, mode="w", format=fmt, options=open_opts)
+        # -r N : output frame rate (frames are dropped, never duplicated)
+        self.out_fps = None
+        r = self.enc_v_opts.pop('r', None)
+        if r:
+            try:
+                self.out_fps = float(Fraction(r))
+                if self.out_fps > 0: self.fps = max(1, int(round(self.out_fps)))
+            except (ValueError, ZeroDivisionError):
+                logging.warning(f"[AVWriter] ignoring invalid -r {r}")
+                self.out_fps = None
+        self._next_frame_t = 0.0
 
-        manager = EncoderManager()
-        self.v_encoder = manager.get_encoder(accel, encoder, source_codec, enc_v_opts)
+        fmt = _determine_output_format(self.path, self.mux_opts.get('f'))
+        self.fmt = fmt
+        allowed = FORMAT_FAMILIES.get(fmt)
 
+        # crash-safe MP4: fragments are complete on disk even if the process dies mid-segment
+        if fmt in ("mp4", "mov") and 'movflags' not in self.mux_opts:
+            self.mux_opts['movflags'] = '+frag_keyframe+empty_moov'
+
+        container_opts = _build_conn_options(self.path, self.mux_opts)
+        logging.debug(f"[AVWriter] av.open({self.path}, format={fmt}, options={container_opts})")
+        self.container = av.open(self.path, mode="w", format=fmt, options=container_opts)
+
+        try:
+            self.v_encoder = EncoderManager().get_encoder(accel, encoder, source_codec, self.enc_v_opts, allowed)
+            self._setup_video(v_tag)
+            self._setup_audio(audio_enable, a_encoder)
+            if self.metadata:
+                self.container.metadata.update(self.metadata)
+        except Exception:
+            try: self.container.close()
+            except Exception: pass
+            raise
+
+        self.origin = time.monotonic()
+        self.v_tl = _Timeline(self.origin)
+        self.a_tl = _Timeline(self.origin)
+        logging.info(f"[AVWriter] {self.v_encoder} {self.width}x{self.height}@{self.fps} -> {fmt} "
+                     f"audio={'silence' if self.silence else (self.a_stream.codec_context.codec.name if self.a_stream else 'none')}")
+
+    # ------------------------------------------------------------------ setup
+    def _setup_video(self, v_tag):
         self.v_stream = self.container.add_stream(self.v_encoder, rate=self.fps)
         self.v_stream.width = self.width
         self.v_stream.height = self.height
-
-        c_name = self.v_encoder.lower()
-        self.v_stream.pix_fmt = _get_best_pix_fmt(c_name)
-        logging.debug(f"[AVWriter] 🚀 Encoder: {self.v_encoder} | Selected pix_fmt: {self.v_stream.pix_fmt}")
-
+        self.v_stream.pix_fmt = _get_best_pix_fmt(self.v_encoder)
         v_ctx = self.v_stream.codec_context
-        gpu_id_str = str(self.gpu_idx)
+        c_name = self.v_encoder.lower()
 
+        user_pf = self.enc_v_opts.pop('pix_fmt', None)
+        if user_pf:
+            supported = [f.name for f in (getattr(v_ctx.codec, 'video_formats', None) or [])]
+            if supported and user_pf not in supported:
+                logging.warning(f"[AVWriter] {c_name} does not support -pix_fmt {user_pf} (supported: {', '.join(supported)}); keeping {self.v_stream.pix_fmt}")
+            else:
+                self.v_stream.pix_fmt = user_pf
+
+        # fine-grained timestamps: real frame timing is kept even when the camera's declared
+        # frame rate is wrong; `framerate` still tells the encoder the nominal rate.
+        try:
+            v_ctx.time_base = self.V_TB
+            v_ctx.framerate = Fraction(self.fps, 1)
+        except Exception as e:
+            logging.debug(f"[AVWriter] time_base/framerate not settable: {e}")
+            self.V_TB = Fraction(1, self.fps)
+        self.v_time_base = self.V_TB
+
+        if not any(k in self.enc_v_opts for k in ('g', 'gop_size')):
+            try: v_ctx.gop_size = self.fps * 2       # keyframe every 2 s (YouTube: <= 4 s)
+            except Exception: pass
 
         final_v_opts = {}
-        if "nvenc" in c_name:
-            final_v_opts['gpu'] = gpu_id_str
-        elif "qsv" in c_name:
-            final_v_opts['qsv_device'] = gpu_id_str
-        elif "vaapi" in c_name:
-            final_v_opts['vaapi_device'] = f"/dev/dri/renderD{128 + self.gpu_idx}"
-        elif "amf" in c_name or "_mf" in c_name:
-            final_v_opts['hwaccel_device'] = gpu_id_str
-
+        gpu = str(self.gpu_idx)
+        if "nvenc" in c_name: final_v_opts['gpu'] = gpu
+        elif "qsv" in c_name: final_v_opts['qsv_device'] = gpu
+        elif "vaapi" in c_name: final_v_opts['vaapi_device'] = f"/dev/dri/renderD{128 + self.gpu_idx}"
+        elif "amf" in c_name or "_mf" in c_name: final_v_opts['hwaccel_device'] = gpu
         for k, v in self.enc_v_opts.items():
-            if k in final_v_opts and final_v_opts[k] != v:
-                logging.info(f"[AVWriter] 🔄 Overriding default {k}: {final_v_opts[k]} -> {v}")
+            if k in ('gop_size',):
+                try: v_ctx.gop_size = int(v)
+                except Exception: pass
+                continue
             final_v_opts[k] = v
-
+        if c_name == "libx265" and 'x265-params' not in final_v_opts:
+            final_v_opts['x265-params'] = 'log-level=warning'     # x265 is very chatty at INFO
         v_ctx.options.update(final_v_opts)
-        logging.debug(f"[AVWriter] Applied Video Encoder Config ({c_name}): {v_ctx.options}")
 
+        tag = v_tag
+        if not tag and _family(c_name) == "hevc" and self.fmt in ("mp4", "mov", "hls"):
+            tag = "hvc1"                                  # Apple/YouTube-compatible HEVC tag
+        if tag:
+            try: v_ctx.codec_tag = tag
+            except Exception as e: logging.debug(f"[AVWriter] codec_tag {tag} rejected: {e}")
+        logging.debug(f"[AVWriter] video {c_name} pix_fmt={self.v_stream.pix_fmt} gop={getattr(v_ctx, 'gop_size', '?')} opts={v_ctx.options}")
 
-        if self.audio_enable:
-            self.a_stream = self.container.add_stream("aac", rate=self.sample_rate)
-            a_ctx = self.a_stream.codec_context
-            a_ctx.sample_rate = self.sample_rate
-            if self.channels == 1: a_ctx.layout = "mono"
-            elif self.channels == 2: a_ctx.layout = "stereo"
-            else: a_ctx.layout = f"{self.channels}c"
-            self.a_time_base = Fraction(1, self.sample_rate)
-            a_ctx.options.update(self.enc_a_opts)
-            logging.debug(f"[AVWriter] Applied Audio Encoder Config ({a_ctx.codec.name}): {a_ctx.options}")
-            logging.debug(f"[AVWriter] Audio Initialized: {a_ctx.layout} @ {self.sample_rate}Hz")
+    def _setup_audio(self, audio_enable, a_encoder):
+        self.a_stream = None
+        have_src_audio = audio_enable and self.sample_rate > 0 and self.channels > 0
+        if not audio_enable:
+            return
+        if not have_src_audio:
+            if not self.live:
+                return
+            # live target without camera audio -> silent AAC so the ingest server accepts the stream
+            self.silence = True
+            self.sample_rate, self.channels = 48000, 1
+        codec = a_encoder or "aac"
+        # -ar / -ac: PyAV resamples the camera audio to the encoder's rate/layout
+        try: self.sample_rate = int(self.enc_a_opts.get('ar') or self.sample_rate)
+        except ValueError: logging.warning(f"[AVWriter] ignoring invalid -ar {self.enc_a_opts.get('ar')}")
+        try: self.channels = int(self.enc_a_opts.get('ac') or self.channels)
+        except ValueError: logging.warning(f"[AVWriter] ignoring invalid -ac {self.enc_a_opts.get('ac')}")
+        self.a_stream = self.container.add_stream(codec, rate=self.sample_rate)
+        a_ctx = self.a_stream.codec_context
+        a_ctx.sample_rate = self.sample_rate
+        layout = {1: "mono", 2: "stereo"}.get(self.channels, f"{self.channels}c")
+        try: a_ctx.layout = layout
+        except Exception as e: logging.debug(f"[AVWriter] layout {layout} rejected: {e}")
+        a_ctx.options.update({k: v for k, v in self.enc_a_opts.items() if k not in ('ar', 'ac')})
+        self.a_time_base = Fraction(1, self.sample_rate)
+        logging.debug(f"[AVWriter] audio {codec} {self.sample_rate}Hz {layout} opts={a_ctx.options}")
 
-        else:
-            self.a_stream = None
+    # ------------------------------------------------------------------ writing
+    @property
+    def frames_written(self): return self.v_frames
 
-        self.v_pts = 0
-        self.a_pts = 0
-        self.v_time_base = Fraction(1, max(self.fps, 1))
+    def _mux(self, packets):
+        """Hand packets to the muxer.  Audio is held back until the first video packet exists:
+        encoders with look-ahead (libx264: ~40 frames) emit their first packet late, and if audio
+        reaches the muxer first its timestamp offset is fixed too early, which turns the video's
+        B-frame DTS negative ('Packets poorly interleaved, failed to avoid negative timestamp').
+        Starting with video also keeps RTMP ingest servers happy."""
+        for packet in packets:
+            if not self._video_started:
+                if self.v_stream is not None and packet.stream is self.v_stream:
+                    self._video_started = True
+                    self._write(packet)
+                    for a in self._held_audio:
+                        self._write(a)
+                    self._held_audio.clear()
+                    continue
+                if len(self._held_audio) < 4096:
+                    self._held_audio.append(packet)
+                    continue
+            self._write(packet)
 
+    def _write(self, packet):
+        self.container.mux(packet)
+        if not self.first_packet_sent:
+            self.first_packet_sent = True
+            logging.debug("[AVWriter] first packet muxed")
 
     def write_video(self, frame):
-        if frame is None: return
-        if not self.encoder_initialized:
-            codec = self.v_stream.codec_context.codec
-            supported_formats = [
-                f.name for f in (
-                    getattr(codec, 'video_formats', []) or
-                    getattr(codec, 'pix_fmts', [])
-                )
-            ]
-            if supported_formats:
-                fmt_names = ", ".join(supported_formats)
-                logging.debug(f"[AVWriter] 🟢 {codec.name} supported formats: [{fmt_names}]")
-            else:
-                logging.debug(f"[AVWriter] ⚠️ {codec.name} - No format info available")
+        if frame is None or not self.run_flag: return
+        out_t = self.v_tl.map(_src_time(frame))
 
-            incoming_pf = frame.format.name
-            if incoming_pf in supported_formats:
-                self.v_stream.pix_fmt = incoming_pf
-                logging.debug(f"[AVWriter] 🔄 Format Matched: {incoming_pf} is supported.")
-            else:
-                target_pf = _get_best_pix_fmt(self.v_encoder)
-                old_pf = self.v_stream.pix_fmt
-                self.v_stream.pix_fmt = target_pf
-                logging.debug(f"[AVWriter] ⚠️ Format Override: Source {incoming_pf} -> Target {target_pf}.")
-            self.encoder_initialized = True
+        if self.out_fps:                      # -r: keep at most out_fps frames per second
+            if out_t + 1e-6 < self._next_frame_t:
+                return
+            step = 1.0 / self.out_fps
+            self._next_frame_t = max(self._next_frame_t + step, out_t - step)
 
-        if frame.format.name != self.v_stream.pix_fmt:
-            target_format = self.v_stream.pix_fmt
-            frame = frame.reformat(format=target_format)
+        for f in self._filter(frame):
+            self._encode_video(f, out_t)
 
-        frame.pts = self.v_pts
+        if self.silence:
+            self._fill_silence(out_t)
+
+    def _encode_video(self, frame, out_t):
+        target_pf = self.v_stream.pix_fmt
+        if frame.format.name != target_pf or frame.width != self.width or frame.height != self.height:
+            frame = frame.reformat(width=self.width, height=self.height, format=target_pf)
+
+        pts = int(round(out_t / self.v_time_base))
+        if pts <= self.last_v_pts:
+            pts = self.last_v_pts + 1
+        self.last_v_pts = pts
+        frame.pts = pts
         frame.time_base = self.v_time_base
-        self.v_pts += 1
+        # decoded frames carry the *source* picture type (I/P/B); libx264/nvenc would treat it as
+        # a forced frame type and break their own GOP/DTS logic
+        try: frame.pict_type = 0
+        except Exception: pass
+        self._mux(self.v_stream.encode(frame))
+        self.v_frames += 1
+        if not self._v_opts_checked:
+            self._v_opts_checked = True
+            self._report_unused(self.v_stream.codec_context, "video encoder", self.enc_v_opts)
 
-        for packet in self.v_stream.encode(frame):
-            self.container.mux(packet)
-            if not self.first_packet_sent:
-                self.first_packet_sent = True
-                logging.debug("[AVWriter] Real connection established (First packet muxed).")
+    # ---- -vf support (libavfilter) -----------------------------------------------------------
+    def _filter(self, frame):
+        if not self.vf:
+            return (frame,)
+        first = self.graph is None
+        if first:
+            self.graph = self._build_graph(frame)
+        try:
+            self.graph.push(frame)
+        except Exception as e:
+            raise RuntimeError(f"-vf graph rejected a frame: {_short_err(e)}")
+        out = []
+        while True:
+            try:
+                out.append(self.graph.pull())
+            except (BlockingIOError, EOFError):
+                break
+            except Exception as e:
+                msg = str(e).lower()
+                if "resource temporarily unavailable" in msg or "end of file" in msg:
+                    break
+                raise
+        if first and out:
+            # the graph decides the output size (transpose, scale, crop ...); the encoder is not
+            # open yet, so its stream parameters can still follow the first filtered frame
+            o = out[0]
+            w, h = o.width - o.width % 2, o.height - o.height % 2
+            if (w, h) != (self.width, self.height):
+                self.width, self.height = w, h
+                self.v_stream.width, self.v_stream.height = w, h
+            logging.info(f"[AVWriter] -vf '{self.vf}' -> {w}x{h} {o.format.name}")
+        return out
+
+    def _build_graph(self, frame):
+        import av.filter
+        if frame.time_base is None:
+            frame.time_base = self.v_time_base
+        g = av.filter.Graph()
+        last = g.add_buffer(template=frame)
+        for name, args in _parse_filtergraph(self.vf):
+            try:
+                f = g.add(name, args) if args else g.add(name)
+            except Exception as e:
+                raise RuntimeError(f"-vf: filter '{name}' is not available in this FFmpeg build ({_short_err(e)})")
+            last.link_to(f)
+            last = f
+        sink = g.add("buffersink")
+        last.link_to(sink)
+        g.configure()
+        return g
+
+    def _report_unused(self, ctx, what, user_opts):
+        """After open(), PyAV leaves the options the encoder did not recognise in ctx.options.
+        Only the user's own --ffmpeg keys are reported (PyAV also parks container options there)."""
+        try:
+            unused = {k: v for k, v in dict(ctx.options).items() if k in user_opts}
+        except Exception:
+            return
+        if unused:
+            logging.warning(f"[AVWriter] ⚠️ {what} {ctx.codec.name} ignored unknown --ffmpeg options: {unused}")
 
     def write_audio(self, frame):
-        if not self.a_stream: return
-        frame.pts = self.a_pts
+        if not self.a_stream or self.silence or frame is None or not self.run_flag: return
+        out_t = self.a_tl.map(_src_time(frame))
+        pts = int(round(out_t * self.sample_rate))
+        if pts < self.last_a_end:
+            pts = self.last_a_end
+        src_rate = frame.sample_rate or self.sample_rate
+        self.last_a_end = pts + int(round(frame.samples * self.sample_rate / src_rate))
+        frame.pts = pts
         frame.time_base = self.a_time_base
-        self.a_pts += frame.samples
-        for packet in self.a_stream.encode(frame):
-            packet.stream = self.a_stream
-            if packet.pts is None:
-                packet.pts = frame.pts
-                packet.dts = frame.pts
-            self.container.mux(packet)
+        self._mux(self.a_stream.encode(frame))
+        self.a_frames += 1
+        if not self._a_opts_checked:
+            self._a_opts_checked = True
+            self._report_unused(self.a_stream.codec_context, "audio encoder", self.enc_a_opts)
+
+    def _fill_silence(self, out_t):
+        target = int(out_t * self.sample_rate)
+        n = 1024
+        while self.last_a_end < target:
+            f = av.AudioFrame(format="s16", layout="mono", samples=n)
+            f.sample_rate = self.sample_rate
+            for p in f.planes:
+                p.update(bytes(p.buffer_size))
+            f.pts = self.last_a_end
+            f.time_base = self.a_time_base
+            self.last_a_end += n
+            self._mux(self.a_stream.encode(f))
+            self.a_frames += 1
 
     def close(self):
         if not self.run_flag: return
         self.run_flag = False
         try:
-            if self.first_packet_sent:
-                if self.v_stream:
-                    for packet in self.v_stream.encode():
-                        self.container.mux(packet)
-                if self.a_stream:
-                    for packet in self.a_stream.encode():
-                        self.container.mux(packet)
-        except Exception: pass
+            if self.v_frames and self.v_stream:
+                self._mux(self.v_stream.encode())
+            if self.a_frames and self.a_stream:
+                self._mux(self.a_stream.encode())
+            if self._held_audio:                      # no video packet ever came out
+                for a in self._held_audio: self._write(a)
+                self._held_audio.clear()
+        except Exception as e:
+            logging.debug(f"[AVWriter] flush: {e}")
         finally:
-            self.container.close()
-        logging.debug(f"[AVWriter] closed")
+            try: self.container.close()
+            except Exception as e: logging.debug(f"[AVWriter] container close: {e}")
+        logging.debug(f"[AVWriter] closed ({self.v_frames} video / {self.a_frames} audio frames)")

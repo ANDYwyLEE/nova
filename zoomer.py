@@ -55,10 +55,12 @@ class Zoomer(QRectF):
 
     def _calc_scale(self):
         ww, wh = self.w_widget, self.h_widget
-        if ww <= 0 or wh <= 0: return 1.0
+        if ww <= 0 or wh <= 0:
+            self._scale_cache = 1.0; return
         vw, vh = self.w_video, self.h_video
         if self.is_zoom(): vw, vh = self.width(), self.height()
-        if vw <= 0 or vh <= 0: return 1.0
+        if vw <= 0 or vh <= 0:
+            self._scale_cache = 1.0; return
         fr = vw / vh; wr = ww / wh
         if fr < wr: h = float(wh); w = h * fr
         else: w = float(ww); h = w / fr

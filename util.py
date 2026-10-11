@@ -5,6 +5,7 @@ import inspect
 import platform
 import logging
 from pprint import pprint
+from urllib.parse import urlparse
 
 
 _system = platform.system().lower()
@@ -65,7 +66,7 @@ def get_os_type():
     return "Unknown"
 
 
-# --record-interval, Recording segment length (e.g. 10m, 1h, 3600s; default: 30m) 
+# --record-interval, Recording segment length (e.g. 10m, 1h, 3600s; default: 30m)
 def parse_time(value):
     if isinstance(value, int): return value
     if not isinstance(value, str):
@@ -90,6 +91,27 @@ def parse_url(s):
         elif c == '.': buf += '.'
         else: buf += '_'
     return buf
+
+
+_RE_USERINFO = re.compile(r'://([^/@:\s]+):([^/@\s]*)@')
+_RE_QUERY_PWD = re.compile(r'(?i)\b(password|passwd|pwd|pass)=([^&/?#\s]*)')
+
+def mask_url(url) -> str:
+    """Hide passwords for logs/overlays.
+    Handles 'scheme://user:pwd@host' and xmeye-style 'user=a&password=b' paths."""
+    if not url: return url or ""
+    s = _RE_USERINFO.sub(r'://\1:***@', str(url))
+    s = _RE_QUERY_PWD.sub(r'\1=***', s)
+    return s
+
+def display_url(url) -> str:
+    """Short, credential-free form for the on-screen status overlay."""
+    if not url: return ""
+    s = str(url)
+    if s.isdigit(): return f"camera {s}"
+    tail = s.split("@")[-1] if "://" in s else s
+    return mask_url(tail)
+
 
 class Util():
     @staticmethod
@@ -116,3 +138,4 @@ class Util():
 
 if __name__ == "__main__":
     print(f'system: {_system}, WSL:{WSL}')
+    print(mask_url("rtsp://admin:secret@192.168.1.2:554/user=admin&password=secret&channel=1"))

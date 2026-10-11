@@ -1,7 +1,6 @@
 # audioworker.py
 
 import queue
-import platform
 import os
 import sys
 import contextlib
@@ -62,19 +61,21 @@ def _list_audio_devices(pa: pyaudio.PyAudio):
 def find_preferred_device(pa: pyaudio.PyAudio) -> int | None:
     """Prefer PipeWire / Pulse / default-like devices on Linux."""
     logging.trace(f"[AudioWorker] find_preferred_device")
-    dev_id, dev_name = 0, None
+    dev_idx, dev_name = None, None
     for i in range(pa.get_device_count()):
         info = pa.get_device_info_by_index(i)
+        if int(info.get("maxOutputChannels", 0) or 0) <= 0:
+            continue
         name = info.get("name", "").lower()
 
         # Very rough preference rules
         if any(key in name for key in ("pipewire", "pulse")):
             logging.debug(f"[AudioWorker] audio device selected: {i}, {name}")
             return i
-        if "default" in name:
-            dev_id, dev_name = i, name
+        if "default" in name and dev_idx is None:
+            dev_idx, dev_name = i, name
     logging.debug(f"[AudioWorker] audio device selected: {dev_idx}, {dev_name}")
-    return dev_id
+    return dev_idx   # None -> PortAudio default output device
 
 
 def resample(data: bytes, src_sr: int, dst_sr: int, ch: int) -> bytes:
@@ -113,20 +114,19 @@ class AudioWorker(QThread):
         self.q = q
         self.run_flag = True
 
-        self.pa = None
+        self.pa = None      # created in run(): PortAudio init can take a while and must not block the GUI
         self.stream = None
 
         self.sr = None
         self.ch = None
         self.do_resample = False
 
-        # init PyAudio with ALSA noise muted on Linux
+    def _init_pa(self):
         if logging.getLogger().getEffectiveLevel() <= TRACE_LEVEL:
             self.pa = pyaudio.PyAudio()
             _list_audio_devices(self.pa)
         else:
             with quiet_alsa(): self.pa = pyaudio.PyAudio()
-
 
     def _close_stream(self):
         if self.stream is not None:
@@ -191,7 +191,6 @@ class AudioWorker(QThread):
                 # second fallback: drop device index and try default
                 if dev_idx is not None:
                     dev_idx = None
-                    tried_fallback = True
                     continue
 
                 # give up
@@ -201,7 +200,14 @@ class AudioWorker(QThread):
     def run(self):
         self.stat_sig.emit("Audio started")
         logging.verbose("[AudioWorker] started")
+        try:
+            self._init_pa()
+        except Exception as e:
+            logging.error(f"[AudioWorker] PortAudio init failed: {e}")
+            self.stat_sig.emit(f"Audio init error: {e}")
+            return
 
+        fail_logged = False
         while self.run_flag:
             try:
                 data, sr, ch = self.q.get(timeout=0.1)
@@ -211,7 +217,6 @@ class AudioWorker(QThread):
             if ch <= 0 or sr <= 0 or not data:
                 continue
 
-
             # (re)open stream if params changed
             if (
                 self.stream is None
@@ -220,10 +225,13 @@ class AudioWorker(QThread):
             ):
                 try:
                     self._open_stream(sr, ch)
+                    fail_logged = False
                 except Exception as e:
                     # drop this buffer and keep trying next ones
-                    self.stat_sig.emit(f"Audio stream open error: {e}")
-                    logging.error(f"[AudioWorker] stream open error: {e}")
+                    if not fail_logged:
+                        self.stat_sig.emit(f"Audio stream open error: {e}")
+                        logging.error(f"[AudioWorker] stream open error: {e}")
+                        fail_logged = True
                     continue
 
             out = data

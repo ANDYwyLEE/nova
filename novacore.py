@@ -1,16 +1,19 @@
 # novacore.py
 import re
+import os
 import time
 import hashlib
-import numpy as np
+import logging
+import threading
 from urllib.parse import urlparse
 from PySide6.QtCore import QObject, Slot, Signal, QTimer
-from PySide6.QtGui import QImage
-import os, time, logging
+
+import logsync  # installs logging.verbose / logging.trace
 from videoworker import VideoWorker
 from recorder import AVRecorder
 from audioplayer import AudioPlayer
 from streamer import AVStreamer
+from util import mask_url
 
 
 class NovaCore(QObject):
@@ -39,7 +42,7 @@ class NovaCore(QObject):
         ):
         super().__init__()
 
-        self.url = url
+        self.url = url          # as typed (onvif:// etc. are resolved by the VideoWorker)
         self.headless = headless
         self.url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
@@ -48,13 +51,14 @@ class NovaCore(QObject):
         else:
             parsed = urlparse(url)
             if url.isdigit():
-                self.camera_name = url
+                self.camera_name = f"camera{url}"
             elif parsed.hostname:
                 host = parsed.hostname
                 port = parsed.port
                 self.camera_name = f"{host}_{port}" if port else host
             else:
                 self.camera_name = "camera"
+        self.camera_name = re.sub(r'[^\w.\-]+', '_', self.camera_name)
 
         self.snapshot_dir = snapshot_dir or "./snapshots"
         os.makedirs(self.snapshot_dir, exist_ok=True)
@@ -62,7 +66,7 @@ class NovaCore(QObject):
         self.vid_worker = VideoWorker(url, fps, opengl, accel, headless, ffmpeg)
         self.audio_q, self.rec_q, self.stream_q, self.frame_q = self.vid_worker.get_queues()
 
-        self.audio = AudioPlayer(self.audio_q)
+        self.audio = AudioPlayer(self.audio_q, self.vid_worker)
         self.recorder = AVRecorder(self.camera_name, self.rec_q, self.vid_worker, accel, encoder)
         if recording_dir:
             self.recorder.set_dir(recording_dir)
@@ -170,38 +174,21 @@ class NovaCore(QObject):
         if self.streamer.is_on(): self.streamer.off()
         else: self.streamer.on()
 
-    def snapshot(self, data):
-        if data is None: return
-        final_qimg = None
-
-        if isinstance(data, tuple) and data[0] == "nv12":
-            try:
-                _, (y_plane, uv_plane, w, h) = data
-                u = uv_plane[:, :, 0]
-                v = uv_plane[:, :, 1]
-                u_full = np.repeat(np.repeat(u, 2, axis=0), 2, axis=1)
-                v_full = np.repeat(np.repeat(v, 2, axis=0), 2, axis=1)
-                y = y_plane.astype(float) - 16
-                u = u_full.astype(float) - 128
-                v = v_full.astype(float) - 128
-                r = (1.164 * y + 1.596 * v).clip(0, 255).astype(np.uint8)
-                g = (1.164 * y - 0.392 * u - 0.813 * v).clip(0, 255).astype(np.uint8)
-                b = (1.164 * y + 2.017 * u).clip(0, 255).astype(np.uint8)
-                rgba = np.dstack((r, g, b, np.full((h, w), 255, dtype=np.uint8)))
-                final_qimg = QImage(rgba.data, w, h, QImage.Format_RGBA8888).copy()
-                logging.debug(f"[NovaCore] NV12 converted to QImage (Manual Numpy) - Size: {w}x{h}")
-            except Exception as e:
-                logging.error(f"[NovaCore] NV12 conversion failed: {e}")
-                return
-
-        elif isinstance(data, tuple) and data[0] == "rgba":
-            _, qimg = data
-            if qimg.isNull(): return
-            final_qimg = qimg
-
-        if final_qimg:
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            name = f"{self.camera_name}_{ts}.png"
-            path = os.path.join(self.snapshot_dir, name)
-            final_qimg.save(path)
-            logging.info(f"[NovaCore] snapshot saved: {path}")
+    def snapshot(self, df):
+        """df: DisplayFrame (or None). Colour conversion uses swscale; PNG encoding runs off the GUI thread."""
+        if df is None: return
+        try:
+            qimg = df.to_qimage()
+        except Exception as e:
+            logging.error(f"[NovaCore] snapshot conversion failed: {e}")
+            return
+        if qimg is None or qimg.isNull(): return
+        qimg = qimg.copy()   # detach from the frame buffer before leaving the GUI thread
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(self.snapshot_dir, f"{self.camera_name}_{ts}.png")
+        def _save():
+            if qimg.save(path):
+                logging.info(f"[NovaCore] snapshot saved: {path}")
+            else:
+                logging.error(f"[NovaCore] snapshot save failed: {path}")
+        threading.Thread(target=_save, name="snapshot", daemon=True).start()
