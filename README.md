@@ -5,7 +5,7 @@
 ![Nova window with the control strip](docs/images/nova-window.png)
 *Demo clip rendered through the OpenGL path; the strip shows live-stream, record (on), audio and help.*
 
-Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Windows, macOS.
+Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Windows, macOS · 0BSD licence.
 
 ---
 
@@ -311,4 +311,6 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-Not yet specified. © 2026 ANDYwyLEE.
+Nova is released under the [BSD Zero Clause License](LICENSE) (0BSD): use, copy, modify and redistribute it for any purpose, with or without attribution. © 2026 ANDYwyLEE.
+
+The licence covers Nova's own source. Its dependencies keep their own terms: PySide6/Qt (LGPL), PyAV, PyOpenGL, NumPy (BSD), PyAudio (MIT). The FFmpeg bundled in the PyPI `av` wheel is built with GPL components (libx264, libx265), so if you ever redistribute Nova *together with* that wheel as a packaged binary, the GPL applies to that bundle.
