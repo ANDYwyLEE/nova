@@ -10,7 +10,7 @@
 
 ## Reading the log
 
-Run one camera in the foreground with `-l DEBUG` (`./s.sh ID -l DEBUG`) and read the lines in this order: `[VideoWorker] av.open(…)` (connection), `HW decoder:` / `software decoder` (decoder choice), `First frame (…)` (pixel format and size), then `[AVWriter]` lines when recording or streaming starts. Passwords are masked in all log output, so logs can be shared.
+Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and read the lines in this order: `[VideoWorker] av.open(…)` (connection), `HW decoder:` / `software decoder` (decoder choice), `First frame (…)` (pixel format and size), then `[AVWriter]` lines when recording or streaming starts. Passwords are masked in all log output, so logs can be shared.
 
 ## Connection and decoding
 
@@ -66,7 +66,7 @@ Run one camera in the foreground with `-l DEBUG` (`./s.sh ID -l DEBUG`) and read
 - **Big cameras, small windows**: `--ffmpeg "-resize 960x540"` (cuvid) scales inside the decoder, so display, recording and streaming all work on the smaller frame.
 - **Software decoding**: `--ffmpeg "-threads 2"` per camera avoids 15 processes each spawning 32 threads; `-skip_loop_filter all` trades a little quality for ~20 % CPU; `-skip_frame nokey` shows one frame per GOP almost for free.
 - **Recording cost**: NVENC is nearly free; libx264 `-preset veryfast` or `ultrafast` when there is no hardware encoder.
-- **Start-up storms**: `cams.py start` staggers starts (`stagger = 0.5`) and encoders are probed under a cross-process lock, so 15 cameras can start at once without fighting over the GPU.
+- **Start-up storms**: `nova start` staggers starts (`stagger = 0.5`) and encoders are probed under a cross-process lock, so 15 cameras can start at once without fighting over the GPU.
 
 ## Known limitations
 

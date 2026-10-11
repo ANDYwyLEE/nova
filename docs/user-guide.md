@@ -1,7 +1,7 @@
 # User guide
 
 - [The camera list: cameras.ini](#the-camera-list-camerasini)
-- [The launcher: cams.py](#the-launcher-camspy)
+- [The launcher: nova](#the-launcher-nova)
 - [Command-line options](#command-line-options)
 - [The window](#the-window)
 - [Keyboard](#keyboard)
@@ -21,7 +21,7 @@
 [defaults]
 ; options given to every camera - the template lists presets per OS / GPU / log level
 opts = --opengl --accel cuda -f 30 -b -l CRITICAL
-; camera = frontdoor          `cams.py run` without an id starts this camera
+; camera = frontdoor          `nova run` without an id starts this camera
 ; stagger = 0.5               seconds between starts
 
 [env]
@@ -51,19 +51,26 @@ enabled = no
 
 Comments are whole lines starting with `;` or `#`. A `;` after a value is part of the value.
 
-## The launcher: cams.py
+## The launcher: nova
+
+`./nova` on Linux and macOS, `nova` on Windows (`nova.bat`). Both use the project `venv` automatically, so nothing needs activating; `cams.py` is the implementation.
 
 ```
-python cams.py list                      cameras, enabled state, options (passwords masked)
-python cams.py start [ID ...] [opts]     every enabled camera (or the given ones) in the background
-python cams.py stop  [ID ...]            Ctrl-C the cameras started by `start`
-python cams.py status                    which launched cameras are still running
-python cams.py run   [ID] [opts]         one camera in the foreground
+nova start  [ID ...] [options]       a window per camera: every enabled camera, or the given ids
+nova record [ID ...] [options]       the same without windows, recording from the first frame
+nova run    [ID]     [options]       one camera in this terminal: log on screen, Ctrl-C quits
+nova stop   [ID ...] [--timeout S]   stop cameras started by start/record (saves state like Ctrl-C)
+nova status                          which launched cameras are still running, and in which mode
+nova list                            cameras, enabled state and options (passwords masked)
+nova -h                              help; `python nova.py --help` lists the camera options
 ```
 
-- Words that do not start with `-` are camera ids; everything from the first option on is passed to `nova.py` (`cams.py run frontdoor -r -t rtmp://…`).
-- `start` writes each camera's output to `logs/ID.log` and remembers the process ids in `.nova-pids.json`; `stop` only touches those processes and waits for them to exit cleanly (window geometry, zoom and open recordings are saved).
-- `s.sh` / `s.bat` (= `run`), `startall.sh` / `.bat` (= `start`) and `stopall.sh` / `.bat` (= `stop`) are wrappers that activate the venv first.
+- Words that do not start with `-` are camera ids; everything from the first option on is passed to `nova.py`: `nova start frontdoor -r` shows the window and records, `nova record yard -t rtmp://…` records without a window and streams.
+- Options a camera should always get belong in its `cameras.ini` section (`opts = -r`), so a plain `nova start` does the right thing per camera.
+- `start` and `record` detach from the terminal, write each camera's output to `logs/ID.log` and remember the process ids in `.nova-pids.json`. A camera that exits within the first seconds is reported with the end of its log instead of being called "running".
+- A camera without a window that neither records nor streams can neither be seen nor controlled, so `start --headless` without `-r` or `-t` is refused; `record` is the shorthand for `--headless -r`.
+- `stop` only touches processes it started and waits for them to exit cleanly (window geometry, zoom and open recordings are saved).
+- `run` keeps one camera in the foreground: the log appears in the terminal (`nova run ID -l DEBUG` for diagnosis) and Ctrl-C quits. Without an id it runs `[defaults] camera`, or the first enabled camera.
 
 ## Command-line options
 
@@ -172,7 +179,7 @@ Recording and streaming always use the full frame, never the zoomed view.
 
 ## Where settings are stored
 
-Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom region. They are written when the window closes, on Ctrl-C and on `cams.py stop`.
+Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom region. They are written when the window closes, on Ctrl-C and on `nova stop`.
 
 | OS | Location |
 |---|---|
@@ -193,4 +200,4 @@ Resolved `onvif://` / `xmeye://` / `hik://` / `dahua://` URLs are cached for one
 
 ## Logs
 
-`-l` sets the level: `CRITICAL ERROR WARNING INFO VERBOSE DEBUG TRACE` (or a number). `INFO` shows connections, decoder/encoder choices and saved files; `DEBUG` adds the FFmpeg negotiation; `TRACE` adds ONVIF SOAP bodies and audio device lists. Passwords are masked everywhere. `cams.py start` writes each camera to `logs/ID.log`.
+`-l` sets the level: `CRITICAL ERROR WARNING INFO VERBOSE DEBUG TRACE` (or a number). `INFO` shows connections, decoder/encoder choices and saved files; `DEBUG` adds the FFmpeg negotiation; `TRACE` adds ONVIF SOAP bodies and audio device lists. Passwords are masked everywhere. `nova start` and `nova record` write each camera to `logs/ID.log`.

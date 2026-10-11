@@ -44,6 +44,7 @@ pip install -U pip && pip install -r requirements.txt
 
 python nova.py --help
 cp cameras.example.ini cameras.ini          # then edit it: see the user guide
+./nova start                                # a window per enabled camera; ./nova -h lists the commands
 ```
 
 - `portaudio19-dev` is needed to build PyAudio; the Qt libraries cover the xcb platform plugin.
@@ -65,11 +66,12 @@ pip install -U pip
 pip install -r requirements.txt
 python nova.py --help
 copy cameras.example.ini cameras.ini
+nova start
 ```
 
 - PyAudio wheels exist on PyPI for current Python versions, so no compiler is needed.
 - Accel: `cuda` (NVIDIA), `qsv` (Intel), `d3d11va` or `dxva2` (any GPU through the standard decoder), `amf` for AMD encoding.
-- `s.bat`, `startall.bat` and `stopall.bat` activate `venv\Scripts` automatically.
+- `nova.bat` uses `venv\Scripts\python.exe` automatically, so `nova start` works from a plain command prompt without activating the venv.
 
 ### Option B: MSYS2 UCRT64
 
@@ -96,6 +98,7 @@ python3.12 -m venv python3.12 && ln -s python3.12 venv && . venv/bin/activate
 pip install -U pip
 CFLAGS="-I/opt/local/include" LDFLAGS="-L/opt/local/lib" pip install -r requirements.txt   # Homebrew: /opt/homebrew
 python nova.py --opengl --accel videotoolbox -i rtsp://...
+cp cameras.example.ini cameras.ini && ./nova start      # several cameras; ./nova -h lists the commands
 ```
 
 `--opengl` requests the 3.3 core-profile context macOS requires; without it the QPainter renderer is used.

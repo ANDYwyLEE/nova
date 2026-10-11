@@ -45,6 +45,8 @@ url = rtsp://viewer:password@192.168.1.13:554/av_stream/ch0
 opts = -t rtmp://a.rtmp.youtube.com/live2/YOUR-STREAM-KEY --ffmpeg "-b:v 3M -maxrate 3M -bufsize 6M"
 ```
 
+`nova start lobby` then streams with the window on screen; add `--headless` to the `opts` line (or run `nova start lobby --headless -t …`) to stream without one.
+
 3. YouTube Studio shows "Excellent connection" within ~20 s; press **Go live** there if the stream is not set to start automatically.
 
 Recommended bitrates (YouTube's own table, H.264): 1080p30 3–6 Mbit/s, 720p30 1.5–4 Mbit/s, 480p 0.5–2 Mbit/s. Without `-b:v`, NVENC and libx264 choose a quality-based rate that is usually within range for a static camera but can spike on motion; set `-b:v` + `-maxrate` for a steady upload.

@@ -227,7 +227,7 @@ if __name__ == "__main__":
         # nobody owns a window: a fatal worker error must end the process
         core.exit_sig.connect(lambda: QTimer.singleShot(500, app.quit))
 
-    # Ctrl-C / SIGTERM (stopall.sh) quit through the event loop; aboutToQuit saves the window
+    # Ctrl-C / SIGTERM (nova stop) quit through the event loop; aboutToQuit saves the window
     # geometry/zoom that closeEvent would otherwise have persisted.
     if nova is not None:
         app.aboutToQuit.connect(nova.cleanup)
@@ -240,7 +240,7 @@ if __name__ == "__main__":
         a = QGuiApplication.instance()
         if a: QMetaObject.invokeMethod(a, "quit", Qt.QueuedConnection)
     signal.signal(signal.SIGINT, signal_handler)
-    for name in ("SIGTERM", "SIGBREAK"):          # SIGBREAK: Windows Ctrl-Break, sent by cams.py stop
+    for name in ("SIGTERM", "SIGBREAK"):          # SIGBREAK: Windows Ctrl-Break, sent by nova stop
         sig = getattr(signal, name, None)
         if sig is not None:
             try: signal.signal(sig, signal_handler)

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Nova launcher:  ./nova start | record | run | stop | status | list      (./nova -h for help)
+# Cameras and their passwords live in cameras.ini (git-ignored); cameras.example.ini is the template.
+# Uses the project venv when there is one; cams.py does the work.
+here=$(dirname "$0")
+if [ -x "$here/venv/bin/python" ]; then
+    exec "$here/venv/bin/python" "$here/cams.py" "$@"
+fi
+exec python3 "$here/cams.py" "$@"

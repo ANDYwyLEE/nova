@@ -12,8 +12,8 @@
 
 - **R** (or F7, or the camera icon in the control strip) toggles recording.
 - `-r` starts recording as soon as the first frame arrives; put it in a camera's `opts` in `cameras.ini` to record that camera permanently.
-- `--headless -r` records without a window (servers, cron jobs).
-- Stopping Nova (window close, Ctrl-C, `cams.py stop`) closes the current segment cleanly.
+- `--headless -r` records without a window (servers, cron jobs); `nova record [ID ...]` is the shorthand for every camera in `cameras.ini`.
+- Stopping Nova (window close, Ctrl-C, `nova stop`) closes the current segment cleanly.
 
 ## Files and segments
 

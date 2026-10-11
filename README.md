@@ -12,7 +12,7 @@ Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Wind
 | | |
 |---|---|
 | [Installation](docs/install.md) | Linux / Windows / macOS, what the PyPI FFmpeg includes, GPU drivers |
-| [User guide](docs/user-guide.md) | `cameras.ini`, the `cams.py` launcher, every command-line option, **all keyboard and mouse controls**, zoom, audio, snapshots, where settings live |
+| [User guide](docs/user-guide.md) | `cameras.ini`, the `nova` launcher, every command-line option, **all keyboard and mouse controls**, zoom, audio, snapshots, where settings live |
 | [Recording](docs/recording.md) | segments, fragmented MP4, timestamps and A/V sync, encoder selection, tuning, housekeeping |
 | [Live streaming](docs/streaming.md) | YouTube RTMP and HLS (HEVC), Twitch, SRT, MPEG-TS, bitrate/latency, checklist |
 | [FFmpeg options](docs/ffmpeg-options.md) | what `--ffmpeg "…"` can and cannot do, measured per encoder, with recipes |
@@ -36,9 +36,10 @@ More than one camera: put them in `cameras.ini` (git-ignored, so passwords stay 
 
 ```bash
 cp cameras.example.ini cameras.ini      # one [section] per camera; presets per OS/GPU in [defaults]
-python cams.py start                    # every enabled camera, one process each
-python cams.py run frontdoor -r         # one camera in the foreground, extra args go to nova.py
-python cams.py stop
+./nova start                            # a window per enabled camera (Windows: nova start)
+./nova record                           # the same without windows, recording from the first frame
+./nova run frontdoor -r                 # one camera in this terminal; extra args go to nova.py
+./nova stop
 ```
 
 ## Why Nova
@@ -65,7 +66,7 @@ python cams.py stop
 | Streaming | RTMP (YouTube, Twitch), HLS (YouTube HLS ingest incl. HEVC), SRT*, MPEG-TS; silent-audio synthesis |
 | Audio | PortAudio playback with device selection and resampling fallback |
 | Discovery | ONVIF (port probing, vendor-agnostic SOAP), XMeye DVRIP, Hikvision ISAPI, Dahua CGI |
-| Operations | `cams.py` launcher with a git-ignored camera list, auto-reconnect, bounded I/O timeouts, clean SIGINT/SIGTERM shutdown, masked passwords, pre-commit secret guard |
+| Operations | `nova` launcher (`start`, `record`, `stop`) with a git-ignored camera list, auto-reconnect, bounded I/O timeouts, clean SIGINT/SIGTERM shutdown, masked passwords, pre-commit secret guard |
 
 \* SRT and VAAPI need a [custom FFmpeg build](docs/custom-ffmpeg.md); everything else works with the PyPI wheel.
 
@@ -87,7 +88,7 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 | File | Role |
 |---|---|
 | `nova.py` | command line, logging, Qt application, shutdown |
-| `cams.py`, `cameras.example.ini` | multi-camera launcher and the camera-list template (`cameras.ini` is git-ignored) |
+| `nova`, `nova.bat`, `cams.py`, `cameras.example.ini` | the launcher (`nova start / record / run / stop / status / list`), its implementation and the camera-list template (`cameras.ini` is git-ignored) |
 | `novacore.py` | per-camera controller: worker, recorder, streamer, audio, snapshots |
 | `videoworker.py` | connect / decode thread, HW decoder selection, URI resolution, frame fan-out |
 | `view.py`, `novagl.py` | frameless window, OSD, geometry, zoom; OpenGL shader renderer |

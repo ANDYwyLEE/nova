@@ -7,7 +7,7 @@ The `av` wheel from PyPI bundles an FFmpeg with NVENC/NVDEC, Quick Sync (libvpl)
 - CUDA filters (`scale_npp`, `scale_cuda`) or a newer FFmpeg than the wheel ships
 - on MSYS2 Windows: a tweak the packaged FFmpeg does not have (e.g. `QSV_MAX_SURFACES`)
 
-The recipes install into `~/deps`. Nova's `s.sh` / `startall.sh` add `~/deps/lib` and `~/deps/bin` to the environment automatically when `~/deps/lib` exists; delete `~/deps` to fall back to the wheel.
+The recipes install into `~/deps`. A PyAV built against it needs `~/deps/lib` at run time: set it in the `[env]` section of `cameras.ini` (`LD_LIBRARY_PATH = /home/you/deps/lib`; `DYLD_LIBRARY_PATH` on macOS; `PATH` on Windows) and the launcher passes it to every camera process. Remove the line to fall back to the wheel.
 
 ## Lessons learned
 

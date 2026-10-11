@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""cams.py - start, stop, list and run Nova cameras from cameras.ini.
+"""cams.py - implementation of the `nova` launcher (./nova on Linux and macOS, nova.bat on Windows).
 
-cameras.ini holds the camera URLs *with* their passwords and is listed in .gitignore, so
-credentials never reach the repository.  cameras.example.ini is the committed template.
-
-    python cams.py list                 show the cameras (passwords masked)
-    python cams.py start [ID ...]       start every enabled camera (or the given ones) in the background
-    python cams.py stop  [ID ...]       stop cameras started by this launcher (Ctrl-C semantics)
-    python cams.py status               which launched cameras are still running
-    python cams.py run [ID] [nova args] run one camera in the foreground, e.g.  run frontdoor -r -t rtmp://...
-
-Extra arguments after the command are passed straight to nova.py.
+The launcher is driven by cameras.ini, which holds the camera URLs *with* their passwords and is
+listed in .gitignore, so credentials never reach the repository.  cameras.example.ini is the
+committed template.  `nova -h` prints the commands.
 """
 import os
 import sys
@@ -28,6 +21,30 @@ PIDS = os.path.join(HERE, ".nova-pids.json")
 LOGDIR = os.path.join(HERE, "logs")
 WINDOWS = os.name == "nt"
 RESERVED = ("defaults", "env")
+VENV_PYTHON = (("venv/Scripts/python.exe",) if WINDOWS else ("venv/bin/python", "venv/bin/python3"))
+HEADLESS_FLAGS = ("--headless", "--no-gui")
+RECORD_FLAGS = ("-r", "--record", "--auto-record")
+STREAM_FLAGS = ("-t", "--target")
+EARLY_EXIT_GRACE = 1.5      # seconds a camera must survive before `start` reports it as running
+
+USAGE = """\
+nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.example.ini)
+
+  nova start  [ID ...] [nova.py options]   a window per camera: every enabled camera, or the given ids
+  nova record [ID ...] [nova.py options]   the same without windows, recording from the first frame
+  nova run    [ID]     [nova.py options]   one camera in this terminal: log on screen, Ctrl-C quits
+  nova stop   [ID ...] [--timeout S]       stop cameras started by start/record (saves state like Ctrl-C)
+  nova status                              which launched cameras are still running, and in which mode
+  nova list                                cameras, enabled state and options (passwords masked)
+  nova -h                                  this text          nova.py --help    every camera option
+  -c FILE                                  use FILE instead of cameras.ini
+
+Words that do not start with '-' are camera ids; everything from the first option on goes to nova.py:
+  nova start frontdoor -r                  window and recording
+  nova record yard -t rtmp://...           headless recording plus a live stream
+Options a camera should always get belong in its cameras.ini section (opts = -r).
+start/record detach from the terminal and write logs/ID.log; run stays attached.
+"""
 
 sys.path.insert(0, HERE)
 try:
@@ -47,8 +64,9 @@ class Camera:
 
 def load(path):
     if not os.path.exists(path):
+        copy = "copy" if WINDOWS else "cp"
         sys.exit(f"{os.path.basename(path)} not found.\n"
-                 f"  cp {os.path.basename(EXAMPLE)} {os.path.basename(path)}   and put your cameras in it (it is git-ignored).")
+                 f"  {copy} {os.path.basename(EXAMPLE)} {os.path.basename(path)}   and put your cameras in it (it is git-ignored).")
     cp = configparser.ConfigParser(interpolation=None)   # keep '%' and '$' in URLs untouched
     cp.optionxform = str                                 # environment variable names keep their case
     cp.read(path, encoding="utf-8")
@@ -67,17 +85,39 @@ def load(path):
 
 
 def python_exe(defaults):
+    """`[defaults] python` if set, else the project venv next to this file, else whatever runs cams.py."""
     p = defaults.get("python") if defaults else None
-    return os.path.join(HERE, p) if p and not os.path.isabs(p) else (p or sys.executable)
+    if p:
+        return p if os.path.isabs(p) else os.path.join(HERE, p)
+    for rel in VENV_PYTHON:
+        cand = os.path.join(HERE, *rel.split("/"))
+        if os.path.exists(cand):
+            return cand
+    return sys.executable
 
 
-def command(cam, defaults, extra):
+def command(cam, defaults, extra, record=False):
     argv = [python_exe(defaults), "-u", os.path.join(HERE, "nova.py")]
     argv += shlex.split(defaults.get("opts", "") if defaults else "")
     argv += shlex.split(cam.opts)
+    if record:
+        argv += ["--headless", "-r"]
     argv += ["-n", cam.name, "-i", cam.url]
     argv += extra
     return argv
+
+
+def has_flag(argv, flags):
+    return any(a in flags or a.split("=", 1)[0] in flags for a in argv[3:])   # skip python -u nova.py
+
+
+def mode_of(argv):
+    parts = ["headless" if has_flag(argv, HEADLESS_FLAGS) else "window"]
+    if has_flag(argv, RECORD_FLAGS):
+        parts.append("rec")
+    if has_flag(argv, STREAM_FLAGS):
+        parts.append("stream")
+    return "+".join(parts)
 
 
 def child_env(env):
@@ -90,9 +130,10 @@ def child_env(env):
 def read_pids():
     try:
         with open(PIDS, encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
     except Exception:
         return {}
+    return {k: (v if isinstance(v, dict) else {"pid": int(v), "mode": "?"}) for k, v in raw.items()}
 
 
 def write_pids(d):
@@ -121,12 +162,23 @@ def interrupt(pid):
         os.kill(pid, signal.SIGINT)
 
 
+def log_tail(cid, n=5):
+    try:
+        with open(os.path.join(LOGDIR, f"{cid}.log"), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 4000))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+        return [l for l in lines if l.strip()][-n:]
+    except OSError:
+        return []
+
+
 def select(cams, ids, only_enabled):
     if ids:
         by_id = {c.id: c for c in cams}
         missing = [i for i in ids if i not in by_id]
         if missing:
-            sys.exit(f"unknown camera id(s): {', '.join(missing)}  (see: cams.py list)")
+            sys.exit(f"unknown camera id(s): {', '.join(missing)}  (see: nova list)")
         return [by_id[i] for i in ids]
     return [c for c in cams if c.enabled or not only_enabled]
 
@@ -142,54 +194,84 @@ def cmd_list(defaults, env, cams, args):
         print(f"\ndefault opts: {defaults.get('opts')}")
     if env:
         print("env: " + " ".join(f"{k}={v}" for k, v in env.items()))
+    print(f"python: {python_exe(defaults)}")
 
 
-def cmd_start(defaults, env, cams, args):
+def cmd_start(defaults, env, cams, args, record=False):
     os.makedirs(LOGDIR, exist_ok=True)
     pids = read_pids()
-    started = 0
+    stagger = float(defaults.get("stagger", 0.5)) if defaults else 0.5
+    launched, failed = [], 0
     for cam in select(cams, args.ids, only_enabled=True):
         old = pids.get(cam.id)
-        if old and alive(int(old)):
-            print(f"{cam.id}: already running (pid {old})")
+        if old and alive(old["pid"]):
+            print(f"{cam.id}: already running (pid {old['pid']}, {old['mode']})")
             continue
-        log = open(os.path.join(LOGDIR, f"{cam.id}.log"), "ab")
-        kw = {"cwd": HERE, "env": child_env(env), "stdout": log, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
-        if WINDOWS:
-            kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kw["start_new_session"] = True
-        p = subprocess.Popen(command(cam, defaults, args.extra), **kw)
-        pids[cam.id] = p.pid
+        argv = command(cam, defaults, args.extra, record)
+        mode = mode_of(argv)
+        if mode == "headless":
+            print(f"{cam.id}: refused - headless without -r or -t would neither show nor save anything "
+                  f"(use `nova record`, or add -t URL)")
+            failed += 1
+            continue
+        with open(os.path.join(LOGDIR, f"{cam.id}.log"), "ab") as log:
+            kw = {"cwd": HERE, "env": child_env(env), "stdout": log, "stderr": subprocess.STDOUT,
+                  "stdin": subprocess.DEVNULL}
+            if WINDOWS:
+                kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kw["start_new_session"] = True
+            p = subprocess.Popen(argv, **kw)
+        pids[cam.id] = {"pid": p.pid, "mode": mode}
         write_pids(pids)
-        print(f"{cam.id}: started (pid {p.pid}) -> logs/{cam.id}.log")
-        started += 1
-        time.sleep(float(defaults.get("stagger", 0.5)) if defaults else 0.5)
-    if not started:
+        print(f"{cam.id}: starting (pid {p.pid}, {mode}) -> logs/{cam.id}.log")
+        launched.append((cam, p, time.time()))
+        time.sleep(stagger)
+    # A camera that dies within the grace period did not start: say so instead of "started".
+    for cam, p, t0 in launched:
+        try:
+            p.wait(timeout=max(t0 + EARLY_EXIT_GRACE - time.time(), 0.01))
+        except subprocess.TimeoutExpired:
+            continue
+        failed += 1
+        pids.pop(cam.id, None)
+        print(f"{cam.id}: exited with code {p.returncode} right after start; logs/{cam.id}.log ends with:")
+        for line in log_tail(cam.id):
+            print(f"    {line}")
+    write_pids(pids)
+    ok = sum(1 for _, p, _ in launched if p.returncode is None)
+    if not launched and not failed:
         print("nothing started")
+    else:
+        print(f"{ok} running" + (f", {failed} failed" if failed else ""))
+    return 1 if failed else 0
+
+
+def cmd_record(defaults, env, cams, args):
+    return cmd_start(defaults, env, cams, args, record=True)
 
 
 def cmd_stop(defaults, env, cams, args):
     pids = read_pids()
     targets = {k: v for k, v in pids.items() if not args.ids or k in args.ids}
     if not targets:
-        print("no launched cameras recorded (use `cams.py start`)")
+        print("no launched cameras (use `nova start` or `nova record`)")
         return
-    for cid, pid in targets.items():
-        if alive(int(pid)):
+    for cid, e in targets.items():
+        if alive(e["pid"]):
             try:
-                interrupt(int(pid))
-                print(f"{cid}: stopping (pid {pid})")
-            except Exception as e:
-                print(f"{cid}: could not signal pid {pid}: {e}")
+                interrupt(e["pid"])
+                print(f"{cid}: stopping (pid {e['pid']})")
+            except Exception as ex:
+                print(f"{cid}: could not signal pid {e['pid']}: {ex}")
         else:
             print(f"{cid}: not running")
     deadline = time.time() + float(args.timeout)
-    while time.time() < deadline and any(alive(int(p)) for p in targets.values()):
+    while time.time() < deadline and any(alive(e["pid"]) for e in targets.values()):
         time.sleep(0.25)
-    for cid, pid in targets.items():
-        if alive(int(pid)):
-            print(f"{cid}: still running after {args.timeout}s (pid {pid}); kill it manually if needed")
+    for cid, e in targets.items():
+        if alive(e["pid"]):
+            print(f"{cid}: still running after {args.timeout}s (pid {e['pid']}); kill it manually if needed")
         else:
             pids.pop(cid, None)
     write_pids(pids)
@@ -198,10 +280,12 @@ def cmd_stop(defaults, env, cams, args):
 def cmd_status(defaults, env, cams, args):
     pids = read_pids()
     if not pids:
-        print("no launched cameras recorded")
+        print("no launched cameras (use `nova start` or `nova record`)")
         return
-    for cid, pid in pids.items():
-        print(f"{cid:<20} pid {pid:<8} {'running' if alive(int(pid)) else 'exited'}")
+    w = max(len(k) for k in pids)
+    for cid, e in pids.items():
+        state = "running" if alive(e["pid"]) else "exited "
+        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {e['mode']:<16} logs/{cid}.log")
 
 
 def cmd_run(defaults, env, cams, args):
@@ -215,13 +299,28 @@ def cmd_run(defaults, env, cams, args):
         cam = enabled[0]
     argv = command(cam, defaults, args.extra)
     print(f"running {cam.id}: " + " ".join(mask_url(a) for a in argv[2:]), file=sys.stderr)
+    p = subprocess.Popen(argv, cwd=HERE, env=child_env(env))
     try:
-        return subprocess.call(argv, cwd=HERE, env=child_env(env))
+        return p.wait()
     except KeyboardInterrupt:
+        # Ctrl-C from the terminal reaches nova.py as well; a SIGINT aimed only at the launcher is
+        # forwarded.  Either way nova.py gets time to save its state (subprocess.call would kill it
+        # after 0.25 s).
+        if p.poll() is None:
+            try:
+                interrupt(p.pid)
+            except OSError:
+                pass
+        try:
+            p.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            p.terminate()
         return 130
 
 
-USAGE = __doc__
+COMMANDS = {"list": cmd_list, "start": cmd_start, "record": cmd_record, "stop": cmd_stop,
+            "status": cmd_status, "run": cmd_run}
+
 
 def split_ids(tokens):
     """Leading words that do not start with '-' are camera ids; the rest (or everything after a
@@ -240,13 +339,14 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     config = INI
     while argv and argv[0] in ("-c", "--config"):
-        if len(argv) < 2: sys.exit("-c needs a file")
+        if len(argv) < 2:
+            sys.exit("-c needs a file")
         config = argv[1]; argv = argv[2:]
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print(USAGE.strip()); return 0
+        print(USAGE.rstrip()); return 0
     cmd, tokens = argv[0], argv[1:]
-    if cmd not in ("list", "start", "stop", "status", "run"):
-        sys.exit(f"unknown command '{cmd}'\n\n{USAGE.strip()}")
+    if cmd not in COMMANDS:
+        sys.exit(f"unknown command '{cmd}'\n\n{USAGE.rstrip()}")
 
     class Args: pass
     args = Args()
@@ -255,11 +355,12 @@ def main(argv=None):
     if cmd == "stop" and args.extra[:1] == ["--timeout"] and len(args.extra) > 1:
         args.timeout = float(args.extra[1]); args.extra = args.extra[2:]
     if cmd == "run":
-        if len(args.ids) > 1: sys.exit("run takes one camera id")
+        if len(args.ids) > 1:
+            sys.exit("run takes one camera id")
         args.id = args.ids[0] if args.ids else None
 
     defaults, env, cams = load(config)
-    return {"list": cmd_list, "start": cmd_start, "stop": cmd_stop, "status": cmd_status, "run": cmd_run}[cmd](defaults, env, cams, args)
+    return COMMANDS[cmd](defaults, env, cams, args)
 
 
 if __name__ == "__main__":
