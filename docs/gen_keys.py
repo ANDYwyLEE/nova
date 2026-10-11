@@ -2,7 +2,8 @@
 """Regenerate the command-line and hot-key tables in docs/user-guide.md from helper.py,
 so the in-app help (H) and the manual never drift apart.
 
-    python docs/gen_keys.py        (run from the repository root with the venv active)
+    python docs/gen_keys.py          (run from the repository root with the venv active)
+    python docs/gen_keys.py --check  exit 1 when the tables are out of date (used by CI)
 """
 import os, re, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,5 +31,10 @@ mouse = {k.replace("Mouse ", ""): v for k, v in CONTROL_DESCRIPTIONS.items() if 
 text = replace_block(text, "args", table(ARG_DESCRIPTIONS, "Option", "Meaning"))
 text = replace_block(text, "keys", table(keys, "Key", "Action"))
 text = replace_block(text, "mouse", table(mouse, "Mouse", "Action"))
-open(path, "w", encoding="utf-8").write(text)
-print("docs/user-guide.md: tables regenerated from helper.py")
+if "--check" in sys.argv[1:]:
+    if text != open(path, encoding="utf-8").read():
+        sys.exit("docs/user-guide.md: generated tables are out of date; run python docs/gen_keys.py")
+    print("docs/user-guide.md: generated tables are current")
+else:
+    open(path, "w", encoding="utf-8").write(text)
+    print("docs/user-guide.md: tables regenerated from helper.py")

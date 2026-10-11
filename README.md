@@ -104,7 +104,8 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 
 - Any file FFmpeg can open works as `-i`, so a test clip replaces a camera. For realistic timing feed it at real time: `ffmpeg -re -stream_loop -1 -i clip.mp4 -c copy -f mpegts udp://127.0.0.1:5004` and `-i udp://127.0.0.1:5004`.
 - GUI tests without a desktop: `Xvfb :99 -screen 0 1280x800x24 &` then `DISPLAY=:99 python nova.py --opengl …`. `--headless` runs the full decode/record/stream pipeline with no window.
-- After editing the help table in `helper.py`, run `python docs/gen_keys.py` to refresh the manual.
+- After editing the help table in `helper.py`, run `python docs/gen_keys.py` to refresh the manual (`--check` only verifies; CI runs it).
+- Tests: `pip install -r requirements-dev.txt` then `pytest`. They need no camera and no GPU: option parsing, URL masking, the launcher's logic, the timestamp mapper, and a headless decode → libx264 → fragmented-MP4 recording of a generated clip. GitHub Actions runs them on Linux for every push and on Windows and macOS weekly (`.github/workflows/`).
 - `git config core.hooksPath .githooks` enables the pre-commit guard against committed credentials.
 
 ## License

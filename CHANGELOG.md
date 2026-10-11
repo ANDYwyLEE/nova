@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-11 — tests and CI
+
+### Added
+- `tests/` (pytest, no camera or GPU needed): `mask_url` incl. stream keys, `FFmpegParser` routing, the launcher's ini parsing / id splitting / GPU dealing / layouts / pid file, `_Timeline`, module imports, `--help`, and an end-to-end headless recording of a PyAV-generated clip (decode → libx264 → 4 s segments → clean SIGINT exit). `requirements-dev.txt`, `pytest.ini`.
+- GitHub Actions: `ci.yml` runs the suite and `docs/gen_keys.py --check` on Linux (Python 3.14) for every push; `cross-platform.yml` runs it on Windows (3.13, PyAudio has no 3.14 wheel) and macOS (Apple Silicon, 3.14) weekly, by hand, and when the requirements change.
+
 ## 2026-10-11 — stop while a camera is down
 
 ### Fixed
