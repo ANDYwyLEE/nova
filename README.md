@@ -73,12 +73,12 @@ python cams.py stop
 
 ```mermaid
 flowchart LR
-    CAM[(RTSP / ONVIF\ncamera)] -->|av.open| VW[VideoWorker\nQThread: demux + decode]
-    VW -->|DisplayFrame\ndeque(1)| GL[NovaGL / Nova\nQOpenGLWindow]
-    VW -->|frames, zero-copy| RQ[rec_q] --> REC[AVRecWorker\nAVWriter → MP4 segments]
-    VW -->|frames| SQ[stream_q] --> STR[AVRecWorker\nAVWriter → RTMP / HLS / SRT]
-    VW -->|PCM| AQ[audio_q] --> AUD[AudioWorker\nPortAudio]
-    GL -->|keys, mouse| CORE[NovaCore\nsignals, toggles, snapshots]
+    CAM[("RTSP / ONVIF<br/>camera")] -->|av.open| VW["VideoWorker<br/>QThread: demux + decode"]
+    VW -->|"DisplayFrame, newest frame only"| GL["NovaGL / Nova<br/>QOpenGLWindow"]
+    VW -->|"frames, zero-copy"| RQ[rec_q] --> REC["AVRecWorker<br/>AVWriter: MP4 segments"]
+    VW -->|frames| SQ[stream_q] --> STR["AVRecWorker<br/>AVWriter: RTMP / HLS / SRT"]
+    VW -->|PCM| AQ[audio_q] --> AUD["AudioWorker<br/>PortAudio"]
+    GL -->|"keys, mouse"| CORE["NovaCore<br/>signals, toggles, snapshots"]
     CORE --> REC & STR & AUD
 ```
 
