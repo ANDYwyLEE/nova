@@ -95,13 +95,20 @@ def parse_url(s):
 
 _RE_USERINFO = re.compile(r'://([^/@:\s]+):([^/@\s]*)@')
 _RE_QUERY_PWD = re.compile(r'(?i)\b(password|passwd|pwd|pass)=([^&/?#\s]*)')
+_RE_STREAM_KEY = re.compile(r'(/live2(?:\?[^/\s\'"]*)?/)[^\s\'"?#]+')   # rtmp://host/live2/KEY, live2?backup=1/KEY
+_RE_HLS_CID = re.compile(r'([?&]cid=)[^&\s\'"]+')              # YouTube HLS ingest key
+_RE_TWITCH_KEY = re.compile(r'(/app/)live_[^\s\'"?#]+')          # rtmp://live.twitch.tv/app/live_KEY
 
 def mask_url(url) -> str:
     """Hide passwords for logs/overlays.
-    Handles 'scheme://user:pwd@host' and xmeye-style 'user=a&password=b' paths."""
+    Handles 'scheme://user:pwd@host', xmeye-style 'user=admin&password=pw' paths, rtmp /live2/KEY and
+    HLS ?cid=KEY stream keys; works on whole log lines, not only on bare URLs."""
     if not url: return url or ""
     s = _RE_USERINFO.sub(r'://\1:***@', str(url))
     s = _RE_QUERY_PWD.sub(r'\1=***', s)
+    s = _RE_STREAM_KEY.sub(r'\1***', s)
+    s = _RE_HLS_CID.sub(r'\1***', s)
+    s = _RE_TWITCH_KEY.sub(r'\1***', s)
     return s
 
 def display_url(url) -> str:

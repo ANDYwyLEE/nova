@@ -6,6 +6,10 @@
 - `nova` (Linux, macOS) and `nova.bat` (Windows): one entry point for the camera list — `nova start | record | run | stop | status | list`, `nova -h`. Both use the project venv automatically; `cams.py` is the implementation.
 - `nova record`: headless recording from the first frame (`--headless -r`). `start --headless` without `-r` or `-t` is refused, because such a camera could neither be seen nor controlled.
 - `start` / `record` report a camera that exits within 1.5 s, with the end of its log, instead of calling it started; `status` shows each process's mode (window / headless, rec, stream).
+- `--gpu N` (default: `NOVA_GPU_DEVICES`). With a GPU list in `[env]`, `nova start` / `run` deal the cameras over the GPUs in file order (deterministic, balanced) instead of each process picking one at random; `nova list` and `status` show the GPU.
+
+### Fixed
+- Passwords could appear in error logs: PyAV embeds the full URL in its exception text (`open exception: ... 'rtsp://user:pw@...'`). A logging filter now masks URL credentials and stream keys (`live2/KEY`, `?cid=`, Twitch `live_`) in every log record, whichever module wrote it.
 
 ### Changed
 - `cams.py` finds `venv/bin/python` (or `venv\Scripts\python.exe`) next to it when `[defaults] python` is not set, so it also works when started with the system interpreter.

@@ -27,7 +27,7 @@ opts = --opengl --accel cuda -f 30 -b -l CRITICAL
 [env]
 ; environment for the camera processes
 NOVA_TIMEOUT = 10000000
-; NOVA_GPU_DEVICES = 0,1
+; NOVA_GPU_DEVICES = 0,1     two GPUs: `nova start` deals the cameras over them in turn
 
 ; one section per camera; the section name is the id you type on the command line
 [frontdoor]
@@ -83,6 +83,7 @@ nova -h                              help; `python nova.py --help` lists the cam
 | `-n, --name, --camera-name` | Logical camera name for output recording folders. |
 | `--opengl` | Enable hardware acceleration using OpenGL (recommended for high performance). |
 | `--accel` | HW Acceleration backend. cuda, qsv, vaapi, videotoolbox, d3d11va. |
+| `--gpu` | GPU index for HW decode/encode (0, 1, or a list 0,1 to pick at random; default: NOVA_GPU_DEVICES). |
 | `-f, --fps` | Target video frame rate (default: 30). |
 | `-b, --border` | Enable the colored window border. (default: no border line) |
 | `-g, --grid-size` | Grid size for window alignment in pixels (default: 20). |
@@ -194,7 +195,7 @@ Resolved `onvif://` / `xmeye://` / `hik://` / `dahua://` URLs are cached for one
 | Variable | Meaning |
 |---|---|
 | `NOVA_TIMEOUT` | socket / read timeout in microseconds (default 5 s; `cameras.ini` sets 10 s). Also bounds how long shutdown can take. |
-| `NOVA_GPU_DEVICES` | GPU index or a comma list (`0,1`); each process picks one at random, spreading cameras over GPUs |
+| `NOVA_GPU_DEVICES` | GPU index, or a comma list (`0,1`). With a list, `nova start` / `nova run` deal the cameras over the GPUs in file order, so a camera always lands on the same one (14 cameras on `0,1` → 7 + 7); `--gpu N` in a camera's `opts` pins it. A bare `python nova.py` given a list picks one at random |
 | `NOVA_AUDIO_DEVICE_INDEX` | force a PortAudio output device |
 | `QT_QPA_PLATFORM` | `offscreen` is set automatically for `--headless`; `xcb` forces X11 on Wayland desktops |
 

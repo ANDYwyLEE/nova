@@ -25,6 +25,7 @@ VENV_PYTHON = (("venv/Scripts/python.exe",) if WINDOWS else ("venv/bin/python", 
 HEADLESS_FLAGS = ("--headless", "--no-gui")
 RECORD_FLAGS = ("-r", "--record", "--auto-record")
 STREAM_FLAGS = ("-t", "--target")
+GPU_FLAGS = ("--gpu",)
 EARLY_EXIT_GRACE = 1.5      # seconds a camera must survive before `start` reports it as running
 
 USAGE = """\
@@ -111,6 +112,48 @@ def has_flag(argv, flags):
     return any(a in flags or a.split("=", 1)[0] in flags for a in argv[3:])   # skip python -u nova.py
 
 
+def gpu_list(env):
+    """GPU indices from [env] NOVA_GPU_DEVICES (or the launcher's own environment); [] if unset or invalid."""
+    v = env.get("NOVA_GPU_DEVICES", os.environ.get("NOVA_GPU_DEVICES", ""))
+    try:
+        return [str(int(x)) for x in str(v).split(",") if x.strip()]
+    except ValueError:
+        return []
+
+
+def pinned_gpu(argv):
+    """The value of --gpu in argv, or None."""
+    toks = argv[3:]
+    for i, a in enumerate(toks):
+        if a == "--gpu" and i + 1 < len(toks):
+            return toks[i + 1]
+        if a.startswith("--gpu="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def assign_gpu(cam, cams, env, argv):
+    """Deal the cameras over the listed GPUs in file order, so every camera always gets the same one and
+    14 cameras on 0,1 become 7 + 7.  A camera with --gpu in its options keeps that; a single GPU or no
+    list leaves NOVA_GPU_DEVICES alone."""
+    pinned = pinned_gpu(argv)
+    if pinned is not None:
+        return pinned
+    devices = gpu_list(env)
+    if len(devices) < 2:
+        return None
+    order = [c for c in cams if c.enabled]
+    i = order.index(cam) if cam in order else cams.index(cam)
+    return devices[i % len(devices)]
+
+
+def process_env(env, gpu):
+    e = child_env(env)
+    if gpu is not None:
+        e["NOVA_GPU_DEVICES"] = gpu
+    return e
+
+
 def mode_of(argv):
     parts = ["headless" if has_flag(argv, HEADLESS_FLAGS) else "window"]
     if has_flag(argv, RECORD_FLAGS):
@@ -186,9 +229,12 @@ def select(cams, ids, only_enabled):
 # ------------------------------------------------------------------ commands
 def cmd_list(defaults, env, cams, args):
     w = max([len(c.id) for c in cams] + [2])
-    print(f"{'id':<{w}}  on   name                     url")
+    gpus = len(gpu_list(env)) > 1
+    print(f"{'id':<{w}}  on   {'gpu  ' if gpus else ''}name                     url")
     for c in cams:
-        print(f"{c.id:<{w}}  {'yes' if c.enabled else 'no ':<3}  {c.name[:24]:<24} {mask_url(c.url)}"
+        g = assign_gpu(c, cams, env, command(c, defaults, [])) if gpus else None
+        print(f"{c.id:<{w}}  {'yes' if c.enabled else 'no ':<3}  {(g or '-') + '    ' if gpus else ''}"
+              f"{c.name[:24]:<24} {mask_url(c.url)}"
               + (f"\n{'':<{w}}       opts: {c.opts}" if c.opts else ""))
     if defaults and defaults.get("opts"):
         print(f"\ndefault opts: {defaults.get('opts')}")
@@ -214,17 +260,18 @@ def cmd_start(defaults, env, cams, args, record=False):
                   f"(use `nova record`, or add -t URL)")
             failed += 1
             continue
+        gpu = assign_gpu(cam, cams, env, argv)
         with open(os.path.join(LOGDIR, f"{cam.id}.log"), "ab") as log:
-            kw = {"cwd": HERE, "env": child_env(env), "stdout": log, "stderr": subprocess.STDOUT,
+            kw = {"cwd": HERE, "env": process_env(env, gpu), "stdout": log, "stderr": subprocess.STDOUT,
                   "stdin": subprocess.DEVNULL}
             if WINDOWS:
                 kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 kw["start_new_session"] = True
             p = subprocess.Popen(argv, **kw)
-        pids[cam.id] = {"pid": p.pid, "mode": mode}
+        pids[cam.id] = {"pid": p.pid, "mode": mode, "gpu": gpu}
         write_pids(pids)
-        print(f"{cam.id}: starting (pid {p.pid}, {mode}) -> logs/{cam.id}.log")
+        print(f"{cam.id}: starting (pid {p.pid}, {mode}{f', gpu {gpu}' if gpu is not None else ''}) -> logs/{cam.id}.log")
         launched.append((cam, p, time.time()))
         time.sleep(stagger)
     # A camera that dies within the grace period did not start: say so instead of "started".
@@ -285,7 +332,8 @@ def cmd_status(defaults, env, cams, args):
     w = max(len(k) for k in pids)
     for cid, e in pids.items():
         state = "running" if alive(e["pid"]) else "exited "
-        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {e['mode']:<16} logs/{cid}.log")
+        gpu = f"gpu {e['gpu']}" if e.get("gpu") is not None else ""
+        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {e['mode']:<16} {gpu:<6} logs/{cid}.log")
 
 
 def cmd_run(defaults, env, cams, args):
@@ -298,8 +346,10 @@ def cmd_run(defaults, env, cams, args):
             sys.exit("no enabled camera in cameras.ini")
         cam = enabled[0]
     argv = command(cam, defaults, args.extra)
-    print(f"running {cam.id}: " + " ".join(mask_url(a) for a in argv[2:]), file=sys.stderr)
-    p = subprocess.Popen(argv, cwd=HERE, env=child_env(env))
+    gpu = assign_gpu(cam, cams, env, argv)
+    print(f"running {cam.id}" + (f" on gpu {gpu}" if gpu is not None else "") + ": "
+          + " ".join(mask_url(a) for a in argv[2:]), file=sys.stderr)
+    p = subprocess.Popen(argv, cwd=HERE, env=process_env(env, gpu))
     try:
         return p.wait()
     except KeyboardInterrupt:

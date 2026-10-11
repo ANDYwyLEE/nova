@@ -60,15 +60,18 @@ def _queue_nowait_put(q, i):
         except queue.Full:
             pass
 
-def _pick_gpu_index(default_idx=0):
-    v = os.getenv("NOVA_GPU_DEVICES")
-    logging.trace(f"[VideoWorker] NOVA_GPU_DEVICES={v}")
+def _pick_gpu_index(spec=None, default_idx=0):
+    """GPU index from --gpu (spec) or NOVA_GPU_DEVICES: one index, or a comma list to pick from at random.
+    The launcher (cams.py) deals the cameras over a list deterministically before they get here."""
+    v = spec if spec not in (None, "") else os.getenv("NOVA_GPU_DEVICES")
+    logging.trace(f"[VideoWorker] --gpu={spec!r} NOVA_GPU_DEVICES={os.getenv('NOVA_GPU_DEVICES')!r}")
     if not v:
         return default_idx
     try:
-        nums = [int(x.strip()) for x in v.split(",")]
+        nums = [int(x.strip()) for x in str(v).split(",")]
         return random.choice(nums)
     except Exception:
+        logging.warning(f"[VideoWorker] invalid GPU list {v!r}; using GPU {default_idx}")
         return default_idx
 
 def _build_conn_options(url):
@@ -127,7 +130,7 @@ class VideoWorker(QThread):
     sz_sig = Signal(int, int) # (w, h)
     exit_sig = Signal()
 
-    def __init__(self, url, fps_disp, opengl, accel, headless, ffmpeg):
+    def __init__(self, url, fps_disp, opengl, accel, headless, ffmpeg, gpu=None):
         super().__init__()
         self.url = url                  # as typed by the user (may be onvif://, xmeye://, '0', ...)
         self.fps_disp = fps_disp
@@ -162,7 +165,7 @@ class VideoWorker(QThread):
         self.stream_on = False
         self.audio_on = False
         self.run_flag = True
-        self.gpu_idx = _pick_gpu_index()
+        self.gpu_idx = _pick_gpu_index(gpu)
         self.codec_name = "h264"
         self._clone_warned = False
 

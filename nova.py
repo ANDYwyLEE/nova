@@ -53,6 +53,13 @@ if __name__ == "__main__":
         help='Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m ...)'
     )
     parser.add_argument(
+        "--gpu",
+        type=str,
+        default=None,
+        help="GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). "
+             "Default: NOVA_GPU_DEVICES, else 0."
+    )
+    parser.add_argument(
         "-f", "--fps",
         type=int,
         default=30,
@@ -201,6 +208,7 @@ if __name__ == "__main__":
         fps=args.fps,
         opengl=args.opengl,
         accel=args.accel,
+        gpu=args.gpu,
         headless=args.headless,
         auto_record=args.auto_record,
         encoder=args.encoder,

@@ -39,6 +39,7 @@ class NovaCore(QObject):
                  record_interval,
                  ffmpeg,
                  target_url,
+                 gpu=None,
         ):
         super().__init__()
 
@@ -63,7 +64,7 @@ class NovaCore(QObject):
         self.snapshot_dir = snapshot_dir or "./snapshots"
         os.makedirs(self.snapshot_dir, exist_ok=True)
 
-        self.vid_worker = VideoWorker(url, fps, opengl, accel, headless, ffmpeg)
+        self.vid_worker = VideoWorker(url, fps, opengl, accel, headless, ffmpeg, gpu=gpu)
         self.audio_q, self.rec_q, self.stream_q, self.frame_q = self.vid_worker.get_queues()
 
         self.audio = AudioPlayer(self.audio_q, self.vid_worker)

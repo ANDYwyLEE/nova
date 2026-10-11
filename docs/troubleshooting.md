@@ -19,7 +19,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 | `Connecting… / Failed: Connection timed out` (overlay) | camera unreachable | check IP/port, firewall; Nova retries every 10 s; `NOVA_TIMEOUT` sets the socket timeout |
 | `Failed: 401 Unauthorized` / `Invalid data found` | wrong credentials or wrong path | try the camera's ONVIF address: `onvif://user:pw@ip` resolves the correct RTSP path |
 | `--accel=X is not supported by this FFmpeg/PyAV build` | the wheel lacks that hwaccel (e.g. `vaapi`) | use `cuda`/`qsv`/`d3d11va`, or build FFmpeg ([custom-ffmpeg.md](custom-ffmpeg.md)) |
-| `No working HW decoder for --accel=cuda. Falling back to software` | the GPU is not usable from this process | `nvidia-smi` works? driver loaded? `NOVA_GPU_DEVICES` points at an existing GPU? |
+| `No working HW decoder for --accel=cuda. Falling back to software` | the GPU is not usable from this process | `nvidia-smi` works? driver loaded? `--gpu` / `NOVA_GPU_DEVICES` points at an existing GPU? |
 | `produced no frames after N keyframes; reconnecting with software decoding` | the hardware decoder opened but cannot decode this stream (unusual profile/level, 10-bit, MJPEG) | software decoding is used from now on; nothing to do unless CPU is short |
 | `non-existing PPS 0 referenced` / `no frame!` (once) | joined the stream mid-GOP | normal; decoding starts at the next keyframe |
 | `Stream error: … ; reconnecting` every few seconds | the camera drops the connection | try `--ffmpeg "-rtsp_transport udp"` (or `tcp` if you set udp); lower the camera's bitrate |
@@ -62,7 +62,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 ## Performance tips
 
 - **One GPU, many cameras**: NVDEC on a single RTX 4090 decodes well over 20 1080p streams; the limit is usually the display rate. `-f 15` halves the upload to the GPU without touching recordings.
-- **Two GPUs**: `NOVA_GPU_DEVICES=0,1` in `[env]`; each process picks one at random.
+- **Two GPUs**: `NOVA_GPU_DEVICES = 0,1` in `[env]`; `nova start` deals the cameras over them in turn and `nova list` shows who gets which. `opts = --gpu 1` pins a camera. `nvidia-smi` lists one process per camera under the GPU it uses.
 - **Big cameras, small windows**: `--ffmpeg "-resize 960x540"` (cuvid) scales inside the decoder, so display, recording and streaming all work on the smaller frame.
 - **Software decoding**: `--ffmpeg "-threads 2"` per camera avoids 15 processes each spawning 32 threads; `-skip_loop_filter all` trades a little quality for ~20 % CPU; `-skip_frame nokey` shows one frame per GOP almost for free.
 - **Recording cost**: NVENC is nearly free; libx264 `-preset veryfast` or `ultrafast` when there is no hardware encoder.

@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import traceback
+from util import mask_url
 
 
 try:
@@ -44,6 +45,21 @@ def install_custom_levels():
     logging._nova_levels_installed = True
 
 install_custom_levels()
+
+
+class CredentialMaskFilter(logging.Filter):
+    """Masks passwords and stream keys in every log line, whichever module wrote it: PyAV embeds the
+    full URL in its exception texts, and those end up in error logs."""
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        masked = mask_url(msg)
+        if masked != msg:
+            record.msg = masked
+            record.args = ()
+        return True
 
 
 class GlobalSingleWarningFilter(logging.Filter):
@@ -111,8 +127,12 @@ def setup_av_logging():
     global_filter = GlobalSingleWarningFilter(targets)
     root_logger.addFilter(global_filter)
 
+    # handler filters see every record, including those propagated from child loggers (libav, ...)
+    mask_filter = CredentialMaskFilter()
     for handler in root_logger.handlers:
         handler.addFilter(global_filter)
+        if not any(isinstance(f, CredentialMaskFilter) for f in handler.filters):
+            handler.addFilter(mask_filter)
 
     # Apply the synchronized log level to PyAV
     av.logging.set_level(av_level)

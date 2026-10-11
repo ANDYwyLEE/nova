@@ -10,6 +10,7 @@ ARG_DESCRIPTIONS = {
     '-n, --name, --camera-name' : 'Logical camera name for output recording folders.',
     '--opengl': 'Enable hardware acceleration using OpenGL (recommended for high performance).',
     '--accel': 'HW Acceleration backend. cuda, qsv, vaapi, videotoolbox, d3d11va.',
+    '--gpu': 'GPU index for HW decode/encode (0, 1, or a list 0,1 to pick at random; default: NOVA_GPU_DEVICES).',
     '-f, --fps': 'Target video frame rate (default: 30).',
     '-b, --border': 'Enable the colored window border. (default: no border line)',
     '-g, --grid-size': 'Grid size for window alignment in pixels (default: 20).',

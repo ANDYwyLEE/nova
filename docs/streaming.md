@@ -90,7 +90,7 @@ SRT options (`latency`, `mode`, `passphrase`, `pbkeylen`, `streamid`) go into `-
 - Steady upload: `-b:v 3M -maxrate 3M -bufsize 6M` (constant-ish bitrate) instead of quality mode.
 - Lower glass-to-glass latency: `-bf 0` (no B-frames), `-g 30`, NVENC `-preset p1 -tune ll`, libx264 `-tune zerolatency`.
 - Save upload on a static scene: `-r 15` (drops frames, keeps audio).
-- Several cameras on one uplink: spread encoders over GPUs with `NOVA_GPU_DEVICES=0,1`, and cap each camera's `-b:v`.
+- Several cameras on one uplink: spread encoders over GPUs with `NOVA_GPU_DEVICES = 0,1` in `[env]` (or `--gpu N` per camera), and cap each camera's `-b:v`.
 
 ## Checklist when the stream does not show up
 
