@@ -1,0 +1,18 @@
+#!/bin/sh
+# Refuse to commit camera credentials or stream keys.
+# Allowed placeholder passwords: password pass secret xxxx *** PASSWORD KEY YOUR-KEY $VAR
+# Enable once per clone:  git config core.hooksPath .githooks
+files=$(git diff --cached --name-only --diff-filter=AM | grep -v "^\.githooks/")
+[ -z "$files" ] && exit 0
+added=$(git diff --cached -U0 -- $files | grep -E '^\+' | grep -vE '^\+\+\+')
+ok='(password|pass|secret|xxxx|\*\*\*|PASSWORD|KEY|YOUR-KEY|YOUR-STREAM-KEY|\$[A-Za-z_]+|%[A-Za-z_]+%)'
+bad=$(printf '%s\n' "$added" | grep -oE "://[^/:@ \"']+:[^@/ \"']+@" | grep -vE "^://[^:]+:${ok}@\$")
+bad2=$(printf '%s\n' "$added" | grep -oE "password=[^&\"' ]+" | grep -vE "^password=${ok}\$")
+bad3=$(printf '%s\n' "$added" | grep -oE "live2/[A-Za-z0-9-]+" | grep -vE "^live2/(KEY|YOUR-KEY|YOUR-STREAM-KEY|xxxx[-x]*|\\$[A-Za-z_]+)\$")
+if [ -n "$bad$bad2$bad3" ]; then
+    echo "pre-commit: credentials found in the staged changes:" >&2
+    printf '%s\n%s\n%s\n' "$bad" "$bad2" "$bad3" | sed '/^$/d; s/^/  /' >&2
+    echo "Put real URLs in cameras.ini (git-ignored) and use placeholder passwords in committed files." >&2
+    exit 1
+fi
+exit 0

@@ -11,3 +11,8 @@ __pycache__/
 *.pyc
 # local backups
 orig_*.tar.gz
+
+# camera list with real credentials, launcher state and logs
+cameras.ini
+.nova-pids.json
+logs/

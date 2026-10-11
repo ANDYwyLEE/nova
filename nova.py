@@ -240,8 +240,11 @@ if __name__ == "__main__":
         a = QGuiApplication.instance()
         if a: QMetaObject.invokeMethod(a, "quit", Qt.QueuedConnection)
     signal.signal(signal.SIGINT, signal_handler)
-    try: signal.signal(signal.SIGTERM, signal_handler)
-    except (ValueError, AttributeError): pass
+    for name in ("SIGTERM", "SIGBREAK"):          # SIGBREAK: Windows Ctrl-Break, sent by cams.py stop
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try: signal.signal(sig, signal_handler)
+            except (ValueError, OSError): pass
 
     rt = app.exec()
     core.stop()

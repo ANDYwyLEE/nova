@@ -42,7 +42,7 @@ Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Wind
 | Streaming | RTMP (YouTube, Twitch), HLS (YouTube HLS ingest incl. HEVC), SRT*, MPEG-TS; silent-audio synthesis |
 | Audio | PortAudio playback with device selection and resampling fallback |
 | Discovery | ONVIF GetCapabilities/GetProfiles/GetStreamUri with port probing; XMeye DVRIP; Hikvision ISAPI; Dahua CGI |
-| Operations | auto-reconnect, bounded I/O timeouts, graceful SIGINT/SIGTERM shutdown, per-camera log prefixes, passwords masked in logs |
+| Operations | `cams.py` launcher with a git-ignored camera list, auto-reconnect, bounded I/O timeouts, graceful SIGINT/SIGTERM shutdown, passwords masked in logs, pre-commit secret guard |
 
 \* SRT and VAAPI need a custom FFmpeg build; everything else works with the PyPI wheel.
 
@@ -72,6 +72,16 @@ python nova.py --opengl --accel cuda -b -i "rtsp://user:pass@192.168.1.10:554/st
 ```
 
 Press **H** in the window for the key map, **R** to record, **A** for audio, **S** for a snapshot. Add `-t rtmp://a.rtmp.youtube.com/live2/YOUR-KEY` and press **T** to go live.
+
+For more than one camera, put them in `cameras.ini` (git-ignored, so passwords stay on your machine) and use the launcher:
+
+```bash
+cp cameras.example.ini cameras.ini     # edit: one [section] per camera with its rtsp:// URL
+python cams.py list                    # passwords are masked in all output
+python cams.py start                   # every enabled camera, one process each, logs in logs/
+python cams.py run frontdoor -r        # one camera in the foreground, extra args go to nova.py
+python cams.py stop                    # Ctrl-C semantics: geometry and recordings are saved
+```
 
 Linux needs the PortAudio headers for PyAudio: `sudo apt install portaudio19-dev` (see [Installation](#installation)).
 
@@ -154,13 +164,39 @@ The 3.3 core-profile OpenGL context that macOS requires is requested automatical
 
 ## Running
 
-### Scripts
+### Camera list and launcher
 
-| Script | Purpose |
+`cameras.ini` is the one file you edit. It is listed in `.gitignore`; the committed `cameras.example.ini` shows the format with placeholder credentials:
+
+```ini
+[defaults]
+opts = --opengl --accel cuda -f 30 -b -l WARNING   ; given to every camera
+
+[env]
+NOVA_TIMEOUT = 10000000                            ; environment for the camera processes
+; NOVA_GPU_DEVICES = 0,1
+
+[frontdoor]                                        ; the id used on the command line
+name = Front door                                  ; window title / recording folder
+url = rtsp://admin:password@192.168.1.10:554/stream_0
+
+[yard]
+url = rtsp://192.168.1.11:554/user=admin&password=password&channel=1&stream=0
+opts = -r --record-interval 1h                     ; appended to the default opts
+enabled = no                                       ; skipped by `start`
+```
+
+| Command | What it does |
 |---|---|
-| `s.sh` / `s.bat` / `s.ps1` | one camera; edit `OPTS` and the URL inside, extra arguments are passed through (`./s.sh -r`) |
-| `startall.sh` / `startall.bat` | one process per camera in the background |
-| `stopall.sh` / `stopall.bat` | SIGINT to every `nova.py`; window geometry and zoom are saved on the way out |
+| `python cams.py list` | cameras, enabled state, options; passwords masked |
+| `python cams.py start [ID …] [-- nova args]` | start every enabled (or the named) camera in the background; stdout goes to `logs/ID.log` |
+| `python cams.py stop [ID …]` | Ctrl-C the cameras started by `start` (window geometry, zoom and open recordings are saved) |
+| `python cams.py status` | which launched cameras are still running |
+| `python cams.py run [ID] [nova args]` | one camera in the foreground, e.g. `run frontdoor -r -t rtmp://…` |
+
+`s.sh` / `s.bat` (= `run`), `startall.sh` / `.bat` (= `start`) and `stopall.sh` / `.bat` (= `stop`) are thin wrappers that activate the venv first. The launcher works the same on Linux, Windows and macOS.
+
+A pre-commit hook (`.githooks/pre-commit`) refuses commits that contain real-looking camera passwords or YouTube stream keys; enable it once per clone with `git config core.hooksPath .githooks`.
 
 ### Command line
 
@@ -289,6 +325,7 @@ Two log lines tell you when something did not apply: `ignored unknown --ffmpeg o
 | File | Role |
 |---|---|
 | `nova.py` | command line, logging, Qt application, shutdown |
+| `cams.py`, `cameras.example.ini` | multi-camera launcher and the camera-list template (`cameras.ini` is git-ignored) |
 | `novacore.py` | per-camera controller: worker, recorder, streamer, audio, snapshots |
 | `videoworker.py` | connect / decode thread, HW decoder selection, URI resolution, frame fan-out |
 | `view.py`, `novagl.py` | frameless window, OSD, geometry, zoom; OpenGL shader renderer |

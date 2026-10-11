@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-11 — camera list and credentials
+
+### Added
+- `cams.py`: cross-platform launcher (`list`, `start`, `stop`, `status`, `run`) driven by `cameras.ini`, which is git-ignored and holds the camera URLs with their passwords. `cameras.example.ini` is the committed template with placeholder credentials. Per-camera logs in `logs/`; `stop` sends Ctrl-C semantics (SIGINT, Ctrl-Break on Windows) so state is saved.
+- `.githooks/pre-commit`: refuses commits containing real-looking camera passwords or YouTube stream keys (`git config core.hooksPath .githooks`).
+
+### Changed
+- `s.sh`, `startall.sh`, `stopall.sh`, `s.bat`, `startall.bat`, `stopall.bat` are now credential-free wrappers around `cams.py`; `s.ps1` removed.
+- `nova.py` handles SIGBREAK (Windows Ctrl-Break) like SIGINT.
+
 ## 2026-10-11 — code review follow-up
 
 ### Fixed
