@@ -29,6 +29,7 @@
 - OpenGL: direct YUV420P upload for software-decoded streams, OSD texture caching, BT.709 for HD, 3.3 core profile requested before the window is shown.
 - Bounded I/O (`av.open` timeout) so shutdown never hangs; graceful SIGINT/SIGTERM.
 - `docs/ffmpeg-options.md`, `docs/custom-ffmpeg.md`, `CHANGELOG.md`.
+- `LICENSE`: BSD Zero Clause (0BSD).
 
 ## 2026-01-30 — baseline
 
