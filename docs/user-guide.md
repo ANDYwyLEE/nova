@@ -2,6 +2,7 @@
 
 - [The camera list: cameras.ini](#the-camera-list-camerasini)
 - [The launcher: nova](#the-launcher-nova)
+- [Layouts](#layouts)
 - [Command-line options](#command-line-options)
 - [The window](#the-window)
 - [Keyboard](#keyboard)
@@ -72,6 +73,22 @@ nova -h                              help; `python nova.py --help` lists the cam
 - `stop` only touches processes it started and waits for them to exit cleanly (window geometry, zoom and open recordings are saved).
 - `run` keeps one camera in the foreground: the log appears in the terminal (`nova run ID -l DEBUG` for diagnosis) and Ctrl-C quits. Without an id it runs `[defaults] camera`, or the first enabled camera.
 
+## Layouts
+
+Every window remembers its own place. A layout remembers the whole wall: which cameras are open, where each window sits, how big it is and which part of the picture it shows. Keep as many as you like (`work`, `away`, `one-monitor`, …).
+
+```
+nova layout save NAME        write the open cameras' windows to layouts/NAME.json
+nova layout list             saved layouts and their cameras
+nova start --layout NAME     open exactly the cameras of that layout, where they were saved
+nova run ID --layout NAME    one camera at its place in that layout
+```
+
+- Arrange the windows, then `nova layout save work`. The cameras can stay open: every window writes its geometry and zoom to Nova's settings within 2 s of a change, and `save` reads them from there. With no camera open, the enabled cameras' last positions are used.
+- `nova start --layout away` opens the cameras listed in the layout (`enabled` does not apply) and gives each its saved `--geometry` / `--zoom`. From then on the windows remember their places as usual, so a plain `nova start` afterwards brings the `away` arrangement back; `nova start --layout work` switches again.
+- The file is plain JSON, camera id → `"geometry": "x,y,w,h"` and `"zoom": "rx,ry,rw,rh"` (fractions of the picture; `0,0,1,1` is the whole picture). Edit it by hand if you like. `layouts/` is git-ignored, like `cameras.ini`.
+- `--geometry x,y,w,h` and `--zoom rx,ry,rw,rh` also work directly on `nova.py`.
+
 ## Command-line options
 
 `python nova.py -i URL [options]`. Generated from the in-app help:
@@ -87,6 +104,8 @@ nova -h                              help; `python nova.py --help` lists the cam
 | `-f, --fps` | Target video frame rate (default: 30). |
 | `-b, --border` | Enable the colored window border. (default: no border line) |
 | `-g, --grid-size` | Grid size for window alignment in pixels (default: 20). |
+| `--geometry` | Initial window placement x,y,w,h; overrides the remembered one (nova start --layout uses it). |
+| `--zoom` | Initial zoom region as ratios rx,ry,rw,rh of the picture (0,0,1,1 = whole picture). |
 | `-a, --audio, --enable-audio` | Enable audio playback automatically on startup. |
 | `--headless, --no-gui` | Run in headless mode without showing the visual camera window. |
 | `-r, --record, --auto-record` | Start recording automatically on startup. |
@@ -180,7 +199,7 @@ Recording and streaming always use the full frame, never the zoomed view.
 
 ## Where settings are stored
 
-Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom region. They are written when the window closes, on Ctrl-C and on `nova stop`.
+Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom region. They are written within 2 s of every move, resize or zoom change, and once more when the window closes, on Ctrl-C and on `nova stop`. A layout (`nova layout save`) is a named snapshot of these values in `layouts/NAME.json`.
 
 | OS | Location |
 |---|---|

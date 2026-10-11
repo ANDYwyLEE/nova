@@ -77,6 +77,16 @@ if __name__ == "__main__":
         help="Grid size for window alignment in pixels."
     )
     parser.add_argument(
+        "--geometry",
+        type=str,
+        help="Initial window placement x,y,w,h; overrides the remembered one (nova start --layout uses it)."
+    )
+    parser.add_argument(
+        "--zoom",
+        type=str,
+        help="Initial zoom region as ratios rx,ry,rw,rh of the picture (0,0,1,1 = whole picture)."
+    )
+    parser.add_argument(
         "-a", "--audio", "--enable-audio",
         dest="auto_audio",
         action="store_true",
@@ -193,7 +203,9 @@ if __name__ == "__main__":
         fmt.setProfile(QSurfaceFormat.CoreProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
 
-    app = QGuiApplication(sys.argv)
+    # Qt must not see Nova's options: on X11 it would consume --geometry (as an X geometry string,
+    # overriding the window size), -display, -title, ...  Use QT_* environment variables instead.
+    app = QGuiApplication([sys.argv[0]])
     app.setOrganizationName("judvi")
     app.setApplicationName("Nova")
 
@@ -230,6 +242,8 @@ if __name__ == "__main__":
             core,
             grid=args.grid_size,
             border=args.border,
+            geometry=args.geometry,
+            zoom=args.zoom,
         )
     else:
         # nobody owns a window: a fatal worker error must end the process

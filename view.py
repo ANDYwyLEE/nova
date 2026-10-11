@@ -35,6 +35,8 @@ class Nova(QOpenGLWindow):
         core,
         grid=20,
         border=False,
+        geometry=None,
+        zoom=None,
     ):
         super().__init__()
 
@@ -78,7 +80,7 @@ class Nova(QOpenGLWindow):
 
         self.qset = QSettings()
         gk = f"geom_{self.url_hash}"
-        g = self.qset.value(gk)
+        g = geometry or self.qset.value(gk)        # --geometry (a layout) wins over the remembered place
         if g:
             try:
                 x, y, w, h = map(int, g.split(","))
@@ -89,7 +91,7 @@ class Nova(QOpenGLWindow):
 
         self.pending_zoom_coord = False
         zk = f"zoom_{self.url_hash}"
-        z = self.qset.value(zk)
+        z = zoom or self.qset.value(zk)
         self.z_ratio = (0,0,1,1)
         if z:
             try:
@@ -98,6 +100,14 @@ class Nova(QOpenGLWindow):
                 self.pending_zoom_coord = True
             except Exception:
                 pass
+
+        # Persist geometry/zoom within 2 s of a change, not only at exit: a crash loses nothing and
+        # `nova layout save` sees the windows where they are now.
+        self._persisted = None
+        self._persist_timer = QTimer(self)
+        self._persist_timer.setInterval(2000)
+        self._persist_timer.timeout.connect(self._persist_if_changed)
+        self._persist_timer.start()
 
         self.core.img_sig.connect(self.update_img)
         self.core.stat_sig.connect(self.update_stat)
@@ -422,23 +432,42 @@ class Nova(QOpenGLWindow):
             self.is_running = False
             if self.helper.is_on(): self.helper.off()
             #self.core.stop() # check nova.py
+            self._persist_timer.stop()
+            self._persist(force=True)
 
-            gk = f"geom_{self.url_hash}"
-            g = self.geometry()
-            x, y, w, h = g.x(), g.y(), g.width(), g.height()
-            self.qset.setValue(gk, f"{x},{y},{w},{h}")
+    def _state_strings(self):
+        """('x,y,w,h', 'rx,ry,rw,rh') for the window as it is now; zoom is None while the video size is
+        still unknown (a restored zoom must not be overwritten with a guess)."""
+        g = self.geometry()
+        geom = f"{g.x()},{g.y()},{g.width()},{g.height()}"
+        if self.pending_zoom_coord:
+            return geom, None
+        zx, zy, zw, zh = self.zoomer.getRect()
+        vw, vh = self.core.width(), self.core.height()
+        rx = zx / vw if vw > 0 else 0.0
+        ry = zy / vh if vh > 0 else 0.0
+        rw = zw / vw if vw > 0 else 1.0
+        rh = zh / vh if vh > 0 else 1.0
+        return geom, f'{rx},{ry},{rw},{rh}'
 
-            if self.pending_zoom_coord: return
-            zk = f"zoom_{self.url_hash}"
-            zx, zy, zw, zh = self.zoomer.getRect()
-            vw, vh = self.core.width(), self.core.height()
-            rx = zx / vw if vw > 0 else 0.0
-            ry = zy / vh if vh > 0 else 0.0
-            rw = zw / vw if vw > 0 else 1.0
-            rh = zh / vh if vh > 0 else 1.0
-            s = f'{rx},{ry},{rw},{rh}'
-            self.qset.setValue(zk, s)
-            self.qset.sync()
+    def _persist(self, force=False):
+        """Write geometry/zoom to QSettings when they changed since the last write (always with force).
+        A fullscreen window keeps its last normal geometry on record until it exits."""
+        if self.is_fullscreen() and not force:
+            return
+        state = self._state_strings()
+        if state == self._persisted and not force:
+            return
+        geom, zoom = state
+        self.qset.setValue(f"geom_{self.url_hash}", geom)
+        if zoom is not None:
+            self.qset.setValue(f"zoom_{self.url_hash}", zoom)
+        self.qset.sync()
+        self._persisted = state
+
+    def _persist_if_changed(self):
+        if self.is_running:
+            self._persist()
 
 
 

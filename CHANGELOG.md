@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-11 — layouts
+
+### Added
+- Layouts: `nova layout save NAME` records which cameras are open and where (`layouts/NAME.json`); `nova start --layout NAME` opens exactly those cameras at those places; `nova run ID --layout NAME` for one camera. `nova.py --geometry x,y,w,h` and `--zoom rx,ry,rw,rh` set the initial placement and zoom directly.
+
+### Changed
+- Windows persist geometry and zoom within 2 s of a change, not only at exit, so a crash loses nothing and `layout save` sees the wall as it is.
+- Qt no longer sees Nova's command line (`QGuiApplication([argv[0]])`): on X11 it consumed `--geometry` as an X geometry string and overrode the window width. Use `QT_*` environment variables (`[env]` in `cameras.ini`) for Qt settings.
+
 ## 2026-10-11 — `nova` launcher
 
 ### Added

@@ -80,7 +80,7 @@ def _enum_int(v, default):
 
 
 class NovaGL(Nova):
-    def __init__(self, core, grid=20, border=False):
+    def __init__(self, core, grid=20, border=False, geometry=None, zoom=None):
         self.shader_program = None
         self.VAO = self.VBO = self.EBO = self.VAO_static = None
         self.video_texture = None
@@ -89,7 +89,7 @@ class NovaGL(Nova):
         self.texture_cache = {}
         self.loc = {}
         self.max_anisotropy = 0.0
-        super().__init__(core, grid, border)
+        super().__init__(core, grid, border, geometry=geometry, zoom=zoom)
 
     def _surface_format(self):
         # Applied by Nova.__init__ *before* show(): a 3.3 core profile is required for the

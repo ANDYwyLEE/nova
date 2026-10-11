@@ -6,8 +6,10 @@ listed in .gitignore, so credentials never reach the repository.  cameras.exampl
 committed template.  `nova -h` prints the commands.
 """
 import os
+import re
 import sys
 import json
+import hashlib
 import time
 import shlex
 import signal
@@ -19,6 +21,7 @@ INI = os.path.join(HERE, "cameras.ini")
 EXAMPLE = os.path.join(HERE, "cameras.example.ini")
 PIDS = os.path.join(HERE, ".nova-pids.json")
 LOGDIR = os.path.join(HERE, "logs")
+LAYOUTS = os.path.join(HERE, "layouts")
 WINDOWS = os.name == "nt"
 RESERVED = ("defaults", "env")
 VENV_PYTHON = (("venv/Scripts/python.exe",) if WINDOWS else ("venv/bin/python", "venv/bin/python3"))
@@ -37,6 +40,9 @@ nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.
   nova stop   [ID ...] [--timeout S]       stop cameras started by start/record (saves state like Ctrl-C)
   nova status                              which launched cameras are still running, and in which mode
   nova list                                cameras, enabled state and options (passwords masked)
+  nova layout save NAME                    remember which cameras are open and where (layouts/NAME.json)
+  nova layout list                         saved layouts
+  nova start --layout NAME                 open exactly those cameras where they were saved
   nova -h                                  this text          nova.py --help    every camera option
   -c FILE                                  use FILE instead of cameras.ini
 
@@ -44,6 +50,7 @@ Words that do not start with '-' are camera ids; everything from the first optio
   nova start frontdoor -r                  window and recording
   nova record yard -t rtmp://...           headless recording plus a live stream
 Options a camera should always get belong in its cameras.ini section (opts = -r).
+run ID --layout NAME puts one camera at its place in that layout.
 start/record detach from the terminal and write logs/ID.log; run stays attached.
 """
 
@@ -97,13 +104,61 @@ def python_exe(defaults):
     return sys.executable
 
 
-def command(cam, defaults, extra, record=False):
+def url_hash(url):
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]     # the key nova.py uses in QSettings
+
+
+def window_settings():
+    """Nova's per-window settings store (QSettings 'judvi' / 'Nova'), or None without PySide6."""
+    try:
+        from PySide6.QtCore import QSettings
+    except ImportError:
+        return None
+    return QSettings("judvi", "Nova")
+
+
+def layout_names():
+    return sorted(f[:-5] for f in os.listdir(LAYOUTS) if f.endswith(".json")) if os.path.isdir(LAYOUTS) else []
+
+
+def layout_path(name):
+    if not re.fullmatch(r"[\w.-]+", name):
+        sys.exit(f"layout names use letters, digits, '.', '_' or '-': {name!r}")
+    return os.path.join(LAYOUTS, f"{name}.json")
+
+
+def load_layout(name):
+    p = layout_path(name)
+    if not os.path.exists(p):
+        have = layout_names()
+        sys.exit(f"no layout {name!r}" + (f"; saved layouts: {', '.join(have)}" if have
+                                           else "; save one with `nova layout save NAME`"))
+    with open(p, encoding="utf-8") as f:
+        lay = json.load(f)
+    if not isinstance(lay.get("cameras"), dict):
+        sys.exit(f"layouts/{name}.json has no \"cameras\" object")
+    return lay
+
+
+def layout_flags(layout, cam):
+    """--geometry / --zoom for a camera from a loaded layout; [] when the layout has no entry for it."""
+    e = (layout or {}).get("cameras", {}).get(cam.id) or {}
+    flags = []
+    if e.get("geometry"):
+        flags += ["--geometry", str(e["geometry"])]
+    if e.get("zoom"):
+        flags += ["--zoom", str(e["zoom"])]
+    return flags
+
+
+def command(cam, defaults, extra, record=False, layout=None):
     argv = [python_exe(defaults), "-u", os.path.join(HERE, "nova.py")]
     argv += shlex.split(defaults.get("opts", "") if defaults else "")
     argv += shlex.split(cam.opts)
     if record:
         argv += ["--headless", "-r"]
     argv += ["-n", cam.name, "-i", cam.url]
+    argv += layout_flags(layout, cam)
     argv += extra
     return argv
 
@@ -248,12 +303,22 @@ def cmd_start(defaults, env, cams, args, record=False):
     pids = read_pids()
     stagger = float(defaults.get("stagger", 0.5)) if defaults else 0.5
     launched, failed = [], 0
-    for cam in select(cams, args.ids, only_enabled=True):
+    layout = load_layout(args.layout) if args.layout else None
+    if layout and not args.ids:
+        # a layout says which cameras are open, `enabled` does not apply
+        known = {c.id: c for c in cams}
+        missing = [i for i in layout["cameras"] if i not in known]
+        if missing:
+            print(f"layout {args.layout}: not in cameras.ini, skipped: {', '.join(missing)}")
+        chosen = [known[i] for i in layout["cameras"] if i in known]
+    else:
+        chosen = select(cams, args.ids, only_enabled=True)
+    for cam in chosen:
         old = pids.get(cam.id)
         if old and alive(old["pid"]):
             print(f"{cam.id}: already running (pid {old['pid']}, {old['mode']})")
             continue
-        argv = command(cam, defaults, args.extra, record)
+        argv = command(cam, defaults, args.extra, record, layout)
         mode = mode_of(argv)
         if mode == "headless":
             print(f"{cam.id}: refused - headless without -r or -t would neither show nor save anything "
@@ -269,9 +334,10 @@ def cmd_start(defaults, env, cams, args, record=False):
             else:
                 kw["start_new_session"] = True
             p = subprocess.Popen(argv, **kw)
-        pids[cam.id] = {"pid": p.pid, "mode": mode, "gpu": gpu}
+        pids[cam.id] = {"pid": p.pid, "mode": mode, "gpu": gpu, "layout": args.layout}
         write_pids(pids)
-        print(f"{cam.id}: starting (pid {p.pid}, {mode}{f', gpu {gpu}' if gpu is not None else ''}) -> logs/{cam.id}.log")
+        tags = mode + (f", gpu {gpu}" if gpu is not None else "") + (f", layout {args.layout}" if layout else "")
+        print(f"{cam.id}: starting (pid {p.pid}, {tags}) -> logs/{cam.id}.log")
         launched.append((cam, p, time.time()))
         time.sleep(stagger)
     # A camera that dies within the grace period did not start: say so instead of "started".
@@ -333,7 +399,8 @@ def cmd_status(defaults, env, cams, args):
     for cid, e in pids.items():
         state = "running" if alive(e["pid"]) else "exited "
         gpu = f"gpu {e['gpu']}" if e.get("gpu") is not None else ""
-        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {e['mode']:<16} {gpu:<6} logs/{cid}.log")
+        lay = f"layout {e['layout']}" if e.get("layout") else ""
+        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {e['mode']:<16} {gpu:<6} {lay:<18} logs/{cid}.log")
 
 
 def cmd_run(defaults, env, cams, args):
@@ -345,7 +412,7 @@ def cmd_run(defaults, env, cams, args):
         if not enabled:
             sys.exit("no enabled camera in cameras.ini")
         cam = enabled[0]
-    argv = command(cam, defaults, args.extra)
+    argv = command(cam, defaults, args.extra, layout=load_layout(args.layout) if args.layout else None)
     gpu = assign_gpu(cam, cams, env, argv)
     print(f"running {cam.id}" + (f" on gpu {gpu}" if gpu is not None else "") + ": "
           + " ".join(mask_url(a) for a in argv[2:]), file=sys.stderr)
@@ -368,8 +435,64 @@ def cmd_run(defaults, env, cams, args):
         return 130
 
 
+def cmd_layout(defaults, env, cams, args):
+    sub = args.ids[0] if args.ids else "list"
+    if sub == "list" and len(args.ids) <= 1:
+        names = layout_names()
+        if not names:
+            print("no layouts yet: arrange the windows, then `nova layout save NAME`")
+            return
+        for n in names:
+            lay = load_layout(n)
+            ids = list(lay["cameras"])
+            print(f"{n:<20} {len(ids):>2} cameras  saved {str(lay.get('saved', '?'))[:16]}  {', '.join(ids)}"[:200])
+        return
+    if sub != "save" or len(args.ids) != 2:
+        sys.exit("usage: nova layout save NAME | nova layout list")
+    name = args.ids[1]
+    path = layout_path(name)
+    qs = window_settings()
+    if qs is None:
+        sys.exit("layout save needs PySide6: run it as ./nova (or nova.bat) so the project venv is used")
+    pids = read_pids()
+    running = [c for c in cams if c.id in pids and alive(pids[c.id]["pid"])
+               and not pids[c.id].get("mode", "").startswith("headless")]
+    chosen = running or [c for c in cams if c.enabled]
+    source = "open cameras" if running else "enabled cameras (none open: positions are from their last exit)"
+    entries, missing = {}, []
+    for c in chosen:
+        h = url_hash(c.url)
+        geom = qs.value(f"geom_{h}")
+        if not geom:
+            missing.append(c.id)
+            continue
+        zoom = qs.value(f"zoom_{h}")
+        entries[c.id] = {"geometry": str(geom), **({"zoom": str(zoom)} if zoom else {})}
+    if not entries:
+        sys.exit("no window positions on record yet: open the cameras once (nova start), then save")
+    os.makedirs(LAYOUTS, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"saved": time.strftime("%Y-%m-%dT%H:%M:%S"), "cameras": entries}, f, indent=2)
+    print(f"layout {name!r}: {len(entries)} {source} -> layouts/{name}.json")
+    for cid, e in entries.items():
+        print(f"  {cid:<20} {e['geometry']}" + (f"  zoom {e['zoom']}" if e.get("zoom") not in (None, "0.0,0.0,1.0,1.0") else ""))
+    if missing:
+        print(f"  skipped, never shown a window: {', '.join(missing)}")
+
+
 COMMANDS = {"list": cmd_list, "start": cmd_start, "record": cmd_record, "stop": cmd_stop,
-            "status": cmd_status, "run": cmd_run}
+            "status": cmd_status, "run": cmd_run, "layout": cmd_layout}
+
+
+def take_option(extra, name):
+    """Remove `--name VALUE` / `--name=VALUE` from extra (launcher option, not for nova.py); return VALUE or None."""
+    for i, t in enumerate(extra):
+        if t == name and i + 1 < len(extra):
+            return extra.pop(i + 1), extra.pop(i)
+        if t.startswith(name + "="):
+            extra.pop(i)
+            return t.split("=", 1)[1], None
+    return None, None
 
 
 def split_ids(tokens):
@@ -404,6 +527,11 @@ def main(argv=None):
     args.timeout = 15
     if cmd == "stop" and args.extra[:1] == ["--timeout"] and len(args.extra) > 1:
         args.timeout = float(args.extra[1]); args.extra = args.extra[2:]
+    args.layout = None
+    if cmd in ("start", "run", "record"):
+        args.layout, _ = take_option(args.extra, "--layout")
+        if cmd == "record" and args.layout:
+            print("note: --layout is ignored by record (no windows)"); args.layout = None
     if cmd == "run":
         if len(args.ids) > 1:
             sys.exit("run takes one camera id")

@@ -14,6 +14,8 @@ ARG_DESCRIPTIONS = {
     '-f, --fps': 'Target video frame rate (default: 30).',
     '-b, --border': 'Enable the colored window border. (default: no border line)',
     '-g, --grid-size': 'Grid size for window alignment in pixels (default: 20).',
+    '--geometry': 'Initial window placement x,y,w,h; overrides the remembered one (nova start --layout uses it).',
+    '--zoom': 'Initial zoom region as ratios rx,ry,rw,rh of the picture (0,0,1,1 = whole picture).',
     '-a, --audio, --enable-audio': 'Enable audio playback automatically on startup.',
     '--headless, --no-gui': 'Run in headless mode without showing the visual camera window.',
     '-r, --record, --auto-record': 'Start recording automatically on startup.',

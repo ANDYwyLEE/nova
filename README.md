@@ -12,7 +12,7 @@ Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Wind
 | | |
 |---|---|
 | [Installation](docs/install.md) | Linux / Windows / macOS, what the PyPI FFmpeg includes, GPU drivers |
-| [User guide](docs/user-guide.md) | `cameras.ini`, the `nova` launcher, every command-line option, **all keyboard and mouse controls**, zoom, audio, snapshots, where settings live |
+| [User guide](docs/user-guide.md) | `cameras.ini`, the `nova` launcher, every command-line option, **all keyboard and mouse controls**, layouts, zoom, audio, snapshots, where settings live |
 | [Recording](docs/recording.md) | segments, fragmented MP4, timestamps and A/V sync, encoder selection, tuning, housekeeping |
 | [Live streaming](docs/streaming.md) | YouTube RTMP and HLS (HEVC), Twitch, SRT, MPEG-TS, bitrate/latency, checklist |
 | [FFmpeg options](docs/ffmpeg-options.md) | what `--ffmpeg "…"` can and cannot do, measured per encoder, with recipes |
@@ -39,6 +39,7 @@ cp cameras.example.ini cameras.ini      # one [section] per camera; presets per 
 ./nova start                            # a window per enabled camera (Windows: nova start)
 ./nova record                           # the same without windows, recording from the first frame
 ./nova run frontdoor -r                 # one camera in this terminal; extra args go to nova.py
+./nova layout save work                 # remember the whole wall; ./nova start --layout work brings it back
 ./nova stop
 ```
 
