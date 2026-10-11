@@ -170,21 +170,28 @@ The 3.3 core-profile OpenGL context that macOS requires is requested automatical
 
 ```ini
 [defaults]
-opts = --opengl --accel cuda -f 30 -b -l WARNING   ; given to every camera
+; one `opts =` line for every camera; the template lists presets per OS / GPU / log level
+opts = --opengl --accel cuda -f 30 -b -l CRITICAL
 
 [env]
-NOVA_TIMEOUT = 10000000                            ; environment for the camera processes
+; environment for the camera processes
+NOVA_TIMEOUT = 10000000
 ; NOVA_GPU_DEVICES = 0,1
 
-[frontdoor]                                        ; the id used on the command line
-name = Front door                                  ; window title / recording folder
+; one section per camera: the section name is the id used on the command line
+[frontdoor]
+name = Front door
 url = rtsp://admin:password@192.168.1.10:554/stream_0
 
 [yard]
 url = rtsp://192.168.1.11:554/user=admin&password=password&channel=1&stream=0
-opts = -r --record-interval 1h                     ; appended to the default opts
-enabled = no                                       ; skipped by `start`
+; appended to the default opts
+opts = -r --record-interval 1h
+; skipped by `start`
+enabled = no
 ```
+
+Comments are whole lines starting with `;` or `#`; a `;` after a value would become part of the value.
 
 | Command | What it does |
 |---|---|
