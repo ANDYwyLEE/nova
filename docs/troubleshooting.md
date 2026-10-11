@@ -16,7 +16,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 
 | Message | Meaning | What to do |
 |---|---|---|
-| `Connecting… / Failed: Connection timed out` (overlay) | camera unreachable | check IP/port, firewall; Nova retries every 10 s; `NOVA_TIMEOUT` sets the socket timeout |
+| `Unreachable: host:port …` or `Failed: Connection timed out` (overlay) | camera down or unreachable | check IP/port, firewall; Nova retries every 10 s; `NOVA_TIMEOUT` sets the socket timeout |
 | `Failed: 401 Unauthorized` / `Invalid data found` | wrong credentials or wrong path | try the camera's ONVIF address: `onvif://user:pw@ip` resolves the correct RTSP path |
 | `--accel=X is not supported by this FFmpeg/PyAV build` | the wheel lacks that hwaccel (e.g. `vaapi`) | use `cuda`/`qsv`/`d3d11va`, or build FFmpeg ([custom-ffmpeg.md](custom-ffmpeg.md)) |
 | `No working HW decoder for --accel=cuda. Falling back to software` | the GPU is not usable from this process | `nvidia-smi` works? driver loaded? `--gpu` / `NOVA_GPU_DEVICES` points at an existing GPU? |
@@ -66,6 +66,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 - **Big cameras, small windows**: `--ffmpeg "-resize 960x540"` (cuvid) scales inside the decoder, so display, recording and streaming all work on the smaller frame.
 - **Software decoding**: `--ffmpeg "-threads 2"` per camera avoids 15 processes each spawning 32 threads; `-skip_loop_filter all` trades a little quality for ~20 % CPU; `-skip_frame nokey` shows one frame per GOP almost for free.
 - **Recording cost**: NVENC is nearly free; libx264 `-preset veryfast` or `ultrafast` when there is no hardware encoder.
+- **A camera that is down**: the window shows `Unreachable: host:port …` and Nova retries every 10 s. The host is probed with a plain TCP connect before the RTSP open, so `nova stop` ends such a camera at once. Only a camera that *answers* but then stalls in the RTSP handshake can hold a stop for up to `NOVA_TIMEOUT` (that open cannot be interrupted earlier).
 - **Start-up storms**: `nova start` staggers starts (`stagger = 0.5`) and encoders are probed under a cross-process lock, so 15 cameras can start at once without fighting over the GPU.
 
 ## Known limitations

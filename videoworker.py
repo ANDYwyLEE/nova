@@ -1,6 +1,8 @@
 # videoworker.py
 
 import os
+from urllib.parse import urlparse
+import socket
 import re
 import time
 import random
@@ -37,6 +39,8 @@ SEPARATE_DECODER_SUFFIX = {
 }
 # hwaccel device types PyAV can attach to the *standard* decoder via av.open(hwaccel=...).
 # These are known to misbehave when attached at open time; they are only used as separate decoders.
+# schemes whose host is probed with a plain TCP connect before av.open(), and their default ports
+PROBE_PORTS = {"rtsp": 554, "rtsps": 322, "rtmp": 1935, "rtmps": 443, "http": 80, "https": 443, "tcp": None}
 HWACCEL_UNSAFE_FOR_OPEN = {"qsv", "vulkan", "drm", "opencl"}
 
 PATTERN = re.compile(r'^\[[^\]]+\]\s*([^:]+)')
@@ -166,6 +170,7 @@ class VideoWorker(QThread):
         self.audio_on = False
         self.run_flag = True
         self.gpu_idx = _pick_gpu_index(gpu)
+        self._unreachable = None        # last probe failure, to log state changes once
         self.codec_name = "h264"
         self._clone_warned = False
 
@@ -299,6 +304,25 @@ class VideoWorker(QThread):
             except Exception as e:
                 logging.warning(f"[VideoWorker] HWAccel({self.accel}) setup failed: {_short_err(e)}")
 
+        # av.open() cannot be interrupted before its timeout, so a camera that is down would hold
+        # stop() for up to NOVA_TIMEOUT.  Probe the host first in 0.5 s slices that honour run_flag.
+        if not fmt and t_s > 0:
+            reason = self._probe_host(file, t_s)
+            if not self.run_flag:
+                return None
+            if reason is not None:
+                self.stat_sig.emit(f"Unreachable:\n{reason}")
+                if reason != self._unreachable:
+                    logging.info(f"[VideoWorker] unreachable, retrying every 10 s: {reason} [{mask_url(file)}]")
+                    self._unreachable = reason
+                else:
+                    logging.debug(f"[VideoWorker] still unreachable: {reason}")
+                self.clock.sleep(10000)
+                return None
+            if self._unreachable is not None:
+                logging.info(f"[VideoWorker] host answers again [{mask_url(file)}]")
+                self._unreachable = None
+
         logging.debug(f"[VideoWorker] av.open({mask_url(file)}, format={fmt}, options={open_opts})")
         try:
             return av.open(file, **kwargs)
@@ -313,6 +337,41 @@ class VideoWorker(QThread):
             logging.trace(f"[VideoWorker] Exception Traceback: {traceback.format_exc()}")
             self.clock.sleep(10000)
         return None
+
+    def _probe_host(self, url, budget_s):
+        """TCP connect to the camera's host:port, in 0.5 s slices so stop() interrupts it at once.
+        None = the host answers (or the probe does not apply: devices, udp, srt, files);
+        otherwise a short reason.  A refused or unroutable host is reported immediately, a silent
+        one after budget_s (the same NOVA_TIMEOUT av.open() would have spent)."""
+        try:
+            p = urlparse(url)
+        except ValueError:
+            return None
+        if p.scheme not in PROBE_PORTS or not p.hostname:
+            return None
+        port = p.port or PROBE_PORTS[p.scheme]
+        if not port:
+            return None
+        try:
+            infos = socket.getaddrinfo(p.hostname, port, 0, socket.SOCK_STREAM)
+        except OSError as e:
+            return f"{p.hostname}: {e.strerror or e}"
+        deadline = time.monotonic() + budget_s
+        reason = f"{p.hostname}:{port} does not answer"
+        while self.run_flag and time.monotonic() < deadline:
+            for family, stype, proto, _, addr in infos:
+                sock = socket.socket(family, stype, proto)
+                sock.settimeout(0.5)
+                try:
+                    sock.connect(addr)
+                    return None
+                except socket.timeout:
+                    pass
+                except OSError as e:
+                    return f"{p.hostname}:{port}: {e.strerror or e}"      # refused, no route, ...
+                finally:
+                    sock.close()
+        return reason
 
     # ------------------------------------------------------------------ decoder selection
     def _open_named_decoder(self, name, base, hw=True):

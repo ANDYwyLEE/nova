@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-11 — stop while a camera is down
+
+### Fixed
+- `nova stop` / Ctrl-C could take up to `NOVA_TIMEOUT` (10 s) when a camera was unreachable: `av.open()` cannot be interrupted before its timeout. The worker now probes the host with a plain TCP connect in 0.5 s slices that honour the stop flag, shows `Unreachable: host:port` in the window and logs the state change once; stop is immediate in that state.
+- `Clock.wake()` could be lost when it raced with `sleep()` (the retry pause then ran its full length).
+
 ## 2026-10-11 — layouts
 
 ### Added

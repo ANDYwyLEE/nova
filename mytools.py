@@ -10,14 +10,18 @@ class Clock:
         self._abort = False
 
     def sleep(self, ms):
-        if self._abort: return
+        """Wait up to ms milliseconds; returns at once (now and forever) after wake()."""
         self.m.lock()
-        self.c.wait(self.m, ms)
+        if not self._abort:
+            self.c.wait(self.m, ms)
         self.m.unlock()
 
     def wake(self):
+        # flag and wake under the mutex, otherwise a wake() between sleep()'s check and wait() is lost
+        self.m.lock()
         self._abort = True
         self.c.wakeAll()
+        self.m.unlock()
 
 
 
