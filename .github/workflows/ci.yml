@@ -32,6 +32,16 @@ jobs:
         run: |
           python -m pip install -U pip
           pip install -r requirements-dev.txt
+      - name: FFmpeg build inside the av wheel
+        shell: python
+        run: |
+          import av, platform
+          from av.codec.hwaccel import hwdevices_available
+          print("python", platform.python_version(), platform.platform())
+          print("av", av.__version__, "ffmpeg", getattr(av, "ffmpeg_version_info", "?"))
+          print("hw devices:", hwdevices_available())
+          print("hw codecs:", sorted(n for n in av.codecs_available
+                                     if any(k in n for k in ("nvenc", "cuvid", "qsv", "amf", "videotoolbox", "vaapi", "d3d11", "mf"))))
       - name: Generated doc tables are current
         run: python docs/gen_keys.py --check
       - name: Launcher help
