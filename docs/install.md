@@ -19,7 +19,7 @@ Checked with `av` 19.0.1 on Linux (2026-10-11). The wheel bundles its own FFmpeg
 | `*_qsv` via libvpl (Intel), `*_amf` (AMD) | VAAPI (Intel/AMD on Linux without NVIDIA) |
 | libx264, libx265, libsvtav1, libvpx, aac, opus | `drawtext` filter (no libfreetype) |
 | rtmps / https / tls (gnutls) | anything newer than the wheel's FFmpeg |
-| videotoolbox (macOS wheel; expected, verify below) | |
+| VideoToolbox on macOS: hwaccel decode plus `h264_videotoolbox`, `hevc_videotoolbox`, `prores_videotoolbox` encoders (in the wheel since `av` 12.3.0, July 2024; verified on CI) | |
 
 Verify your own installation:
 
@@ -89,18 +89,22 @@ pip install --no-binary av av --no-cache-dir
 
 PyAudio assumes MSVC on Windows. Under MSYS2 build it by hand: `pip download pyaudio`, unpack, and in `setup.py`'s `win32` branch add `('MS_WIN64', '1')` to `defines`, `/ucrt64/include` to `include_dirs`, `/ucrt64/lib` to the library path and `portaudio` to `external_libraries`; then `python setup.py install`.
 
-## macOS (11.7 Big Sur or later)
+## macOS
+
+Minimum versions follow the `av` wheel: **Intel Macs need macOS 11 Big Sur or later** (`macosx_11_0_x86_64`), **Apple Silicon Macs need macOS 14 Sonoma or later** (`macosx_14_0_arm64`; every M-series Mac can run it). Python 3.12 or newer. Older PyAV releases had no macOS wheels at all (before 12.0, March 2024) or shipped FFmpeg without VideoToolbox (12.0 to 12.2); since 12.3 the wheel has VideoToolbox, so a custom FFmpeg build is only needed for SRT.
 
 ```bash
 xcode-select --install
-sudo port install portaudio python312          # MacPorts; or: brew install portaudio python@3.12
+sudo port install portaudio python312          # MacPorts (any python3xx >= 3.12)
 git clone https://github.com/ANDYwyLEE/nova.git && cd nova
-python3.12 -m venv python3.12 && ln -s python3.12 venv && . venv/bin/activate
+python3.12 -m venv venv && . venv/bin/activate
 pip install -U pip
-CFLAGS="-I/opt/local/include" LDFLAGS="-L/opt/local/lib" pip install -r requirements.txt   # Homebrew: /opt/homebrew
+CFLAGS="-I/opt/local/include" LDFLAGS="-L/opt/local/lib" pip install -r requirements.txt   # PyAudio builds against MacPorts' PortAudio
 python nova.py --opengl --accel videotoolbox -i rtsp://...
 cp cameras.example.ini cameras.ini && ./nova start      # several cameras; ./nova -h lists the commands
 ```
+
+What VideoToolbox accelerates is decided by the Mac, not by the wheel: H.264 on every supported Mac, HEVC decode/encode on Apple Silicon and on Intel Macs from 2016 (6th-generation Core) on. On an older Intel Mac one direction may fall back to software while the other is accelerated; the log lines `HW decoder:` / `software decoder` and `[AVWriter]` show which.
 
 `--opengl` requests the 3.3 core-profile context macOS requires; without it the QPainter renderer is used.
 

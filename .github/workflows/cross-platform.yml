@@ -32,7 +32,7 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements*.txt
-      - name: PortAudio (macOS, PyAudio is built from source)
+      - name: PortAudio (macOS, PyAudio is built from source; Homebrew only because the runner ships it, the install guide uses MacPorts)
         if: runner.os == 'macOS'
         run: brew install portaudio
       - name: Python dependencies (macOS)
