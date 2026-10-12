@@ -31,7 +31,7 @@ python -c "import av; av.open('srt://127.0.0.1:1', timeout=0.3)"    # 'Protocol 
 
 If you need SRT or VAAPI, build FFmpeg yourself: [custom-ffmpeg.md](custom-ffmpeg.md).
 
-## Linux (Ubuntu 24.04)
+## Linux (Ubuntu 24.04 and 26.04)
 
 ```bash
 sudo apt update
@@ -39,7 +39,7 @@ sudo apt install -y git python3 python3-venv python3-dev portaudio19-dev \
     libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0
 
 git clone https://github.com/ANDYwyLEE/nova.git && cd nova
-python3 -m venv python3.12 && ln -s python3.12 venv && . venv/bin/activate
+python3 -m venv venv && . venv/bin/activate         # 24.04: Python 3.12, 26.04: 3.13/3.14 - same av wheel
 pip install -U pip && pip install -r requirements.txt
 
 python nova.py --help
@@ -49,9 +49,9 @@ cp cameras.example.ini cameras.ini          # then edit it: see the user guide
 
 - Ubuntu 24.04's `python3` is 3.12, which is enough: it installs the same `av` wheel, with the same NVIDIA/Intel/AMD codecs, as a newer Python. Ubuntu 22.04 (Python 3.10) needs a newer interpreter first (e.g. the deadsnakes PPA).
 - `portaudio19-dev` is needed to build PyAudio; the Qt libraries cover the xcb platform plugin.
-- **NVIDIA**: the proprietary driver is all that is required (`libnvcuvid.so`, `libnvidia-encode.so` come with it). The CUDA toolkit is not needed. Use `--accel cuda`.
+- **NVIDIA**: the proprietary driver is all that is required (`libnvcuvid.so`, `libnvidia-encode.so` come with it); the CUDA toolkit is not needed. Use `--accel cuda`. The wheel's NVENC needs **driver 570.0 or newer** (`The minimum required Nvidia driver for nvenc is 570.0` in the log otherwise): Ubuntu 26.04 ships that, on 24.04 pick `nvidia-driver-570` or newer rather than the 535/550 series. With an older driver Nova still runs and records, but encodes with libx264 on the CPU.
 - **Intel**: `--accel qsv` needs `intel-media-va-driver-non-free` and the oneVPL runtime (`libvpl2`); untested on this project's machines. `--accel vaapi` needs the custom build.
-- **Wayland**: Nova positions its frameless windows itself, which Wayland compositors do not allow. Run it under XWayland: `QT_QPA_PLATFORM=xcb python nova.py …` (or put `QT_QPA_PLATFORM = xcb` in the `[env]` section of `cameras.ini`).
+- **Wayland**: Nova positions its frameless windows itself, which Wayland compositors do not allow. Run it under XWayland: `QT_QPA_PLATFORM=xcb python nova.py …` (or put `QT_QPA_PLATFORM = xcb` in the `[env]` section of `cameras.ini`). On Ubuntu 24.04 you can instead log into the "Ubuntu on Xorg" session; Ubuntu 26.04's GNOME no longer has one (X11 apps run through XWayland only), so there the `[env]` line is the normal setup. Desktops that still offer an X11 session (Cinnamon, KDE, Xfce) need nothing.
 - **Headless servers** (recording/streaming only): `--headless` sets `QT_QPA_PLATFORM=offscreen`; no X server is needed.
 
 ## Windows
