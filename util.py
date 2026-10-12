@@ -143,6 +143,13 @@ class Util():
             print(f"{name}: {value}")
 
 
+def window_title(name):
+    """Title of a camera window: 'Nova - NAME' (NAME as given with -n).  Unique per camera, so the
+    taskbar tells the windows apart and compositor rules (nova layout export) can match them."""
+    name = (name or "").strip()
+    return f"Nova - {name}" if name else "Nova"
+
+
 if __name__ == "__main__":
     print(f'system: {_system}, WSL:{WSL}')
     print(mask_url("rtsp://admin:secret@192.168.1.2:554/user=admin&password=secret&channel=1"))

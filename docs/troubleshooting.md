@@ -31,7 +31,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 | Symptom | Cause | Fix |
 |---|---|---|
 | black window, log says `Shader Error` or `initializeGL Error` | no OpenGL 3.3 core context (remote desktop, old GPU, some VMs) | drop `--opengl` (QPainter renderer) or install a Mesa with llvmpipe |
-| windows all open at the same place, keyboard moves do nothing | Wayland compositor ignores client-side positioning | run under XWayland: `QT_QPA_PLATFORM=xcb` (put it in `[env]`) |
+| windows all open at the same place, keyboard moves do nothing | Wayland compositor ignores client-side positioning | run under XWayland: `QT_QPA_PLATFORM=xcb` (put it in `[env]`), or on sway / KWin / Hyprland import the rules from `nova layout export NAME …` |
 | colours slightly off (greenish skin tones) | camera signals no colour space | Nova assumes BT.709 above 576 lines, BT.601 below; cameras that lie cannot be helped without `-vf colorspace=…` |
 | high CPU with `--opengl` and `--accel cuda` | the stream is not H.264/HEVC (MJPEG cameras decode in software) | `--ffmpeg "-skip_frame nokey"` for a cheap preview, or `-f 10` |
 | the window is huge on a 4K camera | windows default to the saved geometry, first run uses 320×180 | **Home** gives 1:1, right-click fits, **PgDown** shrinks |
@@ -76,5 +76,5 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 - Display audio is live, not lip-synced to the picture; recordings and streams are in sync.
 - Frame-rate-changing filters (`fps`, `minterpolate`) are not supported in `-vf`; use `-r`.
 - SRT and VAAPI need a custom FFmpeg build; `drawtext` needs libfreetype (not in the wheel).
-- Wayland needs XWayland (`QT_QPA_PLATFORM=xcb`) for window placement to work.
+- Wayland: window placement needs XWayland (`QT_QPA_PLATFORM=xcb`) or compositor rules from `nova layout export` (sway, KWin, Hyprland).
 - Windows capture devices need a device name (`dshow://video=NAME`); numeric ids work on Linux (`0` = `/dev/video0`) and macOS.

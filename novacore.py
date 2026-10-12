@@ -47,6 +47,7 @@ class NovaCore(QObject):
         self.headless = headless
         self.url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
+        self.display_name = (camera_name or "").strip()      # for the window title, as typed
         if camera_name:
             self.camera_name = camera_name
         else:
@@ -60,6 +61,7 @@ class NovaCore(QObject):
             else:
                 self.camera_name = "camera"
         self.camera_name = re.sub(r'[^\w.\-]+', '_', self.camera_name)
+        self.display_name = self.display_name or self.camera_name
 
         self.snapshot_dir = snapshot_dir or "./snapshots"
         os.makedirs(self.snapshot_dir, exist_ok=True)

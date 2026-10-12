@@ -61,7 +61,8 @@ nova start  [ID ...] [options]       a window per camera: every enabled camera, 
 nova record [ID ...] [options]       the same without windows, recording from the first frame
 nova run    [ID]     [options]       one camera in this terminal: log on screen, Ctrl-C quits
 nova stop   [ID ...] [--timeout S]   stop cameras started by start/record (saves state like Ctrl-C)
-nova status                          which launched cameras are still running, and in which mode
+nova restart [ID ...] [options]      stop, then start again as launched (record stays record, layout stays)
+nova status                          launched cameras: running or exited, uptime, mode, gpu, layout
 nova list                            cameras, enabled state and options (passwords masked)
 nova -h                              help; `python nova.py --help` lists the camera options
 ```
@@ -71,6 +72,8 @@ nova -h                              help; `python nova.py --help` lists the cam
 - `start` and `record` detach from the terminal, write each camera's output to `logs/ID.log` and remember the process ids in `.nova-pids.json`. A camera that exits within the first seconds is reported with the end of its log instead of being called "running".
 - A camera without a window that neither records nor streams can neither be seen nor controlled, so `start --headless` without `-r` or `-t` is refused; `record` is the shorthand for `--headless -r`.
 - `stop` only touches processes it started and waits for them to exit cleanly (window geometry, zoom and open recordings are saved).
+- `restart` stops the launched cameras (or the given ids) and starts them again the way they were launched: a camera from `record` stays headless, a window keeps its layout (`--layout NAME` switches), and the options from `cameras.ini` apply as always. Options typed after `start` are not remembered, so give them again. A camera that is not running is simply started.
+- `status` lists every camera the launcher started: pid, running or exited, uptime, mode (window / headless, rec, stream), GPU and layout.
 - `run` keeps one camera in the foreground: the log appears in the terminal (`nova run ID -l DEBUG` for diagnosis) and Ctrl-C quits. Without an id it runs `[defaults] camera`, or the first enabled camera.
 
 ## Layouts
@@ -82,12 +85,14 @@ nova layout save NAME        write the open cameras' windows to layouts/NAME.jso
 nova layout list             saved layouts and their cameras
 nova start --layout NAME     open exactly the cameras of that layout, where they were saved
 nova run ID --layout NAME    one camera at its place in that layout
+nova layout export NAME sway|kwin|hyprland   window rules that place the layout on a Wayland desktop
 ```
 
 - Arrange the windows, then `nova layout save work`. The cameras can stay open: every window writes its geometry and zoom to Nova's settings within 2 s of a change, and `save` reads them from there. With no camera open, the enabled cameras' last positions are used.
 - `nova start --layout away` opens the cameras listed in the layout (`enabled` does not apply) and gives each its saved `--geometry` / `--zoom`. From then on the windows remember their places as usual, so a plain `nova start` afterwards brings the `away` arrangement back; `nova start --layout work` switches again.
 - The file is plain JSON, camera id → `"geometry": "x,y,w,h"` and `"zoom": "rx,ry,rw,rh"` (fractions of the picture; `0,0,1,1` is the whole picture). Edit it by hand if you like. `layouts/` is git-ignored, like `cameras.ini`.
 - `--geometry x,y,w,h` and `--zoom rx,ry,rw,rh` also work directly on `nova.py`.
+- **Wayland**: a compositor does not let a window place itself, so there `--geometry` sets only the size. `nova layout export work sway` (or `kwin`, `hyprland`) prints window rules with the saved positions instead: `for_window` lines for `~/.config/sway/config` (i3 too), a `.kwinrule` file for KDE's System Settings › Window Management › Window Rules › Import, or `hl.window_rule` calls for Hyprland's Lua config (0.55 and later; its `move` is monitor-local). The rules match the window title `Nova - NAME` (the camera's name from `cameras.ini` / `-n`), so they keep working across restarts; the positions are the absolute coordinates Nova saved. GNOME has no window rules: there run Nova under XWayland (`QT_QPA_PLATFORM=xcb`, see [install](install.md)).
 
 ## Command-line options
 
@@ -128,7 +133,7 @@ Notes:
 
 ## The window
 
-Each camera is a frameless window. The border colour (with `-b`) shows focus: orange = focused, green = not focused. The control strip appears when the mouse enters the top-left corner:
+Each camera is a frameless window titled `Nova - NAME` (its name in `cameras.ini`, or the one given with `-n`). The border colour (with `-b`) shows focus: orange = focused, green = not focused. The control strip appears when the mouse enters the top-left corner:
 
 ![Control strip](images/nova-window.png)
 

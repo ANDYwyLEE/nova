@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-12 — v1.0: window titles, restart, Wayland rules
+
+### Added
+- Every window is titled `Nova - NAME` (the `-n` name, else the camera's host), so the taskbar and Alt-Tab tell the cameras apart. Qt reports the app id `nova` on Wayland.
+- `nova restart [ID ...]`: stop and start again as launched (`record` stays headless, a window keeps its layout, `--layout NAME` switches). `nova status` shows each camera's uptime.
+- `nova layout export NAME sway|kwin|hyprland`: window rules carrying the layout's positions for compositors that do not let a window place itself — sway/i3 `for_window` lines, a `.kwinrule` file for KDE's Window Rules import, `hl.window_rule` calls for Hyprland ≥ 0.55. They match the window title.
+
+### Fixed
+- An 8 kHz mono camera made FFmpeg's AAC encoder log `Too many bits 8832.000000 > 6144 per frame requested, clamping to max` at every recording start: its default 69 kbit/s is above the encoder's limit of 6 × sample rate × channels bit/s. Nova applies that limit itself (48 kbit/s at 8 kHz mono) to the default and to a too-high `-b:a`, with one INFO line.
+
 ## 2026-10-11 — tests and CI
 
 ### Added

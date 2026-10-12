@@ -129,6 +129,39 @@ def test_layouts(cfg, tmp_path, monkeypatch):
     assert argv[-6:] == ["--geometry", "1,2,3,4", "--zoom", "0,0,1,1", "-l", "DEBUG"]
 
 
+def test_window_title_and_export(cfg):
+    defaults, env, cs = cfg
+    assert cams.window_title(" Camera B ") == "Nova - Camera B" and cams.window_title("") == "Nova"
+    assert cams.re_literal("a.b (1) [x]|y") == r"a\.b \(1\) \[x\]\|y" and cams.re_literal("front-desk 2") == "front-desk 2"
+    lay = {"cameras": {"a": {"geometry": "300,760,391,220", "zoom": "0,0,1,1"}, "b": {"geometry": "0,0,10,10"},
+                       "c": {}, "zzz": {"geometry": "1,1,1,1"}, "d": {"geometry": "junk"}}}
+    sway = cams.export_rules(lay, "work", cs, "sway")
+    assert ('for_window [title="^Nova - a$"] floating enable, border none, resize set 391 220, '
+            'move absolute position 300 760') in sway
+    assert 'for_window [title="^Nova - Camera B$"]' in sway and sway.count("for_window") == 2
+    assert "zzz" not in sway and "junk" not in sway and sway.startswith("# Nova layout 'work'")
+    kwin = cams.export_rules(lay, "work", cs, "kwin")
+    assert ("[Nova - a]\nDescription=Nova - a\ntitle=Nova - a\ntitlematch=1\nposition=300,760\npositionrule=3\n"
+            "size=391,220\nsizerule=3\nnoborder=true\nnoborderrule=2\n") in kwin
+    hypr = cams.export_rules(lay, "work", cs, "hyprland")
+    assert hypr.startswith("-- Nova layout")
+    assert ('hl.window_rule({ match = { title = "^Nova - a$" }, float = true, border_size = 0, '
+            'size = {391, 220}, move = {300, 760} })') in hypr
+    with pytest.raises(SystemExit):
+        cams.export_rules(lay, "work", cs, "gnome")
+
+
+def test_uptime_and_restart_groups():
+    assert cams.fmt_uptime(5) == "0:00:05" and cams.fmt_uptime(26 * 3600 + 61) == "1d 2:01:01"
+    pids = {"a": {"pid": 1, "mode": "window", "layout": "work"}, "b": {"pid": 2, "mode": "headless+rec+stream"},
+            "c": {"pid": 3, "mode": "window+rec"}}
+    assert cams.restart_groups(["a", "b", "c", "d"], pids, None) == {
+        (False, "work"): ["a"], (True, None): ["b"], (False, None): ["c", "d"]}
+    assert cams.restart_groups(["a", "b"], pids, "night") == {(False, "night"): ["a"], (True, None): ["b"]}
+    a = cams.Args(["x"], ["-r"], "work")
+    assert (a.ids, a.extra, a.layout, a.timeout, a.id) == (["x"], ["-r"], "work", 15, None)
+
+
 def test_url_hash_matches_the_view_key():
     url = "rtsp://admin:pw@10.0.0.1:554/s"
     assert cams.url_hash(url) == hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]

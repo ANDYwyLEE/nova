@@ -15,7 +15,7 @@ from mousehandler import MouseHdlr
 from keyhandler import KeyHdlr
 from helper import Helper
 from fonts import MONO
-from util import WSL, MAC, WINDOWS, mask_url
+from util import WSL, MAC, WINDOWS, mask_url, window_title
 
 GS = 20 # default grid size
 
@@ -121,6 +121,8 @@ class Nova(QOpenGLWindow):
         fmt = self._surface_format()
         if fmt is not None:
             self.setFormat(fmt)
+        # Before show(): Wayland compositors evaluate their window rules against the title at map time.
+        self.setTitle(window_title(self.core.display_name))
         self.show()
 
 

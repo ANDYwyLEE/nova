@@ -39,7 +39,7 @@ if __name__ == "__main__":
         "-n", "--name", "--camera-name",
         dest="camera_name",
         type=str,
-        help="Logical camera name for the window title and output folders."
+        help="Camera name: the window title becomes 'Nova - NAME', snapshots and recordings go to NAME/."
     )
     parser.add_argument(
         "--opengl",
@@ -208,6 +208,7 @@ if __name__ == "__main__":
     app = QGuiApplication([sys.argv[0]])
     app.setOrganizationName("judvi")
     app.setApplicationName("Nova")
+    app.setDesktopFileName("nova")      # the app id Wayland compositors see (else the python binary's name)
 
     from novacore import NovaCore
     from view import Nova

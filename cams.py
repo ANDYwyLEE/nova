@@ -38,11 +38,13 @@ nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.
   nova record [ID ...] [nova.py options]   the same without windows, recording from the first frame
   nova run    [ID]     [nova.py options]   one camera in this terminal: log on screen, Ctrl-C quits
   nova stop   [ID ...] [--timeout S]       stop cameras started by start/record (saves state like Ctrl-C)
-  nova status                              which launched cameras are still running, and in which mode
+  nova restart [ID ...] [nova.py options]  stop, then start again as launched (record stays record, layout stays)
+  nova status                              launched cameras: running or exited, uptime, mode, gpu, layout
   nova list                                cameras, enabled state and options (passwords masked)
   nova layout save NAME                    remember which cameras are open and where (layouts/NAME.json)
   nova layout list                         saved layouts
   nova start --layout NAME                 open exactly those cameras where they were saved
+  nova layout export NAME sway|kwin|hyprland   window rules that place that layout on a Wayland desktop
   nova -h                                  this text          nova.py --help    every camera option
   -c FILE                                  use FILE instead of cameras.ini
 
@@ -52,13 +54,15 @@ Words that do not start with '-' are camera ids; everything from the first optio
 Options a camera should always get belong in its cameras.ini section (opts = -r).
 run ID --layout NAME puts one camera at its place in that layout.
 start/record detach from the terminal and write logs/ID.log; run stays attached.
+restart remembers each camera's mode and layout, not options typed after start: give those again.
 """
 
 sys.path.insert(0, HERE)
 try:
-    from util import mask_url
+    from util import mask_url, window_title
 except Exception:  # pragma: no cover - util.py missing only in a broken checkout
     def mask_url(u): return u
+    def window_title(n): return f"Nova - {n}" if n else "Nova"
 
 
 class Camera:
@@ -271,6 +275,111 @@ def log_tail(cid, n=5):
         return []
 
 
+def fmt_uptime(seconds):
+    s = int(max(0, seconds))
+    d, s = divmod(s, 86400)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    return (f"{d}d " if d else "") + f"{h}:{m:02d}:{s:02d}"
+
+
+class Args:
+    """A parsed command line: camera ids, extra options for nova.py, --layout, --timeout, run's id."""
+    def __init__(self, ids=(), extra=(), layout=None, timeout=15, id=None):
+        self.ids, self.extra, self.layout, self.timeout, self.id = list(ids), list(extra), layout, timeout, id
+
+
+def stop_entries(pids, targets, timeout):
+    """Interrupt the running processes among targets (id -> pid-file entry), wait up to timeout seconds
+    and drop the finished ones from pids.  Returns the ids that are still running."""
+    for cid, e in targets.items():
+        if alive(e["pid"]):
+            try:
+                interrupt(e["pid"])
+                print(f"{cid}: stopping (pid {e['pid']})")
+            except Exception as ex:
+                print(f"{cid}: could not signal pid {e['pid']}: {ex}")
+        else:
+            print(f"{cid}: not running")
+    deadline = time.time() + float(timeout)
+    while time.time() < deadline and any(alive(e["pid"]) for e in targets.values()):
+        time.sleep(0.25)
+    stuck = []
+    for cid, e in targets.items():
+        if alive(e["pid"]):
+            print(f"{cid}: still running after {timeout}s (pid {e['pid']}); kill it manually if needed")
+            stuck.append(cid)
+        else:
+            pids.pop(cid, None)
+    write_pids(pids)
+    return stuck
+
+
+def restart_groups(ids, entries, layout):
+    """How to launch each camera again, (record, layout) -> ids: a camera that `record` started stays
+    headless, a window keeps its layout unless one is given now, one never launched opens as a window."""
+    groups = {}
+    for cid in ids:
+        e = entries.get(cid) or {}
+        record = str(e.get("mode", "")).startswith("headless+rec")
+        groups.setdefault((record, None if record else (layout or e.get("layout"))), []).append(cid)
+    return groups
+
+
+# ---------------------------------------------------------------- layout export (Wayland window rules)
+EXPORT_FORMATS = ("sway", "kwin", "hyprland")
+
+
+def re_literal(s):
+    """s as a regular expression matching exactly s (only the metacharacters escaped, so names stay readable)."""
+    return re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", s)
+
+
+def parse_geometry(s):
+    x, y, w, h = (int(float(v)) for v in str(s).split(","))
+    return x, y, w, h
+
+
+def export_rules(layout, name, cams, fmt):
+    """Window rules that give a Wayland compositor the layout's placement, since there Nova cannot place
+    its own windows.  The rules match the window title, 'Nova - NAME'."""
+    if fmt not in EXPORT_FORMATS:
+        sys.exit(f"unknown format {fmt!r}; one of: {', '.join(EXPORT_FORMATS)}")
+    stamp = f"Nova layout '{name}', exported {time.strftime('%Y-%m-%d %H:%M')} by `nova layout export`."
+    c = "--" if fmt == "hyprland" else "#"
+    notes = {
+        "sway": ["Append to ~/.config/sway/config and reload (swaymsg reload).  Positions are absolute",
+                 "(over all outputs), as Nova saved them.  Also works for i3 without `absolute`."],
+        "hyprland": ["Hyprland >= 0.55 (Lua config): add to your config.  `move` is monitor-local in Hyprland,",
+                     "so with more than one monitor subtract the monitor's position (hyprctl monitors)."],
+        "kwin": ["Import in System Settings > Window Management > Window Rules > Import.  Positions apply",
+                 "when a window opens (positionrule=3); you can still drag the windows afterwards."],
+    }[fmt]
+    out = [f"{c} {stamp}"] + [f"{c} {n}" for n in notes] + [""]
+    byid = {cam.id: cam for cam in cams}
+    for cid, e in layout.get("cameras", {}).items():
+        cam = byid.get(cid)
+        if cam is None or not e.get("geometry"):
+            continue
+        try:
+            x, y, w, h = parse_geometry(e["geometry"])
+        except ValueError:
+            continue
+        title = window_title(cam.name)
+        if fmt == "sway":
+            out.append(f'for_window [title="^{re_literal(title)}$"] floating enable, border none, '
+                       f'resize set {w} {h}, move absolute position {x} {y}')
+        elif fmt == "hyprland":
+            lua = re_literal(title).replace("\\", "\\\\").replace('"', '\\"')
+            out.append(f'hl.window_rule({{ match = {{ title = "^{lua}$" }}, float = true, border_size = 0, '
+                       f'size = {{{w}, {h}}}, move = {{{x}, {y}}} }})')
+        else:
+            out += [f"[{title}]", f"Description={title}", f"title={title}", "titlematch=1",
+                    f"position={x},{y}", "positionrule=3", f"size={w},{h}", "sizerule=3",
+                    "noborder=true", "noborderrule=2", ""]
+    return "\n".join(out).rstrip() + "\n"
+
+
 def select(cams, ids, only_enabled):
     if ids:
         by_id = {c.id: c for c in cams}
@@ -334,7 +443,7 @@ def cmd_start(defaults, env, cams, args, record=False):
             else:
                 kw["start_new_session"] = True
             p = subprocess.Popen(argv, **kw)
-        pids[cam.id] = {"pid": p.pid, "mode": mode, "gpu": gpu, "layout": args.layout}
+        pids[cam.id] = {"pid": p.pid, "mode": mode, "gpu": gpu, "layout": args.layout, "started": int(time.time())}
         write_pids(pids)
         tags = mode + (f", gpu {gpu}" if gpu is not None else "") + (f", layout {args.layout}" if layout else "")
         print(f"{cam.id}: starting (pid {p.pid}, {tags}) -> logs/{cam.id}.log")
@@ -370,24 +479,22 @@ def cmd_stop(defaults, env, cams, args):
     if not targets:
         print("no launched cameras (use `nova start` or `nova record`)")
         return
-    for cid, e in targets.items():
-        if alive(e["pid"]):
-            try:
-                interrupt(e["pid"])
-                print(f"{cid}: stopping (pid {e['pid']})")
-            except Exception as ex:
-                print(f"{cid}: could not signal pid {e['pid']}: {ex}")
-        else:
-            print(f"{cid}: not running")
-    deadline = time.time() + float(args.timeout)
-    while time.time() < deadline and any(alive(e["pid"]) for e in targets.values()):
-        time.sleep(0.25)
-    for cid, e in targets.items():
-        if alive(e["pid"]):
-            print(f"{cid}: still running after {args.timeout}s (pid {e['pid']}); kill it manually if needed")
-        else:
-            pids.pop(cid, None)
-    write_pids(pids)
+    return 1 if stop_entries(pids, targets, args.timeout) else 0
+
+
+def cmd_restart(defaults, env, cams, args):
+    pids = read_pids()
+    ids = args.ids or list(pids)
+    if not ids:
+        print("no launched cameras (use `nova start` or `nova record`)")
+        return 1
+    select(cams, ids, only_enabled=False)                   # unknown ids end here
+    targets = {cid: pids[cid] for cid in ids if cid in pids}
+    stuck = stop_entries(pids, targets, args.timeout) if targets else []
+    rc = 1 if stuck else 0
+    for (record, layout), group in restart_groups([i for i in ids if i not in stuck], targets, args.layout).items():
+        rc = cmd_start(defaults, env, cams, Args(group, args.extra, layout), record=record) or rc
+    return rc
 
 
 def cmd_status(defaults, env, cams, args):
@@ -397,10 +504,12 @@ def cmd_status(defaults, env, cams, args):
         return
     w = max(len(k) for k in pids)
     for cid, e in pids.items():
-        state = "running" if alive(e["pid"]) else "exited "
+        running = alive(e["pid"])
+        state = "running" if running else "exited "
+        up = f"up {fmt_uptime(time.time() - e['started'])}" if running and e.get("started") else ""
         gpu = f"gpu {e['gpu']}" if e.get("gpu") is not None else ""
         lay = f"layout {e['layout']}" if e.get("layout") else ""
-        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {e['mode']:<16} {gpu:<6} {lay:<18} logs/{cid}.log")
+        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {up:<14} {e['mode']:<16} {gpu:<6} {lay:<18} logs/{cid}.log")
 
 
 def cmd_run(defaults, env, cams, args):
@@ -447,8 +556,13 @@ def cmd_layout(defaults, env, cams, args):
             ids = list(lay["cameras"])
             print(f"{n:<20} {len(ids):>2} cameras  saved {str(lay.get('saved', '?'))[:16]}  {', '.join(ids)}"[:200])
         return
+    if sub == "export":
+        if len(args.ids) != 3:
+            sys.exit(f"usage: nova layout export NAME {'|'.join(EXPORT_FORMATS)}")
+        sys.stdout.write(export_rules(load_layout(args.ids[1]), args.ids[1], cams, args.ids[2]))
+        return
     if sub != "save" or len(args.ids) != 2:
-        sys.exit("usage: nova layout save NAME | nova layout list")
+        sys.exit("usage: nova layout save NAME | nova layout list | nova layout export NAME sway|kwin|hyprland")
     name = args.ids[1]
     path = layout_path(name)
     qs = window_settings()
@@ -480,7 +594,7 @@ def cmd_layout(defaults, env, cams, args):
         print(f"  skipped, never shown a window: {', '.join(missing)}")
 
 
-COMMANDS = {"list": cmd_list, "start": cmd_start, "record": cmd_record, "stop": cmd_stop,
+COMMANDS = {"list": cmd_list, "start": cmd_start, "record": cmd_record, "stop": cmd_stop, "restart": cmd_restart,
             "status": cmd_status, "run": cmd_run, "layout": cmd_layout}
 
 
@@ -521,14 +635,15 @@ def main(argv=None):
     if cmd not in COMMANDS:
         sys.exit(f"unknown command '{cmd}'\n\n{USAGE.rstrip()}")
 
-    class Args: pass
-    args = Args()
-    args.ids, args.extra = split_ids(tokens)
-    args.timeout = 15
-    if cmd == "stop" and args.extra[:1] == ["--timeout"] and len(args.extra) > 1:
-        args.timeout = float(args.extra[1]); args.extra = args.extra[2:]
-    args.layout = None
-    if cmd in ("start", "run", "record"):
+    args = Args(*split_ids(tokens))
+    if cmd in ("stop", "restart"):
+        t, _ = take_option(args.extra, "--timeout")
+        if t is not None:
+            try:
+                args.timeout = float(t)
+            except ValueError:
+                sys.exit(f"--timeout needs seconds, not {t!r}")
+    if cmd in ("start", "run", "record", "restart"):
         args.layout, _ = take_option(args.extra, "--layout")
         if cmd == "record" and args.layout:
             print("note: --layout is ignored by record (no windows)"); args.layout = None

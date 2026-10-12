@@ -70,6 +70,16 @@ def _hw_suffixes(accel):
     return base
 
 
+def parse_bitrate(v):
+    """'48k', '0.5M', '48000' -> bit/s; None when v is not a number."""
+    s = str(v).strip().lower()
+    mult = {"k": 1000, "m": 1000000}.get(s[-1:], 1)
+    try:
+        return int(float(s[:-1] if mult != 1 else s) * mult)
+    except ValueError:
+        return None
+
+
 class EncoderManager:
     """Picks a working encoder once per (accel, user encoder, format) and caches it.
     A cross-process file lock keeps 15 simultaneously starting cameras from probing the GPU at once."""
@@ -446,6 +456,8 @@ class AVWriter:
         try: a_ctx.layout = layout
         except Exception as e: logging.debug(f"[AVWriter] layout {layout} rejected: {e}")
         a_ctx.options.update({k: v for k, v in self.enc_a_opts.items() if k not in ('ar', 'ac')})
+        if codec == "aac":
+            self._cap_aac_bitrate(a_ctx, layout)
         self.a_time_base = Fraction(1, self.sample_rate)
         logging.debug(f"[AVWriter] audio {codec} {self.sample_rate}Hz {layout} opts={a_ctx.options}")
 
@@ -566,6 +578,20 @@ class AVWriter:
         last.link_to(sink)
         g.configure()
         return g
+
+    def _cap_aac_bitrate(self, a_ctx, layout):
+        """FFmpeg's AAC encoder takes at most 6144 bits per frame and channel, i.e. 6 x sample rate x
+        channels bit/s (48 kbit/s for an 8 kHz mono camera).  Above that it clamps and logs an ERROR at
+        every start - for its own default (69 kbit/s mono, 128 stereo) too.  Pick the cap up front."""
+        cap = 6 * self.sample_rate * self.channels
+        raw = self.enc_a_opts.get('b')
+        want = parse_bitrate(raw) if raw is not None else {1: 69000, 2: 128000}.get(self.channels, 64000 * self.channels)
+        if want is None or not 0 < cap < want:
+            return
+        a_ctx.options.pop('b', None)
+        a_ctx.bit_rate = cap
+        logging.info(f"[AVWriter] aac {self.sample_rate} Hz {layout}: {want // 1000} kbit/s exceeds the "
+                     f"encoder's limit, using {cap // 1000} kbit/s")
 
     def _report_unused(self, ctx, what, user_opts):
         """After open(), PyAV leaves the options the encoder did not recognise in ctx.options.

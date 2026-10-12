@@ -40,6 +40,7 @@ cp cameras.example.ini cameras.ini      # one [section] per camera; presets per 
 ./nova record                           # the same without windows, recording from the first frame
 ./nova run frontdoor -r                 # one camera in this terminal; extra args go to nova.py
 ./nova layout save work                 # remember the whole wall; ./nova start --layout work brings it back
+./nova restart                          # stop and start again, each camera the way it was launched
 ./nova stop
 ```
 
@@ -89,7 +90,7 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 | File | Role |
 |---|---|
 | `nova.py` | command line, logging, Qt application, shutdown |
-| `nova`, `nova.bat`, `cams.py`, `cameras.example.ini` | the launcher (`nova start / record / run / stop / status / list`), its implementation and the camera-list template (`cameras.ini` is git-ignored) |
+| `nova`, `nova.bat`, `cams.py`, `cameras.example.ini` | the launcher (`nova start / record / run / stop / restart / status / list / layout`), its implementation and the camera-list template (`cameras.ini` is git-ignored) |
 | `novacore.py` | per-camera controller: worker, recorder, streamer, audio, snapshots |
 | `videoworker.py` | connect / decode thread, HW decoder selection, URI resolution, frame fan-out |
 | `view.py`, `novagl.py` | frameless window, OSD, geometry, zoom; OpenGL shader renderer |
