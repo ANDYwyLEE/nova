@@ -11,7 +11,7 @@ Nova needs Python 3.10 or newer and the packages in `requirements.txt`. Nothing 
 
 ## What the PyPI FFmpeg can do
 
-Checked with `av` 19.0.1 on Linux (2026-10-11):
+Checked with `av` 19.0.1 on Linux (2026-10-11). The wheel bundles its own FFmpeg (9.0.2), so nothing below depends on the distribution's ffmpeg package or on the Python version: `av` 19 ships one `cp312-abi3` wheel per platform that Python 3.12, 3.13 and 3.14 all use (there is no wheel for 3.10/3.11, so **Python 3.12 or newer** is required).
 
 | included in the wheel | not included |
 |---|---|
@@ -47,6 +47,7 @@ cp cameras.example.ini cameras.ini          # then edit it: see the user guide
 ./nova start                                # a window per enabled camera; ./nova -h lists the commands
 ```
 
+- Ubuntu 24.04's `python3` is 3.12, which is enough: it installs the same `av` wheel, with the same NVIDIA/Intel/AMD codecs, as a newer Python. Ubuntu 22.04 (Python 3.10) needs a newer interpreter first (e.g. the deadsnakes PPA).
 - `portaudio19-dev` is needed to build PyAudio; the Qt libraries cover the xcb platform plugin.
 - **NVIDIA**: the proprietary driver is all that is required (`libnvcuvid.so`, `libnvidia-encode.so` come with it). The CUDA toolkit is not needed. Use `--accel cuda`.
 - **Intel**: `--accel qsv` needs `intel-media-va-driver-non-free` and the oneVPL runtime (`libvpl2`); untested on this project's machines. `--accel vaapi` needs the custom build.
