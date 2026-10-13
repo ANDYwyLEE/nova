@@ -117,3 +117,20 @@ def test_failed_encoder_opens_never_crash(tmp_path):
     assert "audio encoder aac does not open at 6000 Hz" in out.stdout, out.stdout
     with av.open(str(tmp_path / "a.mp4")) as c:
         assert [s.type for s in c.streams] == ["video"]
+
+
+def test_a_user_encoder_the_target_cannot_carry_is_not_used(monkeypatch, caplog, tmp_path):
+    # -e hevc_nvenc in [defaults] must not turn an RTMP stream into HEVC (YouTube shows "no data")
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    monkeypatch.setattr(avwriter, "_WARNED", set())
+    mgr = avwriter.EncoderManager()
+    assert "hevc_nvenc" not in mgr._candidates("cuda", "hevc_nvenc", "hevc", ("h264",))
+    assert mgr._candidates("cuda", "hevc_nvenc", "hevc", ("h264", "hevc"))[0] == "hevc_nvenc"
+    caplog.set_level(logging.WARNING)
+    for name in ("a.flv", "b.flv"):
+        w = avwriter.AVWriter(None, path=str(tmp_path / name), width=320, height=180, fps=25,
+                              encoder="hevc_nvenc", audio_enable=False)
+        assert avwriter._family(w.v_encoder) == "h264"
+        w.close()
+    warns = [r.getMessage() for r in caplog.records if "carries" in r.getMessage()]
+    assert len(warns) == 1 and "-e hevc_nvenc: flv carries h264 only; using" in warns[0], warns

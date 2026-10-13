@@ -196,8 +196,8 @@ class EncoderManager:
         src_fam = _family(source_codec)
         families = [f for f in dict.fromkeys([src_fam, "h264", "hevc", "av1", "vp9"]) if f in allowed]
         out = []
-        if user_encoder:
-            out.append(user_encoder)
+        if user_encoder and _family(user_encoder) in allowed:
+            out.append(user_encoder)            # (one the target cannot carry: AVWriter warns about it)
         if accel:
             for fam in families:
                 for suf in _hw_suffixes(accel):
@@ -389,6 +389,9 @@ def _parse_size(s):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+_WARNED = set()     # (user encoder, format) pairs already warned about
+
+
 class OutputOpenError(Exception):
     """The output could not be started. PyAV retries the open on every later packet, so the
     caller must give up on this writer instead of writing on (a refused stream would otherwise
@@ -495,6 +498,11 @@ class AVWriter:
 
         try:
             self.v_encoder = EncoderManager().get_encoder(*self._enc_args)
+            if encoder and allowed and _family(encoder) not in allowed and (encoder, fmt) not in _WARNED:
+                # e.g. -e hevc_nvenc in [defaults]: an RTMP stream in HEVC shows "no data" on YouTube
+                _WARNED.add((encoder, fmt))
+                logging.warning(f"[AVWriter] ⚠️ -e {encoder}: {fmt} carries {', '.join(allowed)} only; "
+                                f"using {self.v_encoder}")
             self._setup_video(v_tag)
             self._setup_audio(audio_enable, a_encoder)
             if self.metadata:
