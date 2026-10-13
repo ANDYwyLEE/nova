@@ -10,6 +10,7 @@ import logging
 from fractions import Fraction
 
 import av
+import logsync  # installs logging.verbose / logging.trace
 from util import LINUX, WINDOWS, MAC, WSL, IS_PI, MSYS, get_os_type
 
 try: from filelock import FileLock, Timeout
@@ -104,6 +105,8 @@ def _encoder_lock_path():
     return os.path.join(d, "encoder_init.lock")
 
 
+FAILED_RETRY_S = 3600  # an encoder that failed at a real open is skipped this long, then probed again
+
 class EncoderManager:
     """Picks a working encoder once per (accel, user encoder, format) and caches it.
     A cross-process file lock keeps 15 simultaneously starting cameras from probing the GPU at once."""
@@ -114,27 +117,55 @@ class EncoderManager:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super(EncoderManager, cls).__new__(cls)
-                cls._instance._cache = {}
+                cls._instance._cache = {}        # key -> (encoder, monotonic time it expires or None)
+                cls._instance._failed = {}       # encoder -> monotonic time of its last failed real open
+                cls._instance._warned = set()
                 cls._instance._lock_broken = False
             return cls._instance
 
     def get_encoder(self, accel, user_encoder, source_codec, enc_opts, allowed=None):
         allowed = tuple(allowed) if allowed else ("h264", "hevc", "av1", "vp9")
         key = (accel, user_encoder, _family(source_codec), allowed, tuple(sorted(enc_opts.items())))
-        hit = self._cache.get(key)
+        hit = self._valid(key)
         if hit:
             logging.debug(f"[EncoderManager] ⚡ cached encoder: {hit}")
             return hit
         with self._lock:
-            hit = self._cache.get(key)
+            hit = self._valid(key)
             if hit: return hit
             try:
                 enc = self._probe_serialised(accel, user_encoder, source_codec, enc_opts, allowed)
             except Exception as e:
                 logging.error(f"[EncoderManager] encoder probe failed: {e}")
                 return "libx264"
-            self._cache[key] = enc
+            # a result chosen while better candidates were being skipped expires with their penalty
+            skipped = self._skipped()
+            until = [skipped[n] for n in self._candidates(accel, user_encoder, source_codec, allowed) if n in skipped]
+            self._cache[key] = (enc, min(until) if until else None)
             return enc
+
+    def _valid(self, key):
+        hit = self._cache.get(key)
+        if hit and (hit[1] is None or time.monotonic() < hit[1]):
+            return hit[0]
+        return None
+
+    def _skipped(self):
+        """Encoders that failed at a real open within FAILED_RETRY_S -> when they may be tried again."""
+        now = time.monotonic()
+        return {n: t + FAILED_RETRY_S for n, t in self._failed.items() if now - t < FAILED_RETRY_S}
+
+    def reject(self, encoder_name):
+        """encoder_name passed the probe (640x360) but did not open for a real stream: NVENC's session
+        limit with many cameras, a GPU fault. The next get_encoder() probes past it for FAILED_RETRY_S.
+        True the first time this encoder fails in this process (warn once)."""
+        with self._lock:
+            self._failed[encoder_name] = time.monotonic()
+            for k in [k for k, v in self._cache.items() if v[0] == encoder_name]:
+                del self._cache[k]
+            first = encoder_name not in self._warned
+            self._warned.add(encoder_name)
+            return first
 
     def _probe_serialised(self, *args):
         """One process probes at a time. A lock that cannot be had (held for 15 s, unusable path)
@@ -180,7 +211,12 @@ class EncoderManager:
     def _perform_hw_test(self, accel, user_encoder, source_codec, enc_opts, allowed):
         logging.debug(f"[EncoderManager] OS:{get_os_type()} accel:{accel} source:{source_codec} allowed:{allowed}")
         test_opts = {k: v for k, v in enc_opts.items() if k not in NON_CODEC_OPTS}
+        skipped = self._skipped()
         for encoder_name in self._candidates(accel, user_encoder, source_codec, allowed):
+            if encoder_name in skipped:
+                logging.debug(f"[EncoderManager] skipping {encoder_name}: failed at a real open "
+                              f"{int(FAILED_RETRY_S - (skipped[encoder_name] - time.monotonic()))} s ago")
+                continue
             err = self._try_open(encoder_name, test_opts)
             if err is None:
                 logging.verbose(f"[EncoderManager] 🚀 using {encoder_name}")
@@ -415,6 +451,9 @@ class AVWriter:
         if out_size: self.width, self.height = out_size
         self.width -= self.width % 2
         self.height -= self.height % 2
+        if self.width <= 0 or self.height <= 0:
+            # an encoder would fail to open, and that failure would be blamed on the encoder
+            raise ValueError(f"no video size yet ({width}x{height})")
 
         # -r N : output frame rate (frames are dropped, never duplicated)
         self.out_fps = None
@@ -436,13 +475,15 @@ class AVWriter:
         if fmt in ("mp4", "mov") and 'movflags' not in self.mux_opts:
             self.mux_opts['movflags'] = '+frag_keyframe+empty_moov'
 
-        container_opts = _build_conn_options(fmt, self.mux_opts)
+        self._container_opts = _build_conn_options(fmt, self.mux_opts)
         self.timeout = _net_timeouts(self.path)
-        logging.debug(f"[AVWriter] av.open({self.path}, format={fmt}, options={container_opts}, timeout={self.timeout})")
-        self.container = av.open(self.path, mode="w", format=fmt, options=container_opts, timeout=self.timeout)
+        self._v_tag = v_tag
+        self._enc_args = (accel, encoder, source_codec, dict(self.enc_v_opts), allowed)
+        self._tried = set()             # video encoders that did not open for this writer
+        self.container = self._open_container()
 
         try:
-            self.v_encoder = EncoderManager().get_encoder(accel, encoder, source_codec, self.enc_v_opts, allowed)
+            self.v_encoder = EncoderManager().get_encoder(*self._enc_args)
             self._setup_video(v_tag)
             self._setup_audio(audio_enable, a_encoder)
             if self.metadata:
@@ -459,6 +500,32 @@ class AVWriter:
                      f"audio={'silence' if self.silence else (self.a_stream.codec_context.codec.name if self.a_stream else 'none')}")
 
     # ------------------------------------------------------------------ setup
+    def _open_container(self):
+        logging.debug(f"[AVWriter] av.open({self.path}, format={self.fmt}, options={self._container_opts}, timeout={self.timeout})")
+        return av.open(self.path, mode="w", format=self.fmt, options=self._container_opts, timeout=self.timeout)
+
+    def _rebuild(self, v_encoder):
+        """A new container around another video encoder. Only before anything was muxed (the video
+        encoder opens on the first frame, and nothing is muxed before the first video packet):
+        audio packets encoded so far are dropped, the audio stream is set up again."""
+        try: self.container.close()
+        except Exception as e: logging.debug(f"[AVWriter] container close: {e}")
+        self.v_encoder = v_encoder
+        self._held_audio.clear()
+        self._video_started = False
+        self._v_opts_checked = self._a_opts_checked = False
+        self.a_frames = 0
+        self.container = self._open_container()
+        try:
+            self._setup_video(self._v_tag)
+            if self.a_stream is not None:
+                self._add_audio_stream()
+            if self.metadata:
+                self.container.metadata.update(self.metadata)
+        except Exception as e:
+            self.open_failed = self.open_failed or f"could not set up {v_encoder}: {_short_err(e)}"
+            raise OutputOpenError(f"cannot start: {self.open_failed}") from e
+
     def _setup_video(self, v_tag):
         self.v_stream = self.container.add_stream(self.v_encoder, rate=self.fps)
         self.v_stream.width = self.width
@@ -467,7 +534,7 @@ class AVWriter:
         v_ctx = self.v_stream.codec_context
         c_name = self.v_encoder.lower()
 
-        user_pf = self.enc_v_opts.pop('pix_fmt', None)
+        user_pf = self.enc_v_opts.get('pix_fmt')
         if user_pf:
             supported = [f.name for f in (getattr(v_ctx.codec, 'video_formats', None) or [])]
             if supported and user_pf not in supported:
@@ -496,6 +563,7 @@ class AVWriter:
         elif "vaapi" in c_name: final_v_opts['vaapi_device'] = f"/dev/dri/renderD{128 + self.gpu_idx}"
         elif "amf" in c_name or "_mf" in c_name: final_v_opts['hwaccel_device'] = gpu
         for k, v in self.enc_v_opts.items():
+            if k == 'pix_fmt': continue
             if k in ('gop_size',):
                 try: v_ctx.gop_size = int(v)
                 except Exception: pass
@@ -515,6 +583,7 @@ class AVWriter:
 
     def _setup_audio(self, audio_enable, a_encoder):
         self.a_stream = None
+        self.a_codec = a_encoder or "aac"
         have_src_audio = audio_enable and self.sample_rate > 0 and self.channels > 0
         if not audio_enable:
             return
@@ -524,23 +593,52 @@ class AVWriter:
             # live target without camera audio -> silent AAC so the ingest server accepts the stream
             self.silence = True
             self.sample_rate, self.channels = 48000, 1
-        codec = a_encoder or "aac"
         # -ar / -ac: PyAV resamples the camera audio to the encoder's rate/layout
         try: self.sample_rate = int(self.enc_a_opts.get('ar') or self.sample_rate)
         except ValueError: logging.warning(f"[AVWriter] ignoring invalid -ar {self.enc_a_opts.get('ar')}")
         try: self.channels = int(self.enc_a_opts.get('ac') or self.channels)
         except ValueError: logging.warning(f"[AVWriter] ignoring invalid -ac {self.enc_a_opts.get('ac')}")
-        self.a_stream = self.container.add_stream(codec, rate=self.sample_rate)
-        a_ctx = self.a_stream.codec_context
+        self.a_time_base = Fraction(1, self.sample_rate)
+        self._add_audio_stream()
+
+    def _audio_stream(self, container):
+        stream = container.add_stream(self.a_codec, rate=self.sample_rate)
+        a_ctx = stream.codec_context
         a_ctx.sample_rate = self.sample_rate
         layout = {1: "mono", 2: "stereo"}.get(self.channels, f"{self.channels}c")
         try: a_ctx.layout = layout
         except Exception as e: logging.debug(f"[AVWriter] layout {layout} rejected: {e}")
         a_ctx.options.update({k: v for k, v in self.enc_a_opts.items() if k not in ('ar', 'ac')})
-        if codec == "aac":
+        if self.a_codec == "aac":
             self._cap_aac_bitrate(a_ctx, layout)
-        self.a_time_base = Fraction(1, self.sample_rate)
-        logging.debug(f"[AVWriter] audio {codec} {self.sample_rate}Hz {layout} opts={a_ctx.options}")
+        return stream
+
+    def _add_audio_stream(self):
+        """The audio encoder is opened here, not lazily: PyAV retries avcodec_open2() on every encode
+        and again when the header is written, and a second open of a context whose first open failed
+        segfaults (AAC at an unsupported -ar, say). The settings are tried on a throw-away stream
+        first; an audio track that cannot open is left out rather than costing the video."""
+        self.a_stream = None
+        scratch = av.open(self.path, mode="w", format=self.fmt)    # never started: nothing is written
+        try:
+            self._audio_stream(scratch).codec_context.open()
+        except Exception as e:
+            logging.warning(f"[AVWriter] ⚠️ audio encoder {self.a_codec} does not open at {self.sample_rate} Hz, "
+                            f"{self.channels} ch ({_short_err(e)}); no audio track")
+            self.silence = False
+            return
+        finally:
+            try: scratch.close()
+            except Exception: pass
+        stream = self._audio_stream(self.container)
+        try:
+            stream.codec_context.open()
+        except Exception as e:
+            self.open_failed = f"audio encoder {self.a_codec} does not open: {_short_err(e)}"
+            raise OutputOpenError(f"cannot start: {self.open_failed}") from e
+        self.a_stream = stream
+        a_ctx = stream.codec_context
+        logging.debug(f"[AVWriter] audio {self.a_codec} {self.sample_rate}Hz {a_ctx.layout.name} opts={a_ctx.options}")
 
     # ------------------------------------------------------------------ writing
     @property
@@ -573,7 +671,7 @@ class AVWriter:
         if self.open_failed:
             # PyAV would run avformat_write_header() a second time on a context whose first header
             # write failed (ENOSPC on a new segment, a publish refused after connect): a segfault
-            raise OutputOpenError(f"cannot open output: {self.open_failed}")
+            self._refuse()
         try:
             self.container.mux(packet)     # the first packet opens the output: connect, handshake, header
         except av.error.ExitError as e:
@@ -586,8 +684,13 @@ class AVWriter:
         self.first_packet_t = time.monotonic()
         logging.debug("[AVWriter] first packet muxed")
 
+    def _refuse(self):
+        # a failed open is final for this writer: its codec contexts and muxer must not be touched again
+        raise OutputOpenError(f"cannot open output: {self.open_failed}")
+
     def write_video(self, frame):
         if frame is None or not self.run_flag: return
+        if self.open_failed: self._refuse()
         out_t = self.v_tl.map(_src_time(frame))
 
         if self.out_fps:                      # -r: keep at most out_fps frames per second
@@ -602,26 +705,57 @@ class AVWriter:
         if self.silence:
             self._fill_silence(out_t)
 
-    def _encode_video(self, frame, out_t):
+    def _fit(self, frame, pts):
         target_pf = self.v_stream.pix_fmt
         if frame.format.name != target_pf or frame.width != self.width or frame.height != self.height:
             frame = frame.reformat(width=self.width, height=self.height, format=target_pf)
-
-        pts = int(round(out_t / self.v_time_base))
-        if pts <= self.last_v_pts:
-            pts = self.last_v_pts + 1
-        self.last_v_pts = pts
         frame.pts = pts
         frame.time_base = self.v_time_base
         # decoded frames carry the *source* picture type (I/P/B); libx264/nvenc would treat it as
         # a forced frame type and break their own GOP/DTS logic
         try: frame.pict_type = 0
         except Exception: pass
-        self._mux(self.v_stream.encode(frame))
+        return frame
+
+    def _encode_video(self, frame, out_t):
+        pts = int(round(out_t / self.v_time_base))
+        if pts <= self.last_v_pts:
+            pts = self.last_v_pts + 1
+        self.last_v_pts = pts
+        while True:
+            ctx, f = self.v_stream.codec_context, self._fit(frame, pts)
+            if ctx.is_open:
+                packets = self.v_stream.encode(f)
+                break
+            try:
+                packets = self.v_stream.encode(f)        # the first call opens the encoder
+                break
+            except Exception as e:
+                if ctx.is_open: raise
+                self._next_video_encoder(e)
+        self._mux(packets)
         self.v_frames += 1
         if not self._v_opts_checked:
             self._v_opts_checked = True
             self._report_unused(self.v_stream.codec_context, "video encoder", self.enc_v_opts)
+
+    def _next_video_encoder(self, e):
+        """The video encoder opens at its first frame, at the real size; the probe ran at 640x360 and
+        can pass where this fails (NVENC's session limit with many cameras, a GPU fault). The failed
+        context must never be used again (a second avcodec_open2() on it segfaults), so the container
+        is rebuilt around the next candidate, ending at libx264."""
+        failed, err = self.v_encoder, _short_err(e)
+        self._tried.add(failed)
+        mgr = EncoderManager()
+        first = mgr.reject(failed)
+        nxt = mgr.get_encoder(*self._enc_args)
+        if nxt in self._tried:
+            self.open_failed = f"video encoder {failed} does not open at {self.width}x{self.height}: {err}"
+            raise OutputOpenError(f"cannot start: {self.open_failed}") from e
+        (logging.warning if first else logging.info)(
+            f"[AVWriter] ⚠️ {failed} does not open at {self.width}x{self.height} ({err}); using {nxt}, "
+            f"{failed} is tried again in {FAILED_RETRY_S // 60} min")
+        self._rebuild(nxt)
 
     # ---- -vf support (libavfilter) -----------------------------------------------------------
     def _filter(self, frame):
@@ -700,6 +834,7 @@ class AVWriter:
 
     def write_audio(self, frame):
         if not self.a_stream or self.silence or frame is None or not self.run_flag: return
+        if self.open_failed: self._refuse()
         out_t = self.a_tl.map(_src_time(frame))
         pts = int(round(out_t * self.sample_rate))
         if pts < self.last_a_end:

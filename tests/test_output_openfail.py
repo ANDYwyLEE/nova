@@ -12,7 +12,7 @@ import avwriter
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SCRIPT = textwrap.dedent("""
-    import sys, numpy as np, av, avwriter
+    import sys, numpy as np, av, logsync, avwriter
     from fractions import Fraction
     w = avwriter.AVWriter(None, path=sys.argv[1], width=320, height=180, fps=25, encoder="libx264",
                           enc_v_opts={"preset": "ultrafast", "tune": "zerolatency"}, audio_enable=False)
