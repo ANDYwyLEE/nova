@@ -80,9 +80,10 @@ def _mask(url) -> str:
 
 
 def _queue_nowait_put(q, i):
-    """Put without blocking; drop the oldest item when the queue is full."""
+    """Put without blocking; drop the oldest item when the queue is full. False when one was dropped."""
     try:
         q.put_nowait(i)
+        return True
     except queue.Full:
         try:
             q.get_nowait()
@@ -92,6 +93,7 @@ def _queue_nowait_put(q, i):
             q.put_nowait(i)
         except queue.Full:
             pass
+        return False
 
 def _pick_gpu_index(spec=None, default_idx=0):
     """GPU index from --gpu (spec) or NOVA_GPU_DEVICES: one index, or a comma list to pick from at random.
@@ -107,10 +109,23 @@ def _pick_gpu_index(spec=None, default_idx=0):
         logging.warning(f"[VideoWorker] invalid GPU list {v!r}; using GPU {default_idx}")
         return default_idx
 
-def _build_conn_options(url):
+_bad_timeout_warned = False
+
+def _timeout_us() -> int:
+    """NOVA_TIMEOUT in microseconds (default 5 s for camera input); a malformed value warns once."""
+    global _bad_timeout_warned
     v = os.getenv("NOVA_TIMEOUT", "5000000")
-    logging.trace(f"[VideoWorker] NOVA_TIMEOUT={v}")
-    s = str(v)
+    try:
+        return max(1, int(v))
+    except ValueError:
+        if not _bad_timeout_warned:
+            _bad_timeout_warned = True
+            logging.warning(f"[VideoWorker] NOVA_TIMEOUT={v!r} is not a number of microseconds; using 5 s")
+        return 5_000_000
+
+def _build_conn_options(url):
+    s = str(_timeout_us())
+    logging.trace(f"[VideoWorker] NOVA_TIMEOUT={s}")
     options = {}
     if not url: return options
     if url.startswith('rtsp'):
@@ -123,10 +138,7 @@ def _build_conn_options(url):
     return options
 
 def _timeout_seconds() -> float:
-    try:
-        return max(1.0, int(os.getenv("NOVA_TIMEOUT", "5000000")) / 1_000_000)
-    except ValueError:
-        return 5.0
+    return max(1.0, _timeout_us() / 1_000_000)
 
 def accel_supported(accel: str) -> bool:
     a = (accel or "").lower()
@@ -378,8 +390,12 @@ class VideoWorker(QThread):
         self.sample_rate = 0
         self.channels = 0
         self.audio_q = queue.Queue(maxsize=10)
-        self.rec_q = queue.Queue(maxsize=120)     # ~4 s @ 30 fps; oldest frames are dropped when full
+        # ~1.6 s at 25 fps: audio frames (~50/s) share the queues. When a writer cannot keep up the
+        # oldest items are dropped and counted (_put); larger queues would hold GBs of decoded 4K frames.
+        self.rec_q = queue.Queue(maxsize=120)
         self.stream_q = queue.Queue(maxsize=120)
+        self._drops = {}                # queue name -> [items dropped since the last warning, time of it]
+        self.has_audio = None           # the current connection carries audio (None: not connected yet)
         self.frame_q = deque(maxlen=1)
         self.clock = Clock()
         self.rec_on = False
@@ -849,6 +865,7 @@ class VideoWorker(QThread):
         streams = [video_stream]
         if audio_stream is not None:
             streams.append(audio_stream)
+        self.has_audio = audio_stream is not None     # writers need not wait for audio that cannot come
 
         first_frame_logged = False
         a_errors = 0
@@ -956,13 +973,25 @@ class VideoWorker(QThread):
         if not (rec or strm): return
         if rec and strm:
             clone = self._clone_frame(frame)
-            _queue_nowait_put(self.rec_q, (typ, frame))
+            self._put(self.rec_q, (typ, frame), "recorder")
             if clone is not None:
-                _queue_nowait_put(self.stream_q, (typ, clone))
+                self._put(self.stream_q, (typ, clone), "streamer")
         elif rec:
-            _queue_nowait_put(self.rec_q, (typ, frame))
+            self._put(self.rec_q, (typ, frame), "recorder")
         else:
-            _queue_nowait_put(self.stream_q, (typ, frame))
+            self._put(self.stream_q, (typ, frame), "streamer")
+
+    def _put(self, q, item, name):
+        """Queue a frame for the recorder/streamer. Frames dropped because it cannot keep up (slow disk,
+        a software encoder at 4K) are reported at most every 10 s instead of vanishing silently."""
+        if _queue_nowait_put(q, item):
+            return
+        n, t = self._drops.get(name, (0, 0.0))
+        n, now = n + 1, time.monotonic()
+        if now - t >= 10.0:
+            logging.warning(f"[VideoWorker] {name} cannot keep up: {n} frame(s) dropped")
+            n, t = 0, now
+        self._drops[name] = (n, t)
 
     def _clone_frame(self, frame):
         try:
