@@ -2,8 +2,11 @@
 
 **One window per camera.** Nova is a lightweight, GPU-accelerated viewer for RTSP/ONVIF cameras that also records, live-streams and plays audio. It is built for people who keep a wall of IP cameras open on an ordinary desktop all day: every camera is an independent, frameless, always-sharp window you can drag, snap to a grid, zoom into, record and push to YouTube with one keystroke.
 
+![Nova camera windows spread over a desktop next to a browser and terminals](docs/images/wall.jpg)
+*Part of a 14-camera wall on one PC: every camera is its own frameless window, placed where you want it between your other windows.*
+
 ![Nova window with the control strip](docs/images/nova-window.png)
-*Demo clip rendered through the OpenGL path; the strip shows live-stream, record (on), audio and help.*
+*A single window rendered through the OpenGL path; the strip shows live-stream, record (on), audio and help.*
 
 Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Windows, macOS · 0BSD licence.
 
