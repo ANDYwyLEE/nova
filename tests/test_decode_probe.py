@@ -63,9 +63,9 @@ def test_any_answering_address_is_enough(worker, monkeypatch, listening, closed_
 def test_all_addresses_refusing_is_reported_at_once(worker, monkeypatch, closed_port):
     monkeypatch.setattr(videoworker.socket, "getaddrinfo", lambda *a, **k: _infos(closed_port, closed_port))
     t0 = time.monotonic()
-    reason = worker._probe_host("rtsp://cam.example:554/x", 5.0)
+    reason = worker._probe_host("rtsp://cam.example:554/x", 8.0)
     assert reason and "refused" in reason.lower() and reason.startswith("cam.example:554")
-    assert time.monotonic() - t0 < 2
+    assert time.monotonic() - t0 < 5          # on the refusal, not the 8 s budget (Windows needs ~2 s to refuse)
 
 
 def test_dns_failure_and_bad_names(worker, monkeypatch):
