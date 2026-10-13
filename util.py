@@ -93,22 +93,40 @@ def parse_url(s):
     return buf
 
 
-_RE_USERINFO = re.compile(r'://([^/@:\s]+):([^/@\s]*)@')
-_RE_QUERY_PWD = re.compile(r'(?i)\b(password|passwd|pwd|pass)=([^&/?#\s]*)')
-_RE_STREAM_KEY = re.compile(r'(/live2(?:\?[^/\s\'"]*)?/)[^\s\'"?#]+')   # rtmp://host/live2/KEY, live2?backup=1/KEY
-_RE_HLS_CID = re.compile(r'([?&]cid=)[^&\s\'"]+')              # YouTube HLS ingest key
-_RE_TWITCH_KEY = re.compile(r'(/app/)live_[^\s\'"?#]+')          # rtmp://live.twitch.tv/app/live_KEY
+_SECRET_KEYS = r'(?:password|passwd|passphrase|passwort|pwd|psw|pass|streamid|secret|token)'
+# userinfo up to the LAST '@' of the authority, as FFmpeg reads it: 'admin:Admin@123@host' is user
+# 'admin' with password 'Admin@123'
+_RE_USERINFO = re.compile(r'://([^/:\s?#]*):([^/\s?#]*)@')
+_RE_SRT_SECRET = re.compile(r'(?i)(?<![a-z0-9_])(streamid|passphrase)=([^&\s\'"]*)')   # SRT: streamid=#!::r=x,m=publish
+_RE_QUERY_PWD = re.compile(r'(?i)(?<![a-z0-9_])(' + _SECRET_KEYS + r')=([^&/?#\s\'"]*)')
+_RE_XM_PWD = re.compile(r'(?i)(_' + _SECRET_KEYS + r')=([^_&/?#\s\'"]*)')    # XM: user=admin_password=X_channel=1
+_RE_DICT_PWD = re.compile(r'(?i)([\'"]-?' + _SECRET_KEYS + r'[\'"]\s*[:,]\s*[\'"])([^\'"]*)')  # {'password': 'x'}, ['-passphrase', 'x']
+_RE_OPT_PWD = re.compile(r'(?i)((?<![\w-])-' + _SECRET_KEYS + r'\s+)([^\s\'"]+)')   # --ffmpeg "-passphrase x"
+_RE_RTMP_KEY = re.compile(r'(?i)(rtmps?://[^/\s\'"]+(?:/[^/\s\'"?#]+)+/)([^/\s\'"?#]+)')   # rtmp://host/app/KEY
+_RE_STREAM_KEY = re.compile(r'(/live2(?:\?[^/\s\'"]*)?/)([^\s\'"?#]+)')   # rtmp://host/live2/KEY, live2?backup=1/KEY
+_RE_HLS_CID = re.compile(r'([?&]cid=)([^&\s\'"]+)')              # YouTube HLS ingest key
+# applied in this order; group 2 of each is the secret (also what the pre-commit hook looks for)
+_SECRET_PATTERNS = (_RE_USERINFO, _RE_SRT_SECRET, _RE_QUERY_PWD, _RE_XM_PWD, _RE_DICT_PWD, _RE_OPT_PWD,
+                    _RE_STREAM_KEY, _RE_RTMP_KEY, _RE_HLS_CID)
+
+def _star(m):
+    s, a, b = m.group(0), m.start(2) - m.start(0), m.end(2) - m.start(0)
+    return s[:a] + "***" + s[b:]
+
+def find_secrets(text):
+    """The passwords and stream keys mask_url would hide in text (used by .githooks/pre-commit)."""
+    return [m.group(2) for pat in _SECRET_PATTERNS for m in pat.finditer(str(text)) if m.group(2)]
 
 def mask_url(url) -> str:
-    """Hide passwords for logs/overlays.
-    Handles 'scheme://user:pwd@host', xmeye-style 'user=admin&password=pw' paths, rtmp /live2/KEY and
-    HLS ?cid=KEY stream keys; works on whole log lines, not only on bare URLs."""
+    """Hide passwords and stream keys for logs/overlays; works on whole log lines, not only on bare URLs.
+    Handles 'scheme://user:pwd@host' (an '@' inside the password included), password=/pwd=/psw=/
+    passphrase=/streamid= in queries and XM-style paths ('&' or '_' separated), dict and argv forms
+    ('password': 'x', '-passphrase', 'x'), the last path element of rtmp(s) URLs (the stream key on
+    YouTube, Twitch, Facebook, Kick, Restream ...) and YouTube HLS ?cid=."""
     if not url: return url or ""
-    s = _RE_USERINFO.sub(r'://\1:***@', str(url))
-    s = _RE_QUERY_PWD.sub(r'\1=***', s)
-    s = _RE_STREAM_KEY.sub(r'\1***', s)
-    s = _RE_HLS_CID.sub(r'\1***', s)
-    s = _RE_TWITCH_KEY.sub(r'\1***', s)
+    s = str(url)
+    for pat in _SECRET_PATTERNS:
+        s = pat.sub(_star, s)
     return s
 
 def display_url(url) -> str:

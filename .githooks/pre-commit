@@ -1,6 +1,7 @@
 #!/bin/sh
-# Refuse to commit camera credentials or stream keys.
-# Allowed placeholder passwords: password pass secret xxxx *** PASSWORD KEY YOUR-KEY $VAR
+# Refuse to commit camera credentials, stream keys or Nova's local state.
+# Secrets are found with the patterns the logs are masked with (util.py, via find_secrets.py);
+# placeholders are fine: password pass pw pwd secret xxxx *** PASSWORD KEY YOUR-KEY YOUR-STREAM-KEY $VAR
 # Enable once per clone:  git config core.hooksPath .githooks
 # Claude Code files stay local even when added with `git add -f`.
 claude=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)(\.claude/|CLAUDE(\.local)?\.md$|\.mcp\.json$)')
@@ -10,17 +11,18 @@ if [ -n "$claude" ]; then
     echo "Unstage them with: git restore --staged <file>" >&2
     exit 1
 fi
-files=$(git diff --cached --name-only --diff-filter=AM | grep -v "^\.githooks/" | grep -v "^tests/")   # tests use synthetic credentials on purpose
-[ -z "$files" ] && exit 0
-added=$(git diff --cached -U0 -- $files | grep -E '^\+' | grep -vE '^\+\+\+')
-ok='(password|pass|pw|pwd|secret|xxxx|\*\*\*|PASSWORD|KEY|YOUR-KEY|YOUR-STREAM-KEY|\$[A-Za-z_]+|%[A-Za-z_]+%)'
-bad=$(printf '%s\n' "$added" | grep -oE "://[^/:@ \"']+:[^@/ \"']+@" | grep -vE "^://[^:]+:${ok}@\$")
-bad2=$(printf '%s\n' "$added" | grep -oE "password=[^&\"' ]+" | grep -vE "^password=${ok}\$")
-bad3=$(printf '%s\n' "$added" | grep -oE "live2/[A-Za-z0-9-]+" | grep -vE "^live2/(KEY|YOUR-KEY|YOUR-STREAM-KEY|xxxx[-x]*|\\$[A-Za-z_]+)\$")
-if [ -n "$bad$bad2$bad3" ]; then
-    echo "pre-commit: credentials found in the staged changes:" >&2
-    printf '%s\n%s\n%s\n' "$bad" "$bad2" "$bad3" | sed '/^$/d; s/^/  /' >&2
-    echo "Put real URLs in cameras.ini (git-ignored) and use placeholder passwords in committed files." >&2
+local=$(git diff --cached --name-only --diff-filter=ACMR \
+        | grep -E '(^|/)(cameras[^/]*\.ini|\.nova-pids\.json|\.uri_cache\.json|[^/]*\.log(\.1)?)$|^(logs|layouts)/' \
+        | grep -vx 'cameras\.example\.ini')
+if [ -n "$local" ]; then
+    echo "pre-commit: local Nova state (cameras, logs, layouts, pids) is not committed:" >&2
+    printf '%s\n' "$local" | sed 's/^/  /' >&2
     exit 1
 fi
-exit 0
+py=$(command -v python3 || command -v python)
+if [ -z "$py" ]; then
+    echo "pre-commit: no python found, secrets not checked" >&2
+    exit 0
+fi
+# --no-renames: a moved file counts as added, so all of it is checked; names with spaces are fine
+git -c core.quotePath=false diff --cached -U0 --no-renames --diff-filter=ACM | "$py" "$(git rev-parse --show-toplevel)/.githooks/find_secrets.py"

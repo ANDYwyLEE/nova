@@ -186,6 +186,7 @@ if __name__ == "__main__":
     )
     logging.debug(f"log_level={log_level}")
     logsync.setup_av_logging()
+    logsync.install_excepthooks()
 
     logging.debug(f"Input Arguments: {[mask_url(a) for a in sys.argv[1:]]}")
     logging.debug(f"headless={args.headless}, auto_record={args.auto_record}, auto_audio={args.auto_audio}")

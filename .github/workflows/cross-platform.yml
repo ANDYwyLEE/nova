@@ -1,6 +1,6 @@
 name: Cross-platform
 
-# Windows and macOS runners: weekly, by hand, and when the dependencies change.
+# Windows and macOS runners: weekly, by hand, and when the dependencies or the launcher change.
 on:
   schedule:
     - cron: "0 3 * * 1"          # Mondays 03:00 UTC
@@ -10,6 +10,9 @@ on:
     paths:
       - requirements.txt
       - requirements-dev.txt
+      - cams.py
+      - control.py
+      - nova.bat
       - .github/workflows/cross-platform.yml
 
 jobs:
@@ -26,8 +29,8 @@ jobs:
           - os: macos-latest         # Apple Silicon
             python: "3.14"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip

@@ -59,7 +59,24 @@ class CredentialMaskFilter(logging.Filter):
         if masked != msg:
             record.msg = masked
             record.args = ()
+        if record.exc_info or record.exc_text:            # logging.exception(): the traceback quotes URLs too
+            record.exc_text = mask_url(record.exc_text or logging.Formatter().formatException(record.exc_info))
+        if record.stack_info:
+            record.stack_info = mask_url(record.stack_info)
         return True
+
+
+def install_excepthooks():
+    """Uncaught exceptions (a Qt slot, a QThread's run(), a thread) are printed by Python straight
+    to stderr, which the launcher redirects into logs/ID.log, past the masking filter. Route them
+    through logging instead."""
+    def hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        logging.getLogger().error("Uncaught exception", exc_info=(exc_type, exc, tb))
+    sys.excepthook = hook
+    threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
 
 
 class GlobalSingleWarningFilter(logging.Filter):
