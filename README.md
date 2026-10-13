@@ -6,7 +6,7 @@
 *Part of a 14-camera wall on one PC: every camera is its own frameless window, placed where you want it between your other windows.*
 
 ![A live camera window with the control strip](docs/images/nova-window.jpg)
-*One window, live 1080p through the OpenGL path. The mouse is on the control strip at the top left: record (on), audio (on) and help; the thin orange line is the focus border (`-b`).*
+*One window at 1:1, a live 1080p camera through the OpenGL path. The mouse is on the control strip at the top left: live stream (on), record (on), audio (on) and help; the thin orange line is the focus border (`-b`).*
 
 Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Windows, macOS · 0BSD licence.
 
