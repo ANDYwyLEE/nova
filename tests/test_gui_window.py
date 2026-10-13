@@ -524,3 +524,106 @@ def test_border_colour_follows_focus_after_a_resize(make, app):
     app.processEvents()
     c = w.osd_bg.pixelColor(0, 100)
     assert c.green() > c.red(), "unfocused window painted with the focused (orange) border"
+
+
+# ---------------------------------------------------------------- OpenGL render failures
+
+class FakePainter:
+    CompositionMode_Source = CompositionMode_SourceOver = 0
+    drawn = []
+    def __init__(self, dev): pass
+    def setCompositionMode(self, m): pass
+    def setRenderHint(self, *a): pass
+    def fillRect(self, *a): pass
+    def drawImage(self, *a): FakePainter.drawn.append(a[-1])
+    def end(self): pass
+
+
+@pytest.fixture
+def gl_window(make, monkeypatch):
+    """A NovaGL window whose GL calls are no-ops (there is no context here)."""
+    import novagl
+    from novagl import NovaGL
+    for name in dir(novagl):
+        if name.startswith("gl"):
+            monkeypatch.setattr(novagl, name, lambda *a, **k: None)
+    monkeypatch.setattr(novagl, "QPainter", FakePainter)
+    FakePainter.drawn = []
+    w, core = make("200,100,320,180", None, cls=NovaGL)
+    w.shader_program, w.loc = 1, {"mode": 0}
+    w.osd_texture_ids = {k: i for i, k in enumerate(("txt", "hlp", "bt", "bg"))}
+    return w, core
+
+
+def render_logs(caplog, level):
+    return [r for r in caplog.records if r.levelno == level and "[NovaGL]" in r.getMessage()]
+
+
+def test_a_failing_renderer_logs_rarely_rebuilds_once_then_gives_up(gl_window, monkeypatch, caplog):
+    import logging
+    w, core = gl_window
+    def frame(): raise RuntimeError("GL_INVALID_OPERATION")
+    def init():
+        rebuilds.append(1); w.shader_program = 2
+        return True
+    rebuilds = []
+    monkeypatch.setattr(w, "_paint_frame", frame)
+    monkeypatch.setattr(w, "_init_gl", init)
+    with caplog.at_level(logging.INFO):
+        for _ in range(300):                     # ten seconds of frames
+            w.paintGL()
+    errors = render_logs(caplog, logging.ERROR)
+    assert len(errors) == 2, [r.getMessage()[:80] for r in errors]    # first failure, giving up
+    assert "Traceback" in errors[0].getMessage() and "stopped" in errors[1].getMessage()
+    assert len(render_logs(caplog, logging.WARNING)) == 1 and rebuilds == [1]
+    assert w._gl_dead and w.render_error
+    FakePainter.drawn = []
+    w.paintGL()                                  # from now on only the OSD, with the message
+    assert w.osd_txt in FakePainter.drawn
+    core.stat_sig.emit("Connecting...\n10.0.0.1")
+    core.fq.append(object())
+    w.update_img()
+    assert w.curr_txt == w.render_error and not w.osd_txt.isNull()
+
+
+def test_a_rebuild_that_helps_resumes_rendering(gl_window, monkeypatch, caplog):
+    import logging
+    w, core = gl_window
+    broken = [True]
+    def frame():
+        if broken[0]: raise RuntimeError("invalid program")
+    def init():
+        broken[0] = False; w.shader_program = 2
+        return True
+    monkeypatch.setattr(w, "_paint_frame", frame)
+    monkeypatch.setattr(w, "_init_gl", init)
+    with caplog.at_level(logging.INFO):
+        for _ in range(100):
+            w.paintGL()
+    assert not w._gl_dead and w._gl_failures == 0 and w.render_error is None
+    assert any("works again" in r.getMessage() for r in render_logs(caplog, logging.INFO))
+
+
+def test_a_failed_rebuild_gives_up_at_once(gl_window, monkeypatch):
+    w, core = gl_window
+    def frame(): raise RuntimeError("context lost")
+    monkeypatch.setattr(w, "_paint_frame", frame)
+    monkeypatch.setattr(w, "_init_gl", lambda: False)
+    for _ in range(30):
+        w.paintGL()
+    assert w._gl_dead and w.render_error
+
+
+def test_intermittent_render_errors_are_reported_once_a_minute(gl_window, monkeypatch, caplog):
+    import logging
+    w, core = gl_window
+    n = [0]
+    def frame():
+        n[0] += 1
+        if n[0] % 2: raise RuntimeError("sometimes")
+    monkeypatch.setattr(w, "_paint_frame", frame)
+    with caplog.at_level(logging.INFO):
+        for _ in range(400):
+            w.paintGL()
+    assert len(render_logs(caplog, logging.ERROR)) == 1 and not w._gl_dead
+    assert len(caplog.records) == 1

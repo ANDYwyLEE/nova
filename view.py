@@ -67,6 +67,7 @@ class Nova(QOpenGLWindow):
         self.is_running = True
         self.curr_df = None      # DisplayFrame currently shown
         self.curr_txt = None
+        self.render_error = None # set when the window can no longer draw the video; stays on screen
         self._focused = self.isActive()     # the border colour follows it (orange focused, green not)
         app = QGuiApplication.instance()
         app.applicationStateChanged.connect(self._on_app_state)
@@ -220,7 +221,7 @@ class Nova(QOpenGLWindow):
 
     @Slot(str)
     def update_stat(self, text):
-        if not self.is_running: return
+        if not self.is_running or self.render_error: return
         self.curr_txt = text
         self.set_txt(text)
         self.update()
@@ -232,10 +233,18 @@ class Nova(QOpenGLWindow):
             df = self.frame_q.pop()
         except IndexError: return
         if df is None: return
-        self.curr_df = df
+        self.curr_df = df                   # kept for snapshots also when it cannot be shown
+        if self.render_error: return
         if not self.osd_txt.isNull():
             self.curr_txt = None
             self.osd_txt = QImage()
+        self.update()
+
+    def show_render_error(self, text):
+        """The renderer gave up: show text instead of the video until the window is closed."""
+        self.render_error = text
+        self.curr_txt = text
+        self.set_txt(text)
         self.update()
 
 
@@ -264,6 +273,9 @@ class Nova(QOpenGLWindow):
                 # scaling is done by the GL paint engine; no per-frame CPU copy/scaled()
                 p.drawImage(QRect(x, y, w, h), img, src)
 
+        self._draw_osd(p)
+
+    def _draw_osd(self, p: QPainter):
         for k in OSD_LAYERS:
             img = getattr(self, f"osd_{k}")
             if not img.isNull(): p.drawImage(0, 0, img)
