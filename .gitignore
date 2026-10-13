@@ -15,6 +15,10 @@ orig_*.tar.gz
 # camera list with real credentials, launcher state and logs
 cameras.ini
 .nova-pids.json
+.nova-pids.json.tmp
+.nova-pids.lock
+cameras*.ini
+!cameras.example.ini
 logs/
 
 # editor swap / backup files

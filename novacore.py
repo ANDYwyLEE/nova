@@ -16,6 +16,11 @@ from streamer import AVStreamer
 from util import mask_url
 
 
+def settings_key(url):
+    """The key of a camera's window settings (geom_/zoom_ in Nova.conf); cams.py reads them with it."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+
+
 class NovaCore(QObject):
     img_sig = Signal()
     stat_sig = Signal(str)
@@ -45,7 +50,8 @@ class NovaCore(QObject):
 
         self.url = url          # as typed (onvif:// etc. are resolved by the VideoWorker)
         self.headless = headless
-        self.url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        self.last_status = ""     # the latest overlay text (Connecting, Unreachable, ...); "" while playing
+        self.url_hash = settings_key(url)
 
         self.display_name = (camera_name or "").strip()      # for the window title, as typed
         if camera_name:
@@ -56,11 +62,15 @@ class NovaCore(QObject):
                 self.camera_name = f"camera{url}"
             elif parsed.hostname:
                 host = parsed.hostname
-                port = parsed.port
+                try:
+                    port = parsed.port
+                except ValueError:              # a password with an unencoded '/', or a bad port
+                    port = None
                 self.camera_name = f"{host}_{port}" if port else host
             else:
                 self.camera_name = "camera"
-        self.camera_name = re.sub(r'[^\w.\-]+', '_', self.camera_name)
+        # a folder name under videos/: '..' or '.hidden' must not escape or hide it
+        self.camera_name = re.sub(r'[^\w.\-]+', '_', self.camera_name).strip(".") or "camera"
         self.display_name = self.display_name or self.camera_name
 
         self.snapshot_dir = snapshot_dir or "./snapshots"
@@ -123,6 +133,7 @@ class NovaCore(QObject):
 
     @Slot(str)
     def _stat_sig(self, text):
+        self.last_status = text           # for the control channel's status reply
         if self.headless:
             logging.info("[NovaCore] " + re.sub(r'\s+', ' ', text).strip())
         self.stat_sig.emit(text)

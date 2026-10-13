@@ -9,6 +9,9 @@ import os
 import re
 import sys
 import json
+import socket
+import tempfile
+import contextlib
 import hashlib
 import time
 import shlex
@@ -20,6 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 INI = os.path.join(HERE, "cameras.ini")
 EXAMPLE = os.path.join(HERE, "cameras.example.ini")
 PIDS = os.path.join(HERE, ".nova-pids.json")
+PIDS_LOCK = os.path.join(HERE, ".nova-pids.lock")
 LOGDIR = os.path.join(HERE, "logs")
 LAYOUTS = os.path.join(HERE, "layouts")
 WINDOWS = os.name == "nt"
@@ -30,6 +34,9 @@ RECORD_FLAGS = ("-r", "--record", "--auto-record")
 STREAM_FLAGS = ("-t", "--target")
 GPU_FLAGS = ("--gpu",)
 EARLY_EXIT_GRACE = 1.5      # seconds a camera must survive before `start` reports it as running
+LOG_ROTATE = 50 * 1024 * 1024   # a log above this size moves to ID.log.1 when the camera starts
+CAMERA_KEYS = ("name", "url", "opts", "enabled")
+DEFAULT_KEYS = ("opts", "python", "stagger", "camera")
 
 USAGE = """\
 nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.example.ini)
@@ -39,11 +46,12 @@ nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.
   nova run    [ID]     [nova.py options]   one camera in this terminal: log on screen, Ctrl-C quits
   nova stop   [ID ...] [--timeout S]       stop cameras started by start/record (saves state like Ctrl-C)
   nova restart [ID ...] [nova.py options]  stop, then start again as launched (record stays record, layout stays)
-  nova status                              launched cameras: running or exited, uptime, mode, gpu, layout
+  nova status                              launched cameras: running or exited, uptime, recording/stream state
   nova list                                cameras, enabled state and options (passwords masked)
   nova layout save NAME                    remember which cameras are open and where (layouts/NAME.json)
   nova layout list                         saved layouts
   nova start --layout NAME                 open exactly those cameras where they were saved
+  nova layout apply NAME                   move the open windows to that layout's places now
   nova layout export NAME FORMAT           window rules that place that layout on a Wayland desktop
                                            (FORMAT: sway, kwin, hyprland = Lua 0.55+, hyprlang = 0.53-0.54)
   nova -h                                  this text          nova.py --help    every camera option
@@ -72,26 +80,53 @@ class Camera:
         self.name = sec.get("name", cid).strip()
         self.url = (sec.get("url") or "").strip()
         self.opts = sec.get("opts", "").strip()
-        self.enabled = sec.getboolean("enabled", fallback=True)
+        v = str(sec.get("enabled", "yes")).strip().lower()
+        if v not in configparser.ConfigParser.BOOLEAN_STATES:
+            sys.exit(f"[{cid}] enabled = {v!r}: use yes or no")
+        self.enabled = configparser.ConfigParser.BOOLEAN_STATES[v]
 
 
-def load(path):
+def keys_of(cp, sec, known, quiet=False):
+    """A section as a dict with lower-case keys (`Enabled = no` counts); unknown keys are reported,
+    since a misspelt `enable = no` would otherwise start the camera anyway."""
+    d = {k.lower(): v for k, v in cp[sec].items()}
+    for k in d:
+        if k not in known and not quiet:
+            print(f"warning: [{sec}] unknown key {k!r} ignored (known: {', '.join(known)})", file=sys.stderr)
+    return d
+
+
+def load(path, quiet=False):
+    """(defaults, env, cameras) from cameras.ini; quiet: no warnings (nova.py reads it again)."""
     if not os.path.exists(path):
         copy = "copy" if WINDOWS else "cp"
         sys.exit(f"{os.path.basename(path)} not found.\n"
                  f"  {copy} {os.path.basename(EXAMPLE)} {os.path.basename(path)}   and put your cameras in it (it is git-ignored).")
+    if not WINDOWS and not quiet and os.stat(path).st_mode & 0o077:
+        print(f"warning: {os.path.basename(path)} holds passwords but other users can read it: "
+              f"chmod 600 {os.path.basename(path)}", file=sys.stderr)
     cp = configparser.ConfigParser(interpolation=None)   # keep '%' and '$' in URLs untouched
-    cp.optionxform = str                                 # environment variable names keep their case
-    cp.read(path, encoding="utf-8")
-    defaults = cp["defaults"] if cp.has_section("defaults") else {}
+    cp.optionxform = str                                 # [env] names keep their case; see keys_of
+    try:
+        with open(path, encoding="utf-8-sig") as f:      # -sig: Notepad and PowerShell write a BOM
+            cp.read_file(f, source=path)
+    except configparser.Error as e:                      # the message quotes the line: mask its URL
+        sys.exit(f"{os.path.basename(path)}: {mask_url(str(e))}")
+    defaults = keys_of(cp, "defaults", DEFAULT_KEYS, quiet) if cp.has_section("defaults") else {}
     env = dict(cp["env"]) if cp.has_section("env") else {}
     cams = []
     for sec in cp.sections():
         if sec in RESERVED:
             continue
-        cam = Camera(sec, cp[sec])
+        if not re.fullmatch(r"[\w.-]+", sec):
+            if not quiet:
+                print(f"warning: [{sec}] skipped: camera ids use letters, digits, '.', '_' or '-' "
+                      f"(they name the log file); put the display name in `name =`", file=sys.stderr)
+            continue
+        cam = Camera(sec, keys_of(cp, sec, CAMERA_KEYS, quiet))
         if not cam.url:
-            print(f"warning: [{sec}] has no url, skipped", file=sys.stderr)
+            if not quiet:
+                print(f"warning: [{sec}] has no url, skipped", file=sys.stderr)
             continue
         cams.append(cam)
     return defaults, env, cams
@@ -138,9 +173,12 @@ def load_layout(name):
         have = layout_names()
         sys.exit(f"no layout {name!r}" + (f"; saved layouts: {', '.join(have)}" if have
                                            else "; save one with `nova layout save NAME`"))
-    with open(p, encoding="utf-8") as f:
-        lay = json.load(f)
-    if not isinstance(lay.get("cameras"), dict):
+    try:
+        with open(p, encoding="utf-8") as f:
+            lay = json.load(f)
+    except (OSError, ValueError) as e:
+        sys.exit(f"layouts/{name}.json: {e}")
+    if not isinstance(lay, dict) or not isinstance(lay.get("cameras"), dict):
         sys.exit(f"layouts/{name}.json has no \"cameras\" object")
     return lay
 
@@ -156,16 +194,37 @@ def layout_flags(layout, cam):
     return flags
 
 
+def split_opts(s):
+    """An `opts =` line as arguments, with shell quoting. On Windows backslashes are path separators
+    (--recording-dir D:\\videos), not escapes."""
+    return shlex.split(s.replace("\\", "\\\\") if WINDOWS else s)
+
+
+def camera_args(cam, defaults):
+    """The options cameras.ini gives a camera: [defaults] opts, its own opts, its name and URL."""
+    return (split_opts(defaults.get("opts", "") if defaults else "") + split_opts(cam.opts)
+            + ["-n", cam.name, "-i", cam.url])
+
+
 def command(cam, defaults, extra, record=False, layout=None):
-    argv = [python_exe(defaults), "-u", os.path.join(HERE, "nova.py")]
-    argv += shlex.split(defaults.get("opts", "") if defaults else "")
-    argv += shlex.split(cam.opts)
+    """The complete nova.py command line: what the camera runs with. The launcher reads mode and
+    GPU from it; the process itself gets launch_argv(), which carries no URL or stream key."""
+    argv = [python_exe(defaults), "-u", os.path.join(HERE, "nova.py")] + camera_args(cam, defaults)
     if record:
         argv += ["--headless", "-r"]
-    argv += ["-n", cam.name, "-i", cam.url]
     argv += layout_flags(layout, cam)
     argv += extra
     return argv
+
+
+def launch_argv(cam, defaults, extra, config, control, record=False, layout=None):
+    """What the camera process is started with: its id, and nova.py reads URL, name and options from
+    the config itself, because a process's command line is visible to every local user (ps)."""
+    argv = [python_exe(defaults), "-u", os.path.join(HERE, "nova.py"),
+            "--camera", cam.id, "--config", os.path.abspath(config), "--control", control]
+    if record:
+        argv += ["--headless", "-r"]
+    return argv + layout_flags(layout, cam) + list(extra)
 
 
 def has_flag(argv, flags):
@@ -234,35 +293,159 @@ def read_pids():
     try:
         with open(PIDS, encoding="utf-8") as f:
             raw = json.load(f)
-    except Exception:
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as e:
+        # "no cameras" would make start launch every camera a second time
+        sys.exit(f"{os.path.basename(PIDS)} is unreadable ({e}); check `ps` for running nova.py, then delete it")
     return {k: (v if isinstance(v, dict) else {"pid": int(v), "mode": "?"}) for k, v in raw.items()}
 
 
 def write_pids(d):
-    with open(PIDS, "w", encoding="utf-8") as f:
+    tmp = PIDS + ".tmp"                  # replace, never truncate: a reader must not see a half-written file
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f, indent=2)
+    os.replace(tmp, PIDS)
+
+
+@contextlib.contextmanager
+def pids_locked():
+    """One launcher command at a time may change the pid file: two parallel `start`s used to launch a
+    camera twice and lose one of the pids."""
+    with open(PIDS_LOCK, "a+") as f:
+        if WINDOWS:
+            import msvcrt
+            f.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)    # retries for 10 s, then raises
+                    break
+                except OSError:
+                    print("waiting for another nova command ...", file=sys.stderr)
+            try:
+                yield
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("waiting for another nova command ...", file=sys.stderr)
+                fcntl.flock(f, fcntl.LOCK_EX)
+            yield                                                    # closing the file releases the lock
+
+
+def cmdline(pid):
+    """pid's command line; None if there is no such process, '' if it cannot be read here."""
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                if f.read().rsplit(b")", 1)[-1].split()[:1] == [b"Z"]:
+                    return None                  # exited, not yet reaped by its parent
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return ""
+    try:
+        r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout.strip() or None
 
 
 def alive(pid):
+    """pid runs and is a Nova camera. The pid file outlives reboots and crashes, and a recycled pid of
+    another program must neither be stopped nor make `start` skip the camera."""
     if WINDOWS:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
         return str(pid) in out
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        pass                                 # someone else's process: its command line still tells
+    cl = cmdline(pid)
+    return cl is not None and (cl == "" or "nova.py" in cl)
 
 
-def interrupt(pid):
-    """Ask a camera to quit the way Ctrl-C would (window geometry and recordings are saved)."""
+def control_address(cid):
+    """Where camera cid's control channel listens: a socket in the user's private runtime directory, or
+    a named pipe on Windows. The launcher picks it and records it in the pid file."""
+    if WINDOWS:
+        user = re.sub(r"\W", "_", os.environ.get("USERNAME", "user"))
+        return f"nova-{user}-{cid}"
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(tempfile.gettempdir(), f"nova-{os.getuid()}")
+    return os.path.join(base, "nova", f"{cid}.sock")
+
+
+def control(address, request, timeout=3.0):
+    """Send one request to a camera's control channel (control.py); its reply as a dict, None if no
+    camera answers there (not running, or started before the channel existed)."""
+    if not address:
+        return None
+    line = (json.dumps(request) + "\n").encode()
+    try:
+        if WINDOWS:
+            with open(r"\\.\pipe\\" + address, "r+b", buffering=0) as f:
+                f.write(line)
+                buf = b""
+                while not buf.endswith(b"\n"):
+                    c = f.read(1)
+                    if not c:
+                        break
+                    buf += c
+        else:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect(address)
+                s.sendall(line)
+                buf = b""
+                while not buf.endswith(b"\n"):
+                    c = s.recv(4096)
+                    if not c:
+                        break
+                    buf += c
+        return json.loads(buf.decode("utf-8")) if buf.strip() else None
+    except (OSError, ValueError):
+        return None
+
+
+def interrupt(pid, address=None):
+    """Ask a camera to quit the way Ctrl-C would (window geometry and recordings are saved): through its
+    control channel, else with a signal (cameras started before the channel existed)."""
+    reply = control(address, {"cmd": "stop"})
+    if reply and reply.get("ok"):
+        return
     if WINDOWS:
         os.kill(pid, signal.CTRL_BREAK_EVENT)
     else:
         os.kill(pid, signal.SIGINT)
+
+
+def open_log(cid):
+    """logs/ID.log for appending; a log above LOG_ROTATE moves to ID.log.1 first (one generation)."""
+    path = os.path.join(LOGDIR, f"{cid}.log")
+    try:
+        if os.path.getsize(path) > LOG_ROTATE:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+    return open(path, "ab")
+
+
+def stop_timeout(env):
+    """Default --timeout of stop/restart: a camera stopped while its stream is stalled needs up to
+    2 x NOVA_TIMEOUT (the blocked write, then closing the dead connection; see avwriter._net_timeouts)."""
+    try:
+        t = int(env.get("NOVA_TIMEOUT", os.environ.get("NOVA_TIMEOUT", "10000000"))) / 1_000_000
+    except ValueError:
+        t = 10.0
+    return max(15.0, 2 * t + 5)
 
 
 def log_tail(cid, n=5):
@@ -286,8 +469,9 @@ def fmt_uptime(seconds):
 
 class Args:
     """A parsed command line: camera ids, extra options for nova.py, --layout, --timeout, run's id."""
-    def __init__(self, ids=(), extra=(), layout=None, timeout=15, id=None):
+    def __init__(self, ids=(), extra=(), layout=None, timeout=None, id=None, config=INI):
         self.ids, self.extra, self.layout, self.timeout, self.id = list(ids), list(extra), layout, timeout, id
+        self.config = config
 
 
 def stop_entries(pids, targets, timeout):
@@ -296,12 +480,13 @@ def stop_entries(pids, targets, timeout):
     for cid, e in targets.items():
         if alive(e["pid"]):
             try:
-                interrupt(e["pid"])
+                interrupt(e["pid"], e.get("control"))
                 print(f"{cid}: stopping (pid {e['pid']})")
             except Exception as ex:
                 print(f"{cid}: could not signal pid {e['pid']}: {ex}")
         else:
             print(f"{cid}: not running")
+    timeout = 15.0 if timeout is None else timeout
     deadline = time.time() + float(timeout)
     while time.time() < deadline and any(alive(e["pid"]) for e in targets.values()):
         time.sleep(0.25)
@@ -372,7 +557,8 @@ def export_rules(layout, name, cams, fmt):
             continue
         title = window_title(cam.name)
         if fmt == "sway":
-            out.append(f'for_window [title="^{re_literal(title)}$"] floating enable, border none, '
+            sway_title = re_literal(title).replace('"', '.')   # sway's config parser takes no quote escape
+            out.append(f'for_window [title="^{sway_title}$"] floating enable, border none, '
                        f'resize set {w} {h}, move absolute position {x} {y}')
         elif fmt == "hyprland":
             lua = re_literal(title).replace("\\", "\\\\").replace('"', '\\"')
@@ -383,7 +569,7 @@ def export_rules(layout, name, cams, fmt):
                     f"    match:title = ^{re_literal(title).replace('#', '##')}$",
                     "    float = yes", f"    move = {x} {y}", f"    size = {w} {h}", "    border_size = 0", "}", ""]
         else:
-            out += [f"[{title}]", f"Description={title}", f"title={title}", "titlematch=1",
+            out += [f"[nova-{cid}]", f"Description={title}", f"title={title}", "titlematch=1",
                     f"position={x},{y}", "positionrule=3", f"size={w},{h}", "sizerule=3",
                     "noborder=true", "noborderrule=2", ""]
     return "\n".join(out).rstrip() + "\n"
@@ -408,9 +594,9 @@ def cmd_list(defaults, env, cams, args):
         g = assign_gpu(c, cams, env, command(c, defaults, [])) if gpus else None
         print(f"{c.id:<{w}}  {'yes' if c.enabled else 'no ':<3}  {(g or '-') + '    ' if gpus else ''}"
               f"{c.name[:24]:<24} {mask_url(c.url)}"
-              + (f"\n{'':<{w}}       opts: {c.opts}" if c.opts else ""))
+              + (f"\n{'':<{w}}       opts: {mask_url(c.opts)}" if c.opts else ""))
     if defaults and defaults.get("opts"):
-        print(f"\ndefault opts: {defaults.get('opts')}")
+        print(f"\ndefault opts: {mask_url(defaults.get('opts'))}")
     if env:
         print("env: " + " ".join(f"{k}={v}" for k, v in env.items()))
     print(f"python: {python_exe(defaults)}")
@@ -444,15 +630,23 @@ def cmd_start(defaults, env, cams, args, record=False):
             failed += 1
             continue
         gpu = assign_gpu(cam, cams, env, argv)
-        with open(os.path.join(LOGDIR, f"{cam.id}.log"), "ab") as log:
+        address = control_address(cam.id)
+        run = launch_argv(cam, defaults, args.extra, args.config, address, record, layout)
+        with open_log(cam.id) as log:
+            log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} nova {'record' if record else 'start'} "
+                      f"{cam.id} ({mode}) =====\n".encode())
+            log.flush()
             kw = {"cwd": HERE, "env": process_env(env, gpu), "stdout": log, "stderr": subprocess.STDOUT,
                   "stdin": subprocess.DEVNULL}
             if WINDOWS:
-                kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                # no console of its own: closing the terminal no longer takes the cameras with it;
+                # stop goes through the control channel
+                kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
             else:
                 kw["start_new_session"] = True
-            p = subprocess.Popen(argv, **kw)
-        pids[cam.id] = {"pid": p.pid, "mode": mode, "gpu": gpu, "layout": args.layout, "started": int(time.time())}
+            p = subprocess.Popen(run, **kw)
+        pids[cam.id] = {"pid": p.pid, "mode": mode, "gpu": gpu, "layout": args.layout, "started": int(time.time()),
+                        "control": address}
         write_pids(pids)
         tags = mode + (f", gpu {gpu}" if gpu is not None else "") + (f", layout {args.layout}" if layout else "")
         print(f"{cam.id}: starting (pid {p.pid}, {tags}) -> logs/{cam.id}.log")
@@ -499,10 +693,15 @@ def cmd_restart(defaults, env, cams, args):
         return 1
     select(cams, ids, only_enabled=False)                   # unknown ids end here
     targets = {cid: pids[cid] for cid in ids if cid in pids}
+    for _, layout in restart_groups(ids, targets, args.layout):
+        if layout:
+            load_layout(layout)                             # a missing layout ends here, before any stop
     stuck = stop_entries(pids, targets, args.timeout) if targets else []
+    if stuck:
+        print(f"not restarted (still running): {', '.join(stuck)}; `nova restart {' '.join(stuck)}` once they exit")
     rc = 1 if stuck else 0
     for (record, layout), group in restart_groups([i for i in ids if i not in stuck], targets, args.layout).items():
-        rc = cmd_start(defaults, env, cams, Args(group, args.extra, layout), record=record) or rc
+        rc = cmd_start(defaults, env, cams, Args(group, args.extra, layout, config=args.config), record=record) or rc
     return rc
 
 
@@ -518,7 +717,22 @@ def cmd_status(defaults, env, cams, args):
         up = f"up {fmt_uptime(time.time() - e['started'])}" if running and e.get("started") else ""
         gpu = f"gpu {e['gpu']}" if e.get("gpu") is not None else ""
         lay = f"layout {e['layout']}" if e.get("layout") else ""
-        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {up:<14} {e['mode']:<16} {gpu:<6} {lay:<18} logs/{cid}.log")
+        live = live_state(control(e.get("control"), {"cmd": "status"})) if running else ""
+        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {up:<14} {e['mode']:<16} {gpu:<6} {lay:<18} logs/{cid}.log"
+              + (f"\n{'':<{w}}  {live}" if live else ""))
+
+
+def live_state(st):
+    """One line from a camera's status reply: what it is doing now, not how it was launched."""
+    if not st or not st.get("ok"):
+        return ""
+    parts = [f"video {st['video']}" if st.get("video") else "no video yet"]
+    for k in ("record", "stream"):
+        if st.get(k) not in (None, "off", "n/a"):
+            parts.append(f"{k} {st[k]}")
+    if st.get("status"):
+        parts.append(" ".join(str(st["status"]).split()))
+    return ", ".join(parts)
 
 
 def cmd_run(defaults, env, cams, args):
@@ -530,11 +744,14 @@ def cmd_run(defaults, env, cams, args):
         if not enabled:
             sys.exit("no enabled camera in cameras.ini")
         cam = enabled[0]
-    argv = command(cam, defaults, args.extra, layout=load_layout(args.layout) if args.layout else None)
+    layout = load_layout(args.layout) if args.layout else None
+    argv = command(cam, defaults, args.extra, layout=layout)
     gpu = assign_gpu(cam, cams, env, argv)
+    address = control_address(cam.id)
     print(f"running {cam.id}" + (f" on gpu {gpu}" if gpu is not None else "") + ": "
           + " ".join(mask_url(a) for a in argv[2:]), file=sys.stderr)
-    p = subprocess.Popen(argv, cwd=HERE, env=process_env(env, gpu))
+    p = subprocess.Popen(launch_argv(cam, defaults, args.extra, args.config, address, layout=layout),
+                         cwd=HERE, env=process_env(env, gpu))
     try:
         return p.wait()
     except KeyboardInterrupt:
@@ -543,7 +760,7 @@ def cmd_run(defaults, env, cams, args):
         # after 0.25 s).
         if p.poll() is None:
             try:
-                interrupt(p.pid)
+                interrupt(p.pid, address)
             except OSError:
                 pass
         try:
@@ -565,13 +782,18 @@ def cmd_layout(defaults, env, cams, args):
             ids = list(lay["cameras"])
             print(f"{n:<20} {len(ids):>2} cameras  saved {str(lay.get('saved', '?'))[:16]}  {', '.join(ids)}"[:200])
         return
+    if sub == "apply":
+        if len(args.ids) != 2:
+            sys.exit("usage: nova layout apply NAME")
+        return layout_apply(load_layout(args.ids[1]), args.ids[1])
     if sub == "export":
         if len(args.ids) != 3:
             sys.exit(f"usage: nova layout export NAME {'|'.join(EXPORT_FORMATS)}")
         sys.stdout.write(export_rules(load_layout(args.ids[1]), args.ids[1], cams, args.ids[2]))
         return
     if sub != "save" or len(args.ids) != 2:
-        sys.exit("usage: nova layout save NAME | nova layout list | nova layout export NAME sway|kwin|hyprland|hyprlang")
+        sys.exit("usage: nova layout save NAME | nova layout list | nova layout apply NAME"
+                 " | nova layout export NAME sway|kwin|hyprland|hyprlang")
     name = args.ids[1]
     path = layout_path(name)
     qs = window_settings()
@@ -603,6 +825,27 @@ def cmd_layout(defaults, env, cams, args):
         print(f"  skipped, never shown a window: {', '.join(missing)}")
 
 
+def layout_apply(layout, name):
+    """Move the open windows to the layout's places (and zoom) without restarting them."""
+    pids = read_pids()
+    moved, rc = 0, 0
+    for cid, e in layout["cameras"].items():
+        entry = pids.get(cid)
+        if not entry or not alive(entry["pid"]) or entry.get("mode", "").startswith("headless"):
+            print(f"  {cid:<20} not open")
+            continue
+        reply = control(entry.get("control"), {"cmd": "place", "geometry": e.get("geometry"), "zoom": e.get("zoom")})
+        if reply and reply.get("ok"):
+            moved += 1
+            print(f"  {cid:<20} {e.get('geometry')}")
+        else:
+            rc = 1
+            why = (reply or {}).get("error") or "no control channel (started by an older Nova: restart it)"
+            print(f"  {cid:<20} not moved: {why}")
+    print(f"layout {name!r}: {moved} window(s) moved")
+    return rc
+
+
 COMMANDS = {"list": cmd_list, "start": cmd_start, "record": cmd_record, "stop": cmd_stop, "restart": cmd_restart,
             "status": cmd_status, "run": cmd_run, "layout": cmd_layout}
 
@@ -610,7 +853,9 @@ COMMANDS = {"list": cmd_list, "start": cmd_start, "record": cmd_record, "stop": 
 def take_option(extra, name):
     """Remove `--name VALUE` / `--name=VALUE` from extra (launcher option, not for nova.py); return VALUE or None."""
     for i, t in enumerate(extra):
-        if t == name and i + 1 < len(extra):
+        if t == name:
+            if i + 1 >= len(extra):
+                sys.exit(f"{name} needs a value")
             return extra.pop(i + 1), extra.pop(i)
         if t.startswith(name + "="):
             extra.pop(i)
@@ -632,6 +877,8 @@ def split_ids(tokens):
 
 
 def main(argv=None):
+    if not WINDOWS:
+        os.umask(0o077)          # logs, pid file and layouts are the user's own (nova.py does the same)
     argv = list(sys.argv[1:] if argv is None else argv)
     config = INI
     while argv and argv[0] in ("-c", "--config"):
@@ -644,7 +891,7 @@ def main(argv=None):
     if cmd not in COMMANDS:
         sys.exit(f"unknown command '{cmd}'\n\n{USAGE.rstrip()}")
 
-    args = Args(*split_ids(tokens))
+    args = Args(*split_ids(tokens), config=config)
     if cmd in ("stop", "restart"):
         t, _ = take_option(args.extra, "--timeout")
         if t is not None:
@@ -662,6 +909,11 @@ def main(argv=None):
         args.id = args.ids[0] if args.ids else None
 
     defaults, env, cams = load(config)
+    if args.timeout is None:
+        args.timeout = stop_timeout(env)
+    if cmd in ("start", "record", "stop", "restart"):
+        with pids_locked():
+            return COMMANDS[cmd](defaults, env, cams, args)
     return COMMANDS[cmd](defaults, env, cams, args)
 
 

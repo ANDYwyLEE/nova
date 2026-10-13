@@ -21,7 +21,7 @@ def test_reanchor_never_runs_backwards():
     assert c >= b
     d = tl.map(0.0 + _Timeline.MAX_JUMP + 1)     # jump beyond MAX_JUMP: re-anchor again
     assert d >= c
-    assert tl.map(d - 50) >= d or True           # (value irrelevant) and still no exception
+    assert tl.map(d - 50) >= d                   # a jump back re-anchors too
 
 
 def test_missing_pts_follows_the_wall_clock_monotonically():

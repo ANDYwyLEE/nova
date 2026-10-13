@@ -85,7 +85,8 @@ def test_command_and_mode(cfg):
     assert cams.mode_of(cams.command(a, defaults, ["--headless"])) == "headless"     # refused by start
 
 
-def test_gpu_dealing(cfg):
+def test_gpu_dealing(cfg, monkeypatch):
+    monkeypatch.delenv("NOVA_GPU_DEVICES", raising=False)     # the launcher falls back to it
     defaults, env, cs = cfg
     a, b, c, d = cs
     assert cams.gpu_list(env) == ["0", "1"]
@@ -141,7 +142,7 @@ def test_window_title_and_export(cfg):
     assert 'for_window [title="^Nova - Camera B$"]' in sway and sway.count("for_window") == 2
     assert "zzz" not in sway and "junk" not in sway and sway.startswith("# Nova layout 'work'")
     kwin = cams.export_rules(lay, "work", cs, "kwin")
-    assert ("[Nova - a]\nDescription=Nova - a\ntitle=Nova - a\ntitlematch=1\nposition=300,760\npositionrule=3\n"
+    assert ("[nova-a]\nDescription=Nova - a\ntitle=Nova - a\ntitlematch=1\nposition=300,760\npositionrule=3\n"
             "size=391,220\nsizerule=3\nnoborder=true\nnoborderrule=2\n") in kwin
     hypr = cams.export_rules(lay, "work", cs, "hyprland")
     assert hypr.startswith("-- Nova layout")
@@ -163,12 +164,16 @@ def test_uptime_and_restart_groups():
         (False, "work"): ["a"], (True, None): ["b"], (False, None): ["c", "d"]}
     assert cams.restart_groups(["a", "b"], pids, "night") == {(False, "night"): ["a"], (True, None): ["b"]}
     a = cams.Args(["x"], ["-r"], "work")
-    assert (a.ids, a.extra, a.layout, a.timeout, a.id) == (["x"], ["-r"], "work", 15, None)
+    assert (a.ids, a.extra, a.layout, a.timeout, a.id) == (["x"], ["-r"], "work", None, None)
+    assert cams.stop_timeout({"NOVA_TIMEOUT": "10000000"}) == 25.0       # 2 x a stalled stream's deadline
+    assert cams.stop_timeout({"NOVA_TIMEOUT": "2000000"}) == 15.0
+    assert cams.stop_timeout({"NOVA_TIMEOUT": "x"}) == 25.0
 
 
 def test_url_hash_matches_the_view_key():
+    import novacore
     url = "rtsp://admin:pw@10.0.0.1:554/s"
-    assert cams.url_hash(url) == hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    assert cams.url_hash(url) == novacore.settings_key(url) == hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
 
 def test_pids_file_compat(tmp_path, monkeypatch):

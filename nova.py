@@ -14,6 +14,33 @@ from util import parse_time, mask_url
 from ffparser import NovaParser
 
 
+def expand_camera(argv):
+    """`--camera ID [--config FILE]`, as the launcher starts a camera: its URL, name and options are
+    read from cameras.ini here, so they never appear on the command line, which every local user can
+    read (ps). Returns (camera id or None, the arguments to parse)."""
+    if "--camera" not in argv:
+        return None, list(argv)
+    import cams
+    argv = list(argv)
+
+    def take(flag):
+        if flag not in argv:
+            return None
+        i = argv.index(flag)
+        if i + 1 >= len(argv):
+            sys.exit(f"{flag} needs a value")
+        value = argv[i + 1]
+        del argv[i:i + 2]
+        return value
+
+    cid, config = take("--camera"), take("--config") or cams.INI
+    defaults, _, cameras = cams.load(config, quiet=True)
+    cam = next((c for c in cameras if c.id == cid), None)
+    if cam is None:
+        sys.exit(f"--camera {cid}: no such camera in {config}")
+    return cid, cams.camera_args(cam, defaults) + argv
+
+
 def log_level_type(value):
     try:
         return int(value)
@@ -22,6 +49,9 @@ def log_level_type(value):
 
 
 if __name__ == "__main__":
+    if os.name != "nt":
+        os.umask(0o077)          # recordings, snapshots, logs and window settings: this user's only
+    camera_id, argv = expand_camera(sys.argv[1:])
     parser = NovaParser(
         description='Nova: High-performance RTSP Player',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -148,7 +178,14 @@ if __name__ == "__main__":
         help="Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10)."
     )
 
-    args = parser.parse_args()
+    parser.add_argument(
+        "--camera", metavar="ID",
+        help="Read URL, name and options of camera ID from cameras.ini (what the nova launcher passes)."
+    )
+    parser.add_argument("--config", metavar="FILE", help="The cameras.ini that --camera reads.")
+    parser.add_argument("--control", help=argparse.SUPPRESS)      # control channel address (control.py)
+
+    args = parser.parse_args(argv)
 
     # Validate the record segmentation interval
     try:
@@ -188,17 +225,18 @@ if __name__ == "__main__":
     logsync.setup_av_logging()
     logsync.install_excepthooks()
 
-    logging.debug(f"Input Arguments: {[mask_url(a) for a in sys.argv[1:]]}")
+    logging.debug(f"Input Arguments: {[mask_url(a) for a in argv]}" + (f" (camera {camera_id})" if camera_id else ""))
     logging.debug(f"headless={args.headless}, auto_record={args.auto_record}, auto_audio={args.auto_audio}")
     logging.debug(f"camera_name={args.camera_name}, snapshot_dir={snapshot_dir}, recording_dir={recording_dir}")
 
     if args.headless:
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        # no window: never depend on a display or compositor ([env] or the session may name one), or
+        # `nova record` dies with the desktop session and cannot start from ssh or cron
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
     elif sys.platform.startswith("linux") and "QT_QPA_PLATFORM" not in os.environ \
             and os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
-        # A Wayland compositor does not let a window place itself, XWayland does (GNOME and KDE honour
-        # X11 positions), and NVIDIA's EGL shows nothing for a frameless GL window on Wayland.
-        # QT_QPA_PLATFORM=wayland (e.g. in [env]) still gives a native window.
+        # A Wayland compositor does not let a window place itself, XWayland does (GNOME and KDE
+        # honour X11 positions). QT_QPA_PLATFORM=wayland (e.g. in [env]) still gives a native window.
         os.environ["QT_QPA_PLATFORM"] = "xcb"
         logging.info("Wayland session: running under XWayland (QT_QPA_PLATFORM=wayland for a native window)")
 
@@ -218,7 +256,7 @@ if __name__ == "__main__":
     app.setApplicationName("Nova")
     app.setDesktopFileName("nova")      # the app id Wayland compositors see (else the python binary's name)
 
-    if app.platformName() == "wayland":
+    if app.platformName().startswith("wayland"):      # "wayland" or "wayland-egl"
         # PyOpenGL defaults to GLX; a Wayland window's context is EGL and every GL call would fail
         os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
@@ -267,6 +305,13 @@ if __name__ == "__main__":
     if nova is not None:
         app.aboutToQuit.connect(nova.cleanup)
 
+    control = None
+    if args.control:
+        from control import ControlServer
+        control = ControlServer(args.control, camera_id or core.camera_name, core, nova, app.quit)
+        if not control.listen():
+            control = None
+
     # the view is connected before the worker starts so the first size signal is never missed
     core.start()
 
@@ -282,6 +327,14 @@ if __name__ == "__main__":
             except (ValueError, OSError): pass
 
     rt = app.exec()
+    if control is not None:
+        control.close()
     core.stop()
+    if core.vid_worker.isRunning():
+        # stuck in a blocking open/resolve: destroying a running QThread aborts the process (SIGABRT,
+        # a crash report); recordings and streams are closed already, so leave without it
+        logging.warning("[Nova] decoder thread still busy at exit; leaving without waiting for it")
+        logging.shutdown()
+        os._exit(rt)
     logging.debug("Nova exited gracefully.\n")
     sys.exit(rt)
