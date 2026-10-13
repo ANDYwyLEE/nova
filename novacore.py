@@ -57,7 +57,10 @@ class NovaCore(QObject):
         if camera_name:
             self.camera_name = camera_name
         else:
-            parsed = urlparse(url)
+            try:
+                parsed = urlparse(url)
+            except ValueError:                  # e.g. an unbalanced '[' (IPv6) in the address
+                parsed = urlparse("")
             if url.isdigit():
                 self.camera_name = f"camera{url}"
             elif parsed.hostname:
@@ -151,10 +154,11 @@ class NovaCore(QObject):
         self.vid_worker.start()
 
     def stop(self):
+        """Close outputs, then the decoder; False if the decoder thread is still busy (a blocking open)."""
         self.recorder.close()
         self.streamer.close()
         self.audio.close()
-        self.vid_worker.stop()
+        return self.vid_worker.stop() is not False
 
 
 

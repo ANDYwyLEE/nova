@@ -18,6 +18,9 @@ from util import mask_url, display_url
     ("rtsp://admin:Admin@123@h:554/x", "rtsp://admin:***@h:554/x"),
     ("rtsp://me@mail.com:pw@h/x", "rtsp://me@mail.com:***@h/x"),
     ("rtsp://:pw@h/", "rtsp://:***@h/"),
+    ("rtsp://admin:pa/ss@h:554/x", "rtsp://admin:***@h:554/x"),          # '/' in the password, unencoded
+    ("rtsp://admin:a/b@c@h/x", "rtsp://admin:***@h/x"),
+    ("http://h:8080/snap?email=a@b.c", "http://h:***@b.c"),              # over-masks, never under-masks
     # XM paths separate with '_', other key names, SRT secrets
     ("rtsp://h/user=admin_password=Xy7_channel=1_stream=0.sdp", "rtsp://h/user=admin_password=***_channel=1_stream=0.sdp"),
     ("rtsp://h/user=a&psw=abc&ch=1", "rtsp://h/user=a&psw=***&ch=1"),

@@ -19,11 +19,12 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 | `Unreachable: host:port …` or `Failed: Connection timed out` (overlay) | camera down or unreachable | check IP/port, firewall; Nova retries every 10 s; `NOVA_TIMEOUT` sets the socket timeout |
 | `Failed: 401 Unauthorized` / `Invalid data found` | wrong credentials or wrong path | try the camera's ONVIF address: `onvif://user:pw@ip` resolves the correct RTSP path |
 | `--accel=X is not supported by this FFmpeg/PyAV build` | the wheel lacks that hwaccel (e.g. `vaapi`) | use `cuda`/`qsv`/`d3d11va`, or build FFmpeg ([custom-ffmpeg.md](custom-ffmpeg.md)) |
-| `No working HW decoder for --accel=cuda. Falling back to software` | the GPU is not usable from this process | `nvidia-smi` works? driver loaded? `--gpu` / `NOVA_GPU_DEVICES` points at an existing GPU? |
-| `produced no frames after N keyframes; reconnecting with software decoding` | the hardware decoder opened but cannot decode this stream (unusual profile/level, 10-bit, MJPEG) | software decoding is used from now on; nothing to do unless CPU is short |
+| `No working HW decoder for --accel=cuda (reason). Falling back to software (codec); hardware is tried again in N min` | the hardware decoder cannot be used: wrong `--gpu`, GPU out of memory, or a stream it cannot decode (rawvideo webcams, MJPEG 4:2:2, an unusual profile) | the picture continues in software without reconnecting; hardware is tried again after 5, 10, 20, 40, then every 60 min. Check `nvidia-smi` and `--gpu` / `NOVA_GPU_DEVICES` if it keeps happening |
+| `Reconnecting: no video for N s while audio keeps flowing` / `no picture for N s` / `N video packets in a row failed to decode` | the camera's video stalled or is broken while the connection stays up (single damaged packets are skipped) | Nova reconnects by itself; repeated: lower the camera's bitrate or check its network |
+| `cannot read host:port from the URL … must be percent-encoded (%2F %3F %23 %40 %5B %5D)` | the password contains `/ ? # @ [ ]` unencoded | write those characters percent-encoded in `cameras.ini` (`pa/ss` → `pa%2Fss`) |
 | `non-existing PPS 0 referenced` / `no frame!` (once) | joined the stream mid-GOP | normal; decoding starts at the next keyframe |
-| `Stream error: … ; reconnecting` every few seconds | the camera drops the connection | try `--ffmpeg "-rtsp_transport udp"` (or `tcp` if you set udp); lower the camera's bitrate |
-| `URI resolve failed` with `onvif://` | ONVIF port not found or credentials rejected | give the port explicitly (`onvif://user:pw@ip:8080`), check with `-l TRACE` which SOAP calls fail |
+| `Stream error:` in the window, `[VideoWorker] Stream exception:` in the log, every few seconds | the camera drops the connection | try `--ffmpeg "-rtsp_transport udp"` (or `tcp` if you set udp); lower the camera's bitrate |
+| `Failed: URI resolve` in the window, `[ONVIF] ❌ All attempts failed for IP` in the log, with `onvif://` | ONVIF port not found or credentials rejected | give the port explicitly (`onvif://user:pw@ip:8080`), check with `-l TRACE` which SOAP calls fail |
 | decoder `ignored unknown --ffmpeg options: {…}` | option not valid for that decoder | `-resize` is cuvid-only, `-skip_frame` is software-only; see [ffmpeg-options.md](ffmpeg-options.md) |
 
 ## Display

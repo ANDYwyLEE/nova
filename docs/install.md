@@ -1,6 +1,6 @@
 # Installation
 
-Nova needs Python 3.12 or newer and the packages in `requirements.txt`. Nothing else: the `av` package from PyPI ships its own FFmpeg, and the GPU paths use the driver that is already installed.
+Nova needs Python 3.12 or newer and the packages in `requirements.txt`. Nothing else: the `av` package from PyPI ships its own FFmpeg, and the GPU paths use the driver that is already installed. Only `xmeye://` URLs need one more package, `pip install python-dvr` (the other shortcuts and plain `rtsp://` do not).
 
 - [What the PyPI FFmpeg can do](#what-the-pypi-ffmpeg-can-do)
 - [Linux](#linux-ubuntu-2404-and-2604)

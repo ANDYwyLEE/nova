@@ -14,7 +14,7 @@ Everything in the tables below was measured on 2026-10-11 with libx264 / h264_nv
 
 | destination | examples | applied to |
 |---|---|---|
-| input / protocol | `rtsp_transport probesize analyzeduration fflags max_delay buffer_size timeout rw_timeout user_agent headers` | `av.open(url, options=…)` |
+| input / protocol | `rtsp_transport probesize analyzeduration fflags max_delay buffer_size timeout rw_timeout user_agent headers` | `av.open(url, options=…)`; `headers timeout rw_timeout tcp_nodelay rtmp_live rtmp_tcurl streamid` reach the camera input only, never an output |
 | decoder | `threads skip_frame skip_loop_filter err_detect flags lowres resize surfaces deint drop_second_field gpu` | the decoder `CodecContext` |
 | video encoder | `b maxrate bufsize crf preset tune profile level g bf refs rc cq qp x264-params …` and any unknown key | the encoder `CodecContext` |
 | audio encoder | `b:a ar ac sample_fmt` and anything with `:a` | the audio `CodecContext` |

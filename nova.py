@@ -331,8 +331,7 @@ if __name__ == "__main__":
     rt = app.exec()
     if control is not None:
         control.close()
-    core.stop()
-    if core.vid_worker.isRunning():
+    if not core.stop() or core.vid_worker.isRunning():
         # stuck in a blocking open/resolve: destroying a running QThread aborts the process (SIGABRT,
         # a crash report); recordings and streams are closed already, so leave without it
         logging.warning("[Nova] decoder thread still busy at exit; leaving without waiting for it")

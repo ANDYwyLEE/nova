@@ -225,7 +225,7 @@ Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom regio
 | Windows | registry `HKEY_CURRENT_USER\Software\judvi\Nova` |
 | macOS | `~/Library/Preferences/com.judvi.Nova.plist` |
 
-Resolved `onvif://` / `xmeye://` / `hik://` / `dahua://` URLs are cached for one day in `.uri_cache.json` next to `nova.py`, without the password.
+Resolved `onvif://` / `xmeye://` / `hik://` / `dahua://` URLs are cached for one day in `.uri_cache.json` next to `nova.py`, without the password. Only URLs built from the device's own answer are cached, and a camera that gives no picture three times in a row is asked again. What a device answers is checked before the password is attached: the stream must be `rtsp`/`rtsps` on the camera's own address and a valid port. A password may contain `@` (`user:pa@ss@ip` works) or be percent-encoded.
 
 Everything Nova and the launcher write (recordings, snapshots, logs, layouts, the pid file, the settings file) is created readable by you only (umask 077 on Linux and macOS): footage and logs are private on a shared machine. Files from older versions keep their permissions; `chmod -R go-rwx videos snapshots logs layouts` tightens them. Keep `cameras.ini` at `chmod 600`; the launcher warns when others can read it.
 

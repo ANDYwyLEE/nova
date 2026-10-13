@@ -47,8 +47,9 @@ def is_pi_series():
         with open("/proc/device-tree/model", "r") as f:
             model = f.read().lower()
             return any(p in model for p in ["raspberry pi", "orange pi", "banana pi", "rockchip", "sunxi"])
-    except: pass
-    return "arm" in _machine or "aarch64" in _machine
+    except OSError:
+        pass
+    return False          # not every ARM Linux is a Pi: Jetson boards and ARM servers have other encoders
 
 IS_PI = is_pi_series()
 
@@ -109,6 +110,20 @@ _RE_HLS_CID = re.compile(r'([?&]cid=)([^&\s\'"]+)')              # YouTube HLS i
 _SECRET_PATTERNS = (_RE_USERINFO, _RE_SRT_SECRET, _RE_QUERY_PWD, _RE_XM_PWD, _RE_DICT_PWD, _RE_OPT_PWD,
                     _RE_STREAM_KEY, _RE_RTMP_KEY, _RE_HLS_CID)
 
+_RE_URL = re.compile(r'([a-z][a-z0-9+.-]*://)([^\s\'"<>]+)', re.I)
+
+def _mask_userinfo(m):
+    """user:password@ up to the LAST '@' of a URL: a password with '@' or '/' in it (unencoded, as
+    typed in cameras.ini) has no other visible end."""
+    scheme, rest = m.group(1), m.group(2)
+    at = rest.rfind("@")
+    if at < 0:
+        return m.group(0)
+    user, colon, pwd = rest[:at].partition(":")
+    if not colon or pwd == "***" or "/" in user:
+        return m.group(0)
+    return f"{scheme}{user}:***{rest[at:]}"
+
 def _star(m):
     s, a, b = m.group(0), m.start(2) - m.start(0), m.end(2) - m.start(0)
     return s[:a] + "***" + s[b:]
@@ -124,7 +139,7 @@ def mask_url(url) -> str:
     ('password': 'x', '-passphrase', 'x'), the last path element of rtmp(s) URLs (the stream key on
     YouTube, Twitch, Facebook, Kick, Restream ...) and YouTube HLS ?cid=."""
     if not url: return url or ""
-    s = str(url)
+    s = _RE_URL.sub(_mask_userinfo, str(url))
     for pat in _SECRET_PATTERNS:
         s = pat.sub(_star, s)
     return s
