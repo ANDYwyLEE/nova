@@ -105,6 +105,13 @@ class FFmpegParser:
         'pbkeylen', 'streamid', 'use_wallclock_as_timestamps', 'output_ts_offset',
         'metadata', 'map_metadata', 'copyts', 'avoid_negative_ts', 'y', 't',
     }
+    # Keys valid on both sides that belong to the camera input only: an HTTP camera's -headers
+    # ("Authorization: ...") must not reach an HLS ingest, and -timeout is in microseconds for RTSP but
+    # in seconds for the HLS muxer (whose timeout Nova sets from NOVA_TIMEOUT).  Output protocol
+    # options never reach the protocol anyway (docs/ffmpeg-options.md).
+    INPUT_ONLY_KEYS = {
+        'headers', 'timeout', 'rw_timeout', 'tcp_nodelay', 'rtmp_live', 'rtmp_tcurl', 'streamid',
+    }
     # Video encoder CodecContext options (ffmpeg "-x" or "-x:v")
     ENC_KEYS = {
         'cuvid_device', 'gpu', 'hwaccel_device', 'hwaccel_output_format', 'qsv_device',
@@ -178,7 +185,7 @@ class FFmpegParser:
                 continue
 
             matched = False
-            if base in FFmpegParser.MUX_KEYS:
+            if base in FFmpegParser.MUX_KEYS and base not in FFmpegParser.INPUT_ONLY_KEYS:
                 o.mux[base] = v; matched = True
             if base in FFmpegParser.HW_KEYS:
                 o.hw[base] = v; matched = True
