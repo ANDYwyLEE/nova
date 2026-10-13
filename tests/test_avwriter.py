@@ -61,14 +61,16 @@ class Container:
 
 def test_a_failed_first_packet_is_an_open_error_later_ones_are_not():
     w = avwriter.AVWriter.__new__(avwriter.AVWriter)
-    w.first_packet_sent, w.timeout = False, (30.0, 10.0)
+    w.first_packet_sent, w.open_failed, w.timeout = False, None, (30.0, 10.0)
     w.container = Container(ConnectionRefusedError(111, "Connection refused"))
     try:
         w._write("p1")
         assert False, "no OutputOpenError"
     except avwriter.OutputOpenError as e:
         assert "Connection refused" in str(e)
-    w.container.error = None
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)    # (that writer is done: see test_output_openfail)
+    w.first_packet_sent, w.open_failed, w.timeout = False, None, (30.0, 10.0)
+    w.container = Container(None)
     w._write("p1")
     assert w.first_packet_sent and w.container.muxed == ["p1"]
     w.container.error = BrokenPipeError(32, "Broken pipe")

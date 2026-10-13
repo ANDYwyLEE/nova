@@ -34,7 +34,9 @@ def test_headless_recording(test_clip, tmp_path):
            "-n", "smoke", "--recording-dir", str(outdir), "--record-interval", "4s",
            "-e", "libx264", "--ffmpeg", "-preset ultrafast", "-l", "INFO"]
     kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {}
-    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONPATH=ROOT)
+    # NOVA_MIN_RECORD_INTERVAL: without it 4s is raised to 60 s, and whether a segment closed within the
+    # 40 s below depended on the second the test started at
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONPATH=ROOT, NOVA_MIN_RECORD_INTERVAL="1")
     p = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
     out = ""
     try:

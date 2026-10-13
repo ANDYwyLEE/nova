@@ -3,6 +3,7 @@
 import queue
 import os
 import sys
+import time
 import contextlib
 import logging
 
@@ -18,6 +19,7 @@ except ImportError:
 
 
 TARGET_SR = 48000  # safe default for most backends
+OPEN_RETRY_S = 3.0 # s between attempts to open an audio output that failed (no device, device busy)
 
 @contextlib.contextmanager
 def quiet_alsa():
@@ -179,7 +181,7 @@ class AudioWorker(QThread):
                 logging.info(f"[AudioWorker] Audio stream opened ({rate} Hz, {ch} ch)")
                 return
             except Exception as e:
-                logging.error(f"[AudioWorker] Audio open failed: {e}")
+                logging.debug(f"[AudioWorker] Audio open failed (rate={rate}, dev={dev_idx}): {e}")
 
                 if not tried_fallback:
                     # fallback: force TARGET_SR and enable resample
@@ -193,8 +195,7 @@ class AudioWorker(QThread):
                     dev_idx = None
                     continue
 
-                # give up
-                self.stat_sig.emit(f"Audio open error: {e}")
+                # give up (the caller reports it)
                 raise
 
     def run(self):
@@ -207,7 +208,11 @@ class AudioWorker(QThread):
             self.stat_sig.emit(f"Audio init error: {e}")
             return
 
-        fail_logged = False
+        # An output that cannot be opened was retried for every buffer (~50 a second, three ERROR
+        # lines each). Now: one ERROR, an attempt every OPEN_RETRY_S (DEBUG), INFO when it works again;
+        # the audio in between is dropped.
+        failing = False
+        next_try = 0.0
         while self.run_flag:
             try:
                 data, sr, ch = self.q.get(timeout=0.1)
@@ -223,16 +228,24 @@ class AudioWorker(QThread):
                 or ch != self.ch
                 or (not self.do_resample and sr != self.sr)
             ):
+                now = time.monotonic()
+                if now < next_try:
+                    continue
                 try:
                     self._open_stream(sr, ch)
-                    fail_logged = False
                 except Exception as e:
-                    # drop this buffer and keep trying next ones
-                    if not fail_logged:
+                    next_try = now + OPEN_RETRY_S
+                    if not failing:
+                        failing = True
                         self.stat_sig.emit(f"Audio stream open error: {e}")
-                        logging.error(f"[AudioWorker] stream open error: {e}")
-                        fail_logged = True
+                        logging.error(f"[AudioWorker] cannot open an audio output: {e}; "
+                                      f"retrying every {OPEN_RETRY_S:g} s")
+                    else:
+                        logging.debug(f"[AudioWorker] audio output still unavailable: {e}")
                     continue
+                if failing:
+                    failing = False
+                    logging.info("[AudioWorker] audio output available again")
 
             out = data
             if self.do_resample and self.sr is not None and self.sr != sr:
@@ -243,8 +256,9 @@ class AudioWorker(QThread):
             except Exception as e:
                 logging.debug(f"[AudioWorker] write error: {e}")
                 self.stat_sig.emit(f"Audio write error: {e}")
-                # force reopen next time
+                # reopen, but not at once: a device that was unplugged would be reopened per buffer
                 self._close_stream()
+                next_try = time.monotonic() + OPEN_RETRY_S
 
         self._close_stream()
         if self.pa is not None:
