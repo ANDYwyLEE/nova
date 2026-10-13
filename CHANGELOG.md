@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-13 — a stalled stream no longer hangs Nova
+
+### Fixed
+- A live stream whose connection stalled (ingest server or uplink stops accepting data, no reset) blocked the streamer forever, and stopping it (`T`, closing the window, `nova stop`) hung with it: PyAV opens the output connection with `avio_open2(…, NULL)`, so the `rw_timeout` Nova passed never reached the RTMP protocol. Network targets now get PyAV's own deadline, `av.open(timeout=(30 s, NOVA_TIMEOUT))`: a write that makes no progress for `NOVA_TIMEOUT` ends the stream with `[AVStreamer] write timed out, giving up` (no 60 retries, the half-written packet has broken the stream anyway). Measured against a local RTMP server paused mid-stream: before, no error and a SIGTERM still pending after 30 s; now the error 13 s after the stall (≈3 s to fill the socket buffer + 10 s) and a SIGTERM during the stall exits in 20 s.
+- The worker reports a failure to the GUI only after the writer is closed, so closing a dead connection no longer freezes the window.
+- `Some options were not used: {'rw_timeout': …, 'tcp_nodelay': '1', 'rtmp_live': 'live'}` at every stream start: those protocol options are no longer passed (they never had an effect). HLS gets its upload timeout through the muxer's own `timeout` option. docs/ffmpeg-options.md no longer lists `rtmp_*` / SRT options as settable through `--ffmpeg`; SRT takes them in the URL.
+
+### Known
+- FFmpeg's RTMP client reads at most one server message per 10 packets it sends (`rtmp_flush_interval`, another protocol option PyAV cannot pass). Against YouTube the unread acknowledgements pile up in the socket's receive queue (about 1 KB a minute at 9.6 Mbit/s); being watched in an overnight run.
+
 ## 2026-10-13 — help overlay left the window dark
 
 ### Fixed

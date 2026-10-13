@@ -2,6 +2,7 @@
 import logging
 import queue
 import traceback
+import av
 from PySide6.QtCore import QThread, Signal
 
 class AVRecWorker(QThread):
@@ -29,6 +30,7 @@ class AVRecWorker(QThread):
             return
 
         errors = 0
+        failure = None
         while self.run_flag:
             try:
                 typ, frame = self.q.get(timeout=0.1)
@@ -37,6 +39,12 @@ class AVRecWorker(QThread):
             try:
                 self.owner.write(typ, frame)
                 errors = 0
+            except av.error.ExitError as e:
+                # a network write ran past its deadline: the connection is stalled and the
+                # half-written packet has broken the stream, so retrying cannot help
+                logging.error(f"[{name}] write timed out, giving up: {e}")
+                failure = f"write timed out: {e}"
+                break
             except Exception as e:
                 errors += 1
                 if errors == 1:
@@ -45,7 +53,7 @@ class AVRecWorker(QThread):
                     logging.error(f"[{name}] write still failing ({errors}x): {e}")
                 if errors >= self.MAX_CONSECUTIVE_ERRORS:
                     logging.error(f"[{name}] giving up after {errors} consecutive errors")
-                    self.exit_sig.emit(str(e))
+                    failure = str(e)
                     break
 
         try:
@@ -53,6 +61,10 @@ class AVRecWorker(QThread):
         except Exception as e:
             logging.error(f"[{name}] close failed: {e}\n{traceback.format_exc()}")
         logging.verbose(f"[{name}] worker stopped")
+        # only now: the owner's handler waits for this thread, which would otherwise stall the GUI
+        # for as long as closing a dead connection takes
+        if failure is not None:
+            self.exit_sig.emit(failure)
 
     def stop(self):
         self.run_flag = False

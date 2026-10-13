@@ -18,8 +18,10 @@ Everything in the tables below was measured on 2026-10-11 with libx264 / h264_nv
 | decoder | `threads skip_frame skip_loop_filter err_detect flags lowres resize surfaces deint drop_second_field gpu` | the decoder `CodecContext` |
 | video encoder | `b maxrate bufsize crf preset tune profile level g bf refs rc cq qp x264-params …` and any unknown key | the encoder `CodecContext` |
 | audio encoder | `b:a ar ac sample_fmt` and anything with `:a` | the audio `CodecContext` |
-| container / muxer / output protocol | `f movflags hls_* method segment_* flvflags mpegts_flags rtmp_* latency transtype passphrase pbkeylen` | `av.open(target, "w", options=…)` |
+| container / muxer | `f movflags hls_* method segment_* flvflags mpegts_flags` | `av.open(target, "w", options=…)` |
 | handled by Nova | `vf r s pix_fmt ar ac metadata an vtag c:v c:a` | see below |
+
+Output *protocol* options (`rtmp_*`, `tcp_nodelay`, `rw_timeout`, SRT's `latency` `passphrase` …) cannot be set: PyAV opens the output connection with `avio_open2(…, NULL)`, so they never reach the protocol and are reported as "not used". SRT takes them in the URL query instead; the write timeout of a stream comes from `NOVA_TIMEOUT`.
 
 Unknown keys default to the video encoder. After the encoder opens, keys it did not consume are reported:
 
@@ -102,7 +104,7 @@ Limits: frame-rate-changing filters (`fps`, `minterpolate`) are not supported �
 | `-ac 1` | channels — downmix/upmix |
 | `-an` | no audio track; also disables the silent track Nova adds to live streams |
 
-## Container, muxer, output protocol
+## Container and muxer
 
 | option | effect |
 |---|---|
@@ -110,8 +112,8 @@ Limits: frame-rate-changing filters (`fps`, `minterpolate`) are not supported �
 | `-movflags +faststart` | classic MP4 instead of the default `+frag_keyframe+empty_moov` |
 | `-hls_time 2 -hls_list_size 4 -hls_flags … -method PUT` | HLS muxer / HTTP method (YouTube HLS ingest wants PUT) |
 | `-metadata title=Cam1` | container metadata (repeatable) |
-| `-flvflags no_duration_filesize -rtmp_live live -tcp_nodelay 1` | RTMP tuning |
-| `-latency 200000 -mode caller -passphrase … -pbkeylen 32` | SRT (custom FFmpeg build only) |
+| `-flvflags no_duration_filesize` | FLV muxer (RTMP) |
+| `srt://host:port?latency=200000&passphrase=…&pbkeylen=32` | SRT settings go in the URL, not `--ffmpeg` (custom FFmpeg build only) |
 | `-mpegts_flags … -pat_period … -pcr_period …` | MPEG-TS |
 
 ## Not possible through the library

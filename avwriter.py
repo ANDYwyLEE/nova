@@ -177,20 +177,30 @@ class EncoderManager:
                 del ctx
 
 
-def _build_conn_options(path, mux_opts):
-    v = os.getenv("NOVA_TIMEOUT", "10000000")
-    s = str(v)
+NET_SCHEMES = ('rtmp', 'srt', 'http', 'tcp', 'udp', 'rtp')
+LIVE_OPEN_TIMEOUT = 30.0 # s; YouTube took 9 s to accept a publish
+
+def _net_timeout_us():
+    return int(os.getenv("NOVA_TIMEOUT", "10000000"))
+
+def _net_timeouts(path):
+    """(open, write) deadlines in seconds for av.open(timeout=), None for files.
+
+    PyAV opens the output with avio_open2(..., NULL): protocol options such as rw_timeout,
+    tcp_nodelay or SRT's latency never reach the protocol, so a stalled RTMP server used to block
+    the writer (and `nova stop`) forever. PyAV's deadline is the only write timeout there is."""
+    if not path.lower().startswith(NET_SCHEMES): return None
+    t = max(1.0, _net_timeout_us() / 1_000_000)
+    return max(LIVE_OPEN_TIMEOUT, t), t
+
+def _build_conn_options(fmt, mux_opts):
+    """Muxer options. Protocol options are not among them (see _net_timeouts): SRT settings go in
+    the URL query (srt://host:port?latency=200000&passphrase=...)."""
     options = {}
-    p = path.lower()
-    if p.startswith(('rtmp', 'srt', 'http', 'tcp', 'udp')):
-        options['rw_timeout'] = s
-    if p.startswith('rtmp'):
-        options['tcp_nodelay'] = '1'
-        options['rtmp_live'] = 'live'
-    elif p.startswith('srt'):
-        options.update({'transtype': 'live', 'latency': '200000', 'mode': 'caller'})
-    elif p.startswith('http'):
+    if fmt == 'hls':
+        # the HLS muxer opens every segment/playlist upload itself and passes these on
         options['method'] = 'POST'
+        options['timeout'] = f"{_net_timeout_us()}us"
     options.update({k: v for k, v in mux_opts.items() if k != 'f'})
     return options
 
@@ -356,9 +366,10 @@ class AVWriter:
         if fmt in ("mp4", "mov") and 'movflags' not in self.mux_opts:
             self.mux_opts['movflags'] = '+frag_keyframe+empty_moov'
 
-        container_opts = _build_conn_options(self.path, self.mux_opts)
-        logging.debug(f"[AVWriter] av.open({self.path}, format={fmt}, options={container_opts})")
-        self.container = av.open(self.path, mode="w", format=fmt, options=container_opts)
+        container_opts = _build_conn_options(fmt, self.mux_opts)
+        timeout = _net_timeouts(self.path)
+        logging.debug(f"[AVWriter] av.open({self.path}, format={fmt}, options={container_opts}, timeout={timeout})")
+        self.container = av.open(self.path, mode="w", format=fmt, options=container_opts, timeout=timeout)
 
         try:
             self.v_encoder = EncoderManager().get_encoder(accel, encoder, source_codec, self.enc_v_opts, allowed)

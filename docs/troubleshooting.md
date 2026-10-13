@@ -50,6 +50,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 | `empty segment discarded` | no frame arrived during the segment | the camera was down; nothing lost |
 | recordings play too fast / audio drifts | fixed in the 2026-10-11 release (timestamps now follow the camera clock) | update |
 | YouTube: "no video" | the encoder produced AV1/HEVC for RTMP (old release) or the key is wrong | update; RTMP now always gets H.264 |
+| `[AVStreamer] write timed out, giving up` | the ingest server or the uplink stopped accepting data for `NOVA_TIMEOUT` | the stream is switched off (Nova does not reconnect); press `T` or restart the camera once the network is back |
 | `AVStreamer worker stopped: [Errno 5] Input/output error` right after start | the ingest server closed the connection: wrong key or unsupported codec | check the key; for RTMP keep H.264 |
 
 ## Audio

@@ -225,7 +225,7 @@ Resolved `onvif://` / `xmeye://` / `hik://` / `dahua://` URLs are cached for one
 
 | Variable | Meaning |
 |---|---|
-| `NOVA_TIMEOUT` | socket / read timeout in microseconds (default 5 s; `cameras.ini` sets 10 s). Also bounds how long shutdown can take while a camera answers but stalls in the RTSP handshake; a camera that is down is detected by a TCP probe first and stops at once. |
+| `NOVA_TIMEOUT` | socket / read timeout in microseconds (default 5 s; `cameras.ini` sets 10 s). Also bounds how long shutdown can take while a camera answers but stalls in the RTSP handshake; a camera that is down is detected by a TCP probe first and stops at once. For a network stream target (`-t rtmp://…`, SRT, HLS) it is the write deadline: a connection that accepts nothing for that long ends the stream (connecting may take up to 30 s). |
 | `NOVA_GPU_DEVICES` | GPU index, or a comma list (`0,1`). With a list, `nova start` / `nova run` deal the cameras over the GPUs in file order, so a camera always lands on the same one (14 cameras on `0,1` → 7 + 7); `--gpu N` in a camera's `opts` pins it. A bare `python nova.py` given a list picks one at random |
 | `NOVA_AUDIO_DEVICE_INDEX` | force a PortAudio output device |
 | `QT_QPA_PLATFORM` | `offscreen` is set automatically for `--headless`; on a Wayland session Nova sets `xcb` (XWayland) itself, `wayland` asks for a native window |
