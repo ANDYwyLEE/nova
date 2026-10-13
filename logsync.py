@@ -126,6 +126,8 @@ def setup_av_logging():
         "Invalid pkt_timebase",
         # libavfilter: the buffer source template carries no colour range; harmless
         "Changing video frame properties on the fly",
+        # the AAC encoder AVWriter opens once to test the audio settings reports on close
+        "Qavg: nan",
         "filter context - w:",
     ]
 

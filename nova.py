@@ -50,7 +50,8 @@ def log_level_type(value):
 
 if __name__ == "__main__":
     if os.name != "nt":
-        os.umask(0o077)          # recordings, snapshots, logs and window settings: this user's only
+        import cams
+        os.umask(cams.umask())   # recordings, snapshots, logs, window settings: this user's only (NOVA_UMASK)
     camera_id, argv = expand_camera(sys.argv[1:])
     parser = NovaParser(
         description='Nova: High-performance RTSP Player',

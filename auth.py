@@ -291,8 +291,10 @@ def _same_host(a, b):
         return a == b
 
 def _qpath(s):
-    """A user name or password inside a URL path (xmeye's user= and password= parameters)."""
-    return quote(s, safe="!$'()*+,;:")
+    """A user name or password inside a URL path (xmeye's user= and password= parameters). Only what
+    would end the parameter is encoded; the rest goes as typed, as it always did, because a device
+    that does not decode its path would reject an encoded '@' or space."""
+    return s.replace("&", "%26").replace("#", "%23").replace("?", "%3F")
 
 def parse_uri(uri, default_port, default_stream='0'):
     """scheme://user:password@host[:port][/stream].  The user info ends at the *last* '@' (a password may

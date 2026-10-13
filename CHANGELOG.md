@@ -11,10 +11,10 @@ A review of every module (five reviewers in parallel, each finding reproduced or
 
 ### Changed
 - **No secrets on command lines.** A launched camera runs as `nova.py --camera ID --config cameras.ini` and reads URL, name and options itself; its command line, readable by every local user (`ps`), carried the camera password and the YouTube key.
-- **Private files.** Nova and the launcher create files readable by their user only (umask 077): recordings, snapshots, logs, layouts, the pid file, Nova.conf on its next write. The launcher warns when cameras.ini is readable by others.
+- **Private files.** Nova and the launcher create files readable by their user only (umask 077): recordings, snapshots, logs, layouts, the pid file, Nova.conf on its next write. The launcher warns when cameras.ini is readable by others. `NOVA_UMASK = 022` in `[env]` restores the old behaviour for setups where another account or a service reads `videos/`.
 - `--accel cuda`: the container is opened without hardware acceleration and the decoder is chosen after the stream is known, so each camera has one CUDA context instead of two: 796 → 410 MiB of VRAM per camera on an RTX 4090 (≈ 5.7 GB over 15 cameras; measured again with two cameras decoding, recording and streaming on one GPU).
 - Segments follow the local clock (and daylight-saving time) instead of UTC: `24h` cut at 01:00/02:00 in Central Europe.
-- `nova stop`/`restart` wait 2 × NOVA_TIMEOUT + 5 s by default (25 s with the example config), the longest a camera needs while its stream is stalled.
+- `nova stop`/`restart` wait 2 × NOVA_TIMEOUT + 5 s by default (25 s with the example config), the longest a camera needs while its stream is stalled, and 30 s more for cameras with a stream target (caught in the stream's connect).
 - Held keys repeat only moves, resizes and zoom; a wheel notch zooms 10 % and touchpads by their fraction of a notch (they zoomed 8–15× too fast).
 
 ### Fixed — crashes

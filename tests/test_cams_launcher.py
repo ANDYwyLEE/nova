@@ -172,12 +172,13 @@ def test_list_masks_options(home, capsys):
 
 def test_config_edge_cases(tmp_path, capsys):
     ini = tmp_path / "c.ini"
-    ini.write_text("﻿[a]\nURL = rtsp://h/x\nEnabled = no\nenable = no\n\n[bad id]\nurl = rtsp://h/y\n",
+    ini.write_text("﻿[a]\nURL = rtsp://h/x\nEnabled = no\nenable = no\n\n[bad/id]\nurl = rtsp://h/y\n"
+                   "\n[front door]\nurl = rtsp://h/z\n",
                    encoding="utf-8")
     _, _, cs = cams.load(str(ini))
     err = capsys.readouterr().err
-    assert [c.id for c in cs] == ["a"] and cs[0].enabled is False      # BOM and key case are fine
-    assert "unknown key 'enable'" in err and "[bad id] skipped" in err
+    assert [c.id for c in cs] == ["a", "front door"] and cs[0].enabled is False   # BOM, key case, spaces
+    assert "unknown key 'enable'" in err and "[bad/id] skipped" in err
     ini.write_text("[a]\nurl = rtsp://u:S3cret@h/x\nurl = rtsp://u:S3cret@h/y\n")
     with pytest.raises(SystemExit) as e:
         cams.load(str(ini))

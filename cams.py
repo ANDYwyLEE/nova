@@ -9,8 +9,10 @@ import os
 import re
 import sys
 import json
+import secrets
 import socket
 import tempfile
+import threading
 import contextlib
 import hashlib
 import time
@@ -119,10 +121,10 @@ def load(path, quiet=False):
     for sec in cp.sections():
         if sec in RESERVED:
             continue
-        if not re.fullmatch(r"[\w.-]+", sec):
+        if re.search(r"[/\\]", sec) or sec.startswith("."):
             if not quiet:
-                print(f"warning: [{sec}] skipped: camera ids use letters, digits, '.', '_' or '-' "
-                      f"(they name the log file); put the display name in `name =`", file=sys.stderr)
+                print(f"warning: [{sec}] skipped: a camera id names its log file, so it cannot contain "
+                      f"'/' or '\\' or start with '.'; put the display name in `name =`", file=sys.stderr)
             continue
         cam = Camera(sec, keys_of(cp, sec, CAMERA_KEYS, quiet))
         if not cam.url:
@@ -193,6 +195,17 @@ def layout_flags(layout, cam):
     if e.get("zoom"):
         flags += ["--zoom", str(e["zoom"])]
     return flags
+
+
+def umask():
+    """077 (files for this user only) unless NOVA_UMASK says otherwise, e.g. 022 when another account or
+    a service (Samba, a media server, backups) reads videos/."""
+    v = os.environ.get("NOVA_UMASK", "077")
+    try:
+        return int(v, 8) & 0o777
+    except ValueError:
+        print(f"warning: NOVA_UMASK={v!r} is not octal; using 077", file=sys.stderr)
+        return 0o077
 
 
 def split_opts(s):
@@ -375,13 +388,16 @@ def alive(pid):
 
 
 def control_address(cid):
-    """Where camera cid's control channel listens: a socket in the user's private runtime directory, or
-    a named pipe on Windows. The launcher picks it and records it in the pid file."""
+    """Where a camera's control channel listens: a socket in the user's private runtime directory, or a
+    named pipe on Windows. The launcher picks it and records it in the pid file. Unique per launch:
+    another Nova with the same camera id (a test checkout, `nova run` next to `nova start`) must not
+    receive this one's stop."""
+    tag = f"{re.sub(r'[^\w.-]', '_', cid)}-{secrets.token_hex(4)}"
     if WINDOWS:
         user = re.sub(r"\W", "_", os.environ.get("USERNAME", "user"))
-        return f"nova-{user}-{cid}"
+        return f"nova-{user}-{tag}"
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(tempfile.gettempdir(), f"nova-{os.getuid()}")
-    return os.path.join(base, "nova", f"{cid}.sock")
+    return os.path.join(base, "nova", f"{tag}.sock")
 
 
 def control(address, request, timeout=3.0):
@@ -392,14 +408,26 @@ def control(address, request, timeout=3.0):
     line = (json.dumps(request) + "\n").encode()
     try:
         if WINDOWS:
-            with open(r"\\.\pipe\\" + address, "r+b", buffering=0) as f:
-                f.write(line)
-                buf = b""
-                while not buf.endswith(b"\n"):
-                    c = f.read(1)
-                    if not c:
-                        break
-                    buf += c
+            box = []
+
+            def talk():                                 # a pipe read has no timeout: bound it with a thread
+                try:
+                    with open("\\\\.\\pipe\\" + address, "r+b", buffering=0) as f:
+                        f.write(line)
+                        got = b""
+                        while not got.endswith(b"\n"):
+                            c = f.read(1)
+                            if not c:
+                                break
+                            got += c
+                        box.append(got)
+                except OSError:
+                    pass                                # no such pipe: no camera listens there
+
+            t = threading.Thread(target=talk, daemon=True)
+            t.start()
+            t.join(timeout)
+            buf = box[0] if box else b""
         else:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
                 s.settimeout(timeout)
@@ -414,6 +442,16 @@ def control(address, request, timeout=3.0):
         return json.loads(buf.decode("utf-8")) if buf.strip() else None
     except (OSError, ValueError):
         return None
+
+
+def forget_control(entry):
+    """Remove the socket of a camera that is gone (a clean exit removes it itself, a crash does not)."""
+    a = entry.get("control")
+    if a and os.path.isabs(a):
+        try:
+            os.remove(a)
+        except OSError:
+            pass
 
 
 def interrupt(pid, address=None):
@@ -439,14 +477,18 @@ def open_log(cid):
     return open(path, "ab")
 
 
-def stop_timeout(env):
+LIVE_OPEN_TIMEOUT = 30.0        # avwriter: how long a stream's connect may take
+
+
+def stop_timeout(env, streaming=False):
     """Default --timeout of stop/restart: a camera stopped while its stream is stalled needs up to
-    2 x NOVA_TIMEOUT (the blocked write, then closing the dead connection; see avwriter._net_timeouts)."""
+    2 x NOVA_TIMEOUT (the blocked write, then closing the dead connection; see avwriter._net_timeouts),
+    and one caught in a stream's connect another LIVE_OPEN_TIMEOUT."""
     try:
         t = int(env.get("NOVA_TIMEOUT", os.environ.get("NOVA_TIMEOUT", "10000000"))) / 1_000_000
     except ValueError:
         t = 10.0
-    return max(15.0, 2 * t + 5)
+    return max(15.0, 2 * t + 5 + (LIVE_OPEN_TIMEOUT if streaming else 0))
 
 
 def log_tail(cid, n=5):
@@ -498,6 +540,7 @@ def stop_entries(pids, targets, timeout):
             stuck.append(cid)
         else:
             pids.pop(cid, None)
+            forget_control(e)
     write_pids(pids)
     return stuck
 
@@ -683,7 +726,14 @@ def cmd_stop(defaults, env, cams, args):
     if not targets:
         print("no launched cameras (use `nova start` or `nova record`)")
         return
-    return 1 if stop_entries(pids, targets, args.timeout) else 0
+    return 1 if stop_entries(pids, targets, default_timeout(args, env, targets)) else 0
+
+
+def default_timeout(args, env, targets):
+    """--timeout as given, else what the slowest of these cameras may need to stop."""
+    if args.timeout is not None:
+        return args.timeout
+    return stop_timeout(env, any("stream" in str(e.get("mode", "")) for e in targets.values()))
 
 
 def cmd_restart(defaults, env, cams, args):
@@ -697,7 +747,7 @@ def cmd_restart(defaults, env, cams, args):
     for _, layout in restart_groups(ids, targets, args.layout):
         if layout:
             load_layout(layout)                             # a missing layout ends here, before any stop
-    stuck = stop_entries(pids, targets, args.timeout) if targets else []
+    stuck = stop_entries(pids, targets, default_timeout(args, env, targets)) if targets else []
     if stuck:
         print(f"not restarted (still running): {', '.join(stuck)}; `nova restart {' '.join(stuck)}` once they exit")
     rc = 1 if stuck else 0
@@ -879,7 +929,7 @@ def split_ids(tokens):
 
 def main(argv=None):
     if not WINDOWS:
-        os.umask(0o077)          # logs, pid file and layouts are the user's own (nova.py does the same)
+        os.umask(umask())        # logs, pid file and layouts are the user's own (nova.py does the same)
     argv = list(sys.argv[1:] if argv is None else argv)
     config = INI
     while argv and argv[0] in ("-c", "--config"):
@@ -910,8 +960,6 @@ def main(argv=None):
         args.id = args.ids[0] if args.ids else None
 
     defaults, env, cams = load(config)
-    if args.timeout is None:
-        args.timeout = stop_timeout(env)
     if cmd in ("start", "record", "stop", "restart"):
         with pids_locked():
             return COMMANDS[cmd](defaults, env, cams, args)

@@ -1,5 +1,6 @@
 """The launcher's pure logic: cameras.ini parsing, id/option splitting, GPU dealing, layouts."""
 import hashlib
+import os
 import json
 import sys
 
@@ -168,6 +169,9 @@ def test_uptime_and_restart_groups():
     assert cams.stop_timeout({"NOVA_TIMEOUT": "10000000"}) == 25.0       # 2 x a stalled stream's deadline
     assert cams.stop_timeout({"NOVA_TIMEOUT": "2000000"}) == 15.0
     assert cams.stop_timeout({"NOVA_TIMEOUT": "x"}) == 25.0
+    assert cams.stop_timeout({"NOVA_TIMEOUT": "10000000"}, streaming=True) == 55.0   # plus a stream's connect
+    a1, a2 = cams.control_address("x y"), cams.control_address("x y")
+    assert a1 != a2 and " " not in os.path.basename(a1)      # unique per launch, a usable socket name
 
 
 def test_url_hash_matches_the_view_key():
