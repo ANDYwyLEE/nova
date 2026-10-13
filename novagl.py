@@ -2,7 +2,7 @@ import traceback, logging, sys, ctypes, time
 import numpy as np
 from util import WINDOWS
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QImage, QSurfaceFormat, QPainter, QColor
+from PySide6.QtGui import QImage, QSurfaceFormat, QOpenGLContext, QPainter, QColor
 
 try: from OpenGL.GL import *
 except ImportError:
@@ -480,10 +480,15 @@ class NovaGL(Nova):
 
     def cleanup(self):
         if not self.is_running: return
-        try:
-            self.makeCurrent()
-            self._delete_gl_objects()
-            self.doneCurrent()
-        except Exception as e:
-            logging.debug(f"[NovaGL] cleanup: {e}")
+        # only with a live context: a window that was never shown has none, and a GL call without one
+        # crashes on macOS (destroying the context frees the objects anyway)
+        ctx = self.context()
+        if ctx is not None and ctx.isValid() and self.shader_program:
+            try:
+                self.makeCurrent()
+                if QOpenGLContext.currentContext() is ctx:
+                    self._delete_gl_objects()
+                self.doneCurrent()
+            except Exception as e:
+                logging.debug(f"[NovaGL] cleanup: {e}")
         super().cleanup()

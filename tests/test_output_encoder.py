@@ -79,6 +79,7 @@ SCRIPT = textwrap.dedent("""
     from fractions import Fraction
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     # every probe 'passes' mpeg4, which never opens at 1/90000: no candidate is left
+    real_probe = avwriter.EncoderManager._perform_hw_test
     avwriter.EncoderManager._perform_hw_test = lambda self, *a: "mpeg4"
     def frame(i):
         f = av.VideoFrame.from_ndarray(np.zeros((180, 320, 3), np.uint8), format="rgb24")
@@ -94,7 +95,7 @@ SCRIPT = textwrap.dedent("""
 
     # AAC cannot open at 6000 Hz: the writer records video without an audio track
     avwriter.EncoderManager._instance = None
-    del avwriter.EncoderManager._perform_hw_test
+    avwriter.EncoderManager._perform_hw_test = real_probe
     w = avwriter.AVWriter(None, path=sys.argv[1] + "/a.mp4", width=320, height=180, fps=25, encoder="libx264",
                           sample_rate=6000, channels=1, enc_v_opts={"tune": "zerolatency"})
     for i in range(25):

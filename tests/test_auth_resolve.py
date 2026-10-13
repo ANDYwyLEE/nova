@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import socket
 import sys
@@ -251,7 +252,7 @@ def test_onvif_port_scan_is_parallel_and_stoppable(monkeypatch):
     # every port refused at once: the scan ends quickly instead of 25 x 1.5 s
     t0 = time.monotonic()
     assert auth.resolve_input_uri("onvif://admin:pw@127.0.0.1") is None
-    assert time.monotonic() - t0 < 3
+    assert time.monotonic() - t0 < (8 if os.name == "nt" else 3)   # Windows retries a refused connect for ~2 s
     # a DNS lookup that hangs: stop() is honoured within a fraction of a second
     monkeypatch.setattr(auth.socket, "getaddrinfo", lambda *a, **k: time.sleep(5))
     stop_at = time.monotonic() + 0.3

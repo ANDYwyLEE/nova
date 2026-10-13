@@ -40,11 +40,12 @@ def test_headless_recording(test_clip, tmp_path):
     p = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
     out = ""
     try:
-        # at least one 4 s segment must have been closed on its own by then
+        # two segments must have been closed on their own by then: the first is short (the segments are
+        # aligned to the clock), the second spans the whole 4 s
         deadline = time.time() + 40
         while time.time() < deadline and p.poll() is None:
             done = [f for f in glob.glob(str(outdir / "smoke" / "*.mp4")) if not f.endswith("_output.mp4")]
-            if done:
+            if len(done) >= 2:
                 break
             time.sleep(0.5)
         assert p.poll() is None, "nova.py exited early:\n" + p.stdout.read()
@@ -62,10 +63,12 @@ def test_headless_recording(test_clip, tmp_path):
         assert p.returncode == 0, out
     files = sorted(f for f in glob.glob(str(outdir / "smoke" / "*.mp4")) if not f.endswith("_output.mp4"))
     assert files, out
-    with av.open(files[0]) as c:
-        vs = c.streams.video[0]
-        assert vs.codec_context.name == "h264"
-        frames = sum(1 for _ in c.decode(vs))
-    assert frames >= 25, (frames, out)
+    counts = []
+    for f in files:
+        with av.open(f) as c:
+            vs = c.streams.video[0]
+            assert vs.codec_context.name == "h264"
+            counts.append(sum(1 for _ in c.decode(vs)))
+    assert max(counts) >= 25, (counts, out)
     assert "Traceback" not in out, out
     assert "[AVRecorder] saved" in out, out

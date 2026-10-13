@@ -397,7 +397,10 @@ def control_address(cid):
         user = re.sub(r"\W", "_", os.environ.get("USERNAME", "user"))
         return f"nova-{user}-{tag}"
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(tempfile.gettempdir(), f"nova-{os.getuid()}")
-    return os.path.join(base, "nova", f"{tag}.sock")
+    path = os.path.join(base, "nova", f"{tag}.sock")
+    if len(path.encode()) > 100:                    # sun_path holds 104 bytes on macOS, 108 on Linux
+        path = os.path.join("/tmp", f"nova-{os.getuid()}", f"{tag[-40:]}.sock")
+    return path
 
 
 def control(address, request, timeout=3.0):
