@@ -77,6 +77,7 @@ class MouseHdlr:
         edge = self._edge(z)
         self.resizing = edge is not None
         self.moving = edge is None
+        self.p._placed_by_user()
         if edge: self.p.startSystemResize(edge)
         else: self.p.startSystemMove()
 

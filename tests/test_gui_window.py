@@ -183,3 +183,108 @@ def test_escape_before_the_first_frame_resets_the_remembered_zoom(make):
     w.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
     core.connected(1920, 1080)
     assert not w.zoomer.is_zoom()
+
+
+# ---------------------------------------------------------------- geometry on record
+
+def screen_rect():
+    return QGuiApplication.primaryScreen().geometry()
+
+
+def test_exit_while_fullscreen_keeps_the_normal_geometry(make, app):
+    w, core = make("200,100,320,180", None)
+    core.connected(1920, 1080)
+    w.fullscreen()
+    app.processEvents()
+    assert w.geometry() == screen_rect()
+    w._persist_if_changed()                      # the 2 s timer while fullscreen
+    assert stored(core)[0] == "200,100,320,180"
+    w.zoomer.zoom(None, 1)                       # zooming in fullscreen is kept
+    w.cleanup()                                  # nova stop / Ctrl-C while fullscreen
+    geom, zoom = stored(core)
+    assert geom == "200,100,320,180"
+    assert ratios(zoom) != (0.0, 0.0, 1.0, 1.0)
+
+
+def test_exit_while_maximized_keeps_the_normal_geometry(make, app):
+    w, core = make("200,100,320,180", None)
+    w.showMaximized()                            # e.g. the window manager's maximize shortcut
+    app.processEvents()
+    assert w.geometry().width() > 320
+    w.cleanup()
+    assert stored(core)[0] == "200,100,320,180"
+
+
+def test_a_place_on_a_missing_monitor_opens_on_the_primary_screen(make, app):
+    w, core = make("6000,100,640,360", None)    # the second monitor is not connected
+    assert screen_rect().contains(w.geometry())
+    assert (w.width(), w.height()) == (640, 360)
+    w._persist_if_changed()
+    assert stored(core)[0] == "6000,100,640,360"  # kept for when the monitor is back
+    w.move_left()                                # the user places the window: that is its place now
+    w._persist_if_changed()
+    g = w.geometry()
+    assert stored(core)[0] == f"{g.x()},{g.y()},{g.width()},{g.height()}"
+
+
+def test_a_larger_than_screen_window_off_screen_is_shrunk_with_its_ratio(make):
+    s = screen_rect()
+    w, core = make(f"9000,9000,{s.width() * 2},{s.height()}", None)
+    assert screen_rect().contains(w.geometry())
+    assert w.width() == s.width() and w.height() == s.height() // 2
+
+
+def test_a_partly_visible_place_is_left_alone(make):
+    s = screen_rect()
+    x = s.right() - 100                          # 100 px of the window on the screen
+    w, core = make(f"{x},50,320,180", None)
+    assert (w.x(), w.y()) == (x, 50)
+
+
+def test_window_manager_moves_after_a_monitor_change_are_not_persisted(make, app):
+    w, core = make("100,100,320,180", None)
+    w._persist_if_changed()
+    w._on_screens_changed()                      # QGuiApplication.screenRemoved / screenAdded
+    w.setGeometry(400, 300, 320, 180)            # the window manager moves the window
+    app.processEvents()
+    w._persist_if_changed()
+    assert stored(core)[0] == "100,100,320,180"
+    w._screens_settled()                         # SCREEN_SETTLE_MS later: the place is on a screen
+    app.processEvents()
+    assert w.geometry() == QRect(100, 100, 320, 180)
+    w.setGeometry(140, 100, 320, 180)            # afterwards moves are the user's again
+    app.processEvents()
+    w._persist_if_changed()
+    assert stored(core)[0] == "140,100,320,180"
+
+
+def test_place_kept_while_its_monitor_sleeps_and_restored_when_it_returns(make, app, monkeypatch):
+    w, core = make("100,100,320,180", None)
+    w._persist_if_changed()
+    real = w._screen_rects()
+    monkeypatch.setattr(w, "_screen_rects", lambda: [QRect(1000, 0, 800, 600)])   # its monitor dropped out
+    w._on_screens_changed()
+    w._screens_settled()
+    w._persist_if_changed()
+    assert w._geom_hold and stored(core)[0] == "100,100,320,180"
+    w.setGeometry(1100, 100, 320, 180)           # where the window manager put it, overnight
+    app.processEvents()
+    w._persist_if_changed()
+    w.cleanup(); w.is_running = True             # even a nova stop in between keeps the place
+    assert stored(core)[0] == "100,100,320,180"
+    monkeypatch.setattr(w, "_screen_rects", lambda: real)                        # it wakes up
+    w._on_screens_changed()
+    w._screens_settled()
+    app.processEvents()
+    assert w.geometry() == QRect(100, 100, 320, 180) and not w._geom_hold
+
+
+def test_a_user_move_during_the_hold_wins(make, app):
+    w, core = make("100,100,320,180", None)
+    w._on_screens_changed()
+    w.setGeometry(400, 300, 320, 180)            # moved by the window manager ...
+    w.move_right()                               # ... then by the user
+    app.processEvents()
+    w._screens_settled()
+    w._persist_if_changed()
+    assert stored(core)[0] == f"{w.x()},{w.y()},320,180" and w.x() != 100
