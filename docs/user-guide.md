@@ -85,14 +85,21 @@ nova layout save NAME        write the open cameras' windows to layouts/NAME.jso
 nova layout list             saved layouts and their cameras
 nova start --layout NAME     open exactly the cameras of that layout, where they were saved
 nova run ID --layout NAME    one camera at its place in that layout
-nova layout export NAME sway|kwin|hyprland   window rules that place the layout on a Wayland desktop
+nova layout export NAME FORMAT   window rules that place the layout on a Wayland desktop
+                                 (FORMAT: sway, kwin, hyprland = Lua config 0.55+, hyprlang = 0.53-0.54)
 ```
 
 - Arrange the windows, then `nova layout save work`. The cameras can stay open: every window writes its geometry and zoom to Nova's settings within 2 s of a change, and `save` reads them from there. With no camera open, the enabled cameras' last positions are used.
 - `nova start --layout away` opens the cameras listed in the layout (`enabled` does not apply) and gives each its saved `--geometry` / `--zoom`. From then on the windows remember their places as usual, so a plain `nova start` afterwards brings the `away` arrangement back; `nova start --layout work` switches again.
 - The file is plain JSON, camera id → `"geometry": "x,y,w,h"` and `"zoom": "rx,ry,rw,rh"` (fractions of the picture; `0,0,1,1` is the whole picture). Edit it by hand if you like. `layouts/` is git-ignored, like `cameras.ini`.
 - `--geometry x,y,w,h` and `--zoom rx,ry,rw,rh` also work directly on `nova.py`.
-- **Wayland**: a compositor does not let a window place itself, so there `--geometry` sets only the size. `nova layout export work sway` (or `kwin`, `hyprland`) prints window rules with the saved positions instead: `for_window` lines for `~/.config/sway/config` (i3 too), a `.kwinrule` file for KDE's System Settings › Window Management › Window Rules › Import, or `hl.window_rule` calls for Hyprland's Lua config (0.55 and later; its `move` is monitor-local). The rules match the window title `Nova - NAME` (the camera's name from `cameras.ini` / `-n`), so they keep working across restarts; the positions are the absolute coordinates Nova saved. GNOME has no window rules: there run Nova under XWayland (`QT_QPA_PLATFORM=xcb`, see [install](install.md)).
+- **Wayland**: a compositor does not let a window place itself, so on a Wayland session Nova runs under XWayland by default (it sets `QT_QPA_PLATFORM=xcb` when both `WAYLAND_DISPLAY` and `DISPLAY` are set). GNOME and KDE honour X11 positions, so there everything works as on X11 without further setup. `QT_QPA_PLATFORM = wayland` in `[env]` gives native Wayland windows; then `--geometry` sets only the size and the compositor decides the place (GNOME and KDE centre the window, sway and Hyprland tile it). Checked with nested compositors on Ubuntu 26.04:
+  - **GNOME** (Mutter 50): no window rules; XWayland, the default, places and moves windows exactly as on X11.
+  - **KDE Plasma** (KWin 6.6): XWayland works the same way; `nova layout export work kwin` additionally gives a `.kwinrule` file (System Settings › Window Management › Window Rules › Import) that places native Wayland windows too.
+  - **sway** (i3 too): windows are tiled, XWayland or native, unless a rule floats them: `nova layout export work sway` prints `for_window` lines for `~/.config/sway/config`.
+  - **Hyprland**: tiles as well; `nova layout export work hyprlang` for 0.53–0.54 (`windowrule { }` blocks; Ubuntu 26.04 ships 0.53), `hyprland` for 0.55 and later (Lua, `hl.window_rule`). Hyprland's `move` is monitor-local; with several monitors subtract the monitor's position.
+
+  The rules match the window title `Nova - NAME` (the camera's name from `cameras.ini` / `-n`), XWayland and native windows alike, so they keep working across restarts; the positions are the absolute coordinates Nova saved. Under a rule the window still remembers where you drag it, as usual. **NVIDIA**: with the proprietary driver (595 at the time of writing) a native Wayland Nova window stays invisible, because NVIDIA's EGL does not display frameless OpenGL windows on Wayland (decorated windows and Mesa drivers are fine); XWayland, the default, is not affected.
 
 ## Command-line options
 
@@ -221,7 +228,7 @@ Resolved `onvif://` / `xmeye://` / `hik://` / `dahua://` URLs are cached for one
 | `NOVA_TIMEOUT` | socket / read timeout in microseconds (default 5 s; `cameras.ini` sets 10 s). Also bounds how long shutdown can take while a camera answers but stalls in the RTSP handshake; a camera that is down is detected by a TCP probe first and stops at once. |
 | `NOVA_GPU_DEVICES` | GPU index, or a comma list (`0,1`). With a list, `nova start` / `nova run` deal the cameras over the GPUs in file order, so a camera always lands on the same one (14 cameras on `0,1` → 7 + 7); `--gpu N` in a camera's `opts` pins it. A bare `python nova.py` given a list picks one at random |
 | `NOVA_AUDIO_DEVICE_INDEX` | force a PortAudio output device |
-| `QT_QPA_PLATFORM` | `offscreen` is set automatically for `--headless`; `xcb` forces X11 on Wayland desktops |
+| `QT_QPA_PLATFORM` | `offscreen` is set automatically for `--headless`; on a Wayland session Nova sets `xcb` (XWayland) itself, `wayland` asks for a native window |
 
 ## Logs
 

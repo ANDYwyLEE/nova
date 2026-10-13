@@ -147,6 +147,10 @@ def test_window_title_and_export(cfg):
     assert hypr.startswith("-- Nova layout")
     assert ('hl.window_rule({ match = { title = "^Nova - a$" }, float = true, border_size = 0, '
             'size = {391, 220}, move = {300, 760} })') in hypr
+    hl = cams.export_rules(lay, "work", cs, "hyprlang")
+    assert hl.startswith("# Nova layout") and hl.count("windowrule {") == 2
+    assert ("windowrule {\n    name = nova-a\n    match:title = ^Nova - a$\n    float = yes\n    move = 300 200\n"
+            "    size = 391 220\n    border_size = 0\n}\n").replace("move = 300 200", "move = 300 760") in hl
     with pytest.raises(SystemExit):
         cams.export_rules(lay, "work", cs, "gnome")
 

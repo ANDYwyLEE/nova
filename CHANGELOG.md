@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-13 — Wayland checked, XWayland by default
+
+### Added
+- `nova layout export NAME hyprlang`: `windowrule { }` blocks for Hyprland 0.53–0.54 (the version Ubuntu 26.04 ships; `hyprland` stays the Lua form for 0.55+). 0.53 verified with `Hyprland --verify-config` and a nested instance; the Lua form follows the current wiki.
+
+### Changed
+- On a Wayland session Nova runs under XWayland by default (`QT_QPA_PLATFORM=xcb` when `WAYLAND_DISPLAY` and `DISPLAY` are set): GNOME and KDE honour X11 positions, so placement works there with no setting at all; `QT_QPA_PLATFORM=wayland` still gives a native window. Measured with nested compositors on Ubuntu 26.04 (GNOME Shell 50, KWin 6.6, sway 1.11, Hyprland 0.53): a native window is centred (GNOME, KDE) or tiled (sway, Hyprland) whatever `--geometry` says, only the size is honoured; under XWayland GNOME and KDE honour positions and moves, sway and Hyprland tile; the exported rules place XWayland and native windows exactly on sway, KWin and Hyprland.
+
+### Fixed
+- `--opengl` in a native Wayland window failed with PyOpenGL's "no valid context": PyOpenGL defaults to GLX. Nova sets `PYOPENGL_PLATFORM=egl` there.
+
+### Known
+- NVIDIA driver 595, native Wayland: a frameless OpenGL window (Nova's) stays invisible, while decorated Qt GL windows and the Mesa drivers are fine. XWayland, the default, is not affected.
+
 ## 2026-10-12 — v1.0: window titles, restart, Wayland rules
 
 ### Added

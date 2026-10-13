@@ -44,7 +44,8 @@ nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.
   nova layout save NAME                    remember which cameras are open and where (layouts/NAME.json)
   nova layout list                         saved layouts
   nova start --layout NAME                 open exactly those cameras where they were saved
-  nova layout export NAME sway|kwin|hyprland   window rules that place that layout on a Wayland desktop
+  nova layout export NAME FORMAT           window rules that place that layout on a Wayland desktop
+                                           (FORMAT: sway, kwin, hyprland = Lua 0.55+, hyprlang = 0.53-0.54)
   nova -h                                  this text          nova.py --help    every camera option
   -c FILE                                  use FILE instead of cameras.ini
 
@@ -327,7 +328,7 @@ def restart_groups(ids, entries, layout):
 
 
 # ---------------------------------------------------------------- layout export (Wayland window rules)
-EXPORT_FORMATS = ("sway", "kwin", "hyprland")
+EXPORT_FORMATS = ("sway", "kwin", "hyprland", "hyprlang")
 
 
 def re_literal(s):
@@ -350,8 +351,12 @@ def export_rules(layout, name, cams, fmt):
     notes = {
         "sway": ["Append to ~/.config/sway/config and reload (swaymsg reload).  Positions are absolute",
                  "(over all outputs), as Nova saved them.  Also works for i3 without `absolute`."],
-        "hyprland": ["Hyprland >= 0.55 (Lua config): add to your config.  `move` is monitor-local in Hyprland,",
-                     "so with more than one monitor subtract the monitor's position (hyprctl monitors)."],
+        "hyprland": ["Hyprland >= 0.55 (Lua config): add to your config; 0.53-0.54 need `hyprlang` instead.",
+                     "`move` is monitor-local in Hyprland: with more than one monitor subtract the monitor's",
+                     "position (hyprctl monitors)."],
+        "hyprlang": ["Hyprland 0.53-0.54 (hyprland.conf; Ubuntu 26.04 ships 0.53): add to your config, 0.55 and",
+                     "later use Lua (`hyprland`).  `move` is monitor-local in Hyprland: with more than one",
+                     "monitor subtract the monitor's position (hyprctl monitors)."],
         "kwin": ["Import in System Settings > Window Management > Window Rules > Import.  Positions apply",
                  "when a window opens (positionrule=3); you can still drag the windows afterwards."],
     }[fmt]
@@ -373,6 +378,10 @@ def export_rules(layout, name, cams, fmt):
             lua = re_literal(title).replace("\\", "\\\\").replace('"', '\\"')
             out.append(f'hl.window_rule({{ match = {{ title = "^{lua}$" }}, float = true, border_size = 0, '
                        f'size = {{{w}, {h}}}, move = {{{x}, {y}}} }})')
+        elif fmt == "hyprlang":
+            out += ["windowrule {", f"    name = nova-{re.sub(r'[^\w-]', '_', cid)}",
+                    f"    match:title = ^{re_literal(title).replace('#', '##')}$",
+                    "    float = yes", f"    move = {x} {y}", f"    size = {w} {h}", "    border_size = 0", "}", ""]
         else:
             out += [f"[{title}]", f"Description={title}", f"title={title}", "titlematch=1",
                     f"position={x},{y}", "positionrule=3", f"size={w},{h}", "sizerule=3",
@@ -562,7 +571,7 @@ def cmd_layout(defaults, env, cams, args):
         sys.stdout.write(export_rules(load_layout(args.ids[1]), args.ids[1], cams, args.ids[2]))
         return
     if sub != "save" or len(args.ids) != 2:
-        sys.exit("usage: nova layout save NAME | nova layout list | nova layout export NAME sway|kwin|hyprland")
+        sys.exit("usage: nova layout save NAME | nova layout list | nova layout export NAME sway|kwin|hyprland|hyprlang")
     name = args.ids[1]
     path = layout_path(name)
     qs = window_settings()

@@ -193,6 +193,13 @@ if __name__ == "__main__":
 
     if args.headless:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    elif sys.platform.startswith("linux") and "QT_QPA_PLATFORM" not in os.environ \
+            and os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
+        # A Wayland compositor does not let a window place itself, XWayland does (GNOME and KDE honour
+        # X11 positions), and NVIDIA's EGL shows nothing for a frameless GL window on Wayland.
+        # QT_QPA_PLATFORM=wayland (e.g. in [env]) still gives a native window.
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        logging.info("Wayland session: running under XWayland (QT_QPA_PLATFORM=wayland for a native window)")
 
     fmt = QSurfaceFormat()
     fmt.setAlphaBufferSize(8)
@@ -209,6 +216,10 @@ if __name__ == "__main__":
     app.setOrganizationName("judvi")
     app.setApplicationName("Nova")
     app.setDesktopFileName("nova")      # the app id Wayland compositors see (else the python binary's name)
+
+    if app.platformName() == "wayland":
+        # PyOpenGL defaults to GLX; a Wayland window's context is EGL and every GL call would fail
+        os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
     from novacore import NovaCore
     from view import Nova
