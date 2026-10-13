@@ -1,12 +1,25 @@
 """Shared fixtures. Tests run against the checkout directly (no package install)."""
 import os
 import sys
+import tempfile
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")     # no display on CI runners
+
+# Window settings (geometry/zoom per camera) must never reach the user's real Nova.conf: on Linux
+# QSettings follows XDG_CONFIG_HOME, elsewhere the ini format below is pointed at a temp dir.
+SETTINGS_DIR = tempfile.mkdtemp(prefix="nova-test-settings-")
+os.environ["XDG_CONFIG_HOME"] = SETTINGS_DIR
+try:
+    from PySide6.QtCore import QSettings
+    QSettings.setDefaultFormat(QSettings.IniFormat)
+    for fmt in (QSettings.IniFormat, QSettings.NativeFormat):
+        QSettings.setPath(fmt, QSettings.UserScope, SETTINGS_DIR)
+except ImportError:                                       # pragma: no cover
+    pass
 
 
 @pytest.fixture(scope="session")
