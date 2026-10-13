@@ -455,6 +455,29 @@ class Nova(QOpenGLWindow):
         self.set_bt()
         self.update()
 
+    def place(self, geometry=None, zoom=None):
+        """Put the window where a layout says, while it runs (`nova layout apply`, via control.py):
+        geometry 'x,y,w,h' and zoom 'rx,ry,rw,rh', each optional. Counts as the user's own move."""
+        self._placed_by_user()
+        if self.is_fullscreen(): self.show_normal()
+        if self._isMaximized(): self.showNormal()
+        g = _parse_geom(geometry or "")
+        if g is not None:
+            self._geom(*self._fit_on_screen(g.x(), g.y(), g.width(), g.height()))
+        if zoom:
+            try:
+                rx, ry, rw, rh = map(float, str(zoom).split(","))
+            except ValueError:
+                return
+            self.z_ratio = (rx, ry, rw, rh)
+            if self.vid_sz is not None:              # else set_vid_sz applies it with the first frame
+                w, h = self.vid_sz
+                self.zoomer.reset()
+                if self.z_ratio != (0.0, 0.0, 1.0, 1.0):
+                    self.zoomer.set_rect(QRect(round(rx * w), round(ry * h), round(rw * w), round(rh * h)))
+        self.set_bt()
+        self.update()
+
     def toggle_streamer(self):
         self.core.toggle_streamer()
         self.set_bt()

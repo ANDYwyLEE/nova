@@ -202,6 +202,8 @@ if __name__ == "__main__":
         if log_level not in log_levels:
             print(f"Invalid logging level. Please choose from {log_levels} or use a numeric value.")
             sys.exit(-1)
+        # logsync names these levels "VERBO" and "TRACE" in the log lines; logging only knows numbers for them
+        log_level = {"VERBOSE": logsync.VERBOSE_LEVEL, "TRACE": logsync.TRACE_LEVEL}.get(log_level, log_level)
     else:
         if not (0 <= log_level <= 50):
             print(f"Invalid logging level number: {log_level}. Use a value between 0 and 50.")

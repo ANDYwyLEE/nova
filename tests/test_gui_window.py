@@ -660,3 +660,25 @@ def test_p_prints_the_password_only_to_a_terminal(make, monkeypatch):
     monkeypatch.setattr(sys, "stdout", term)
     key(w, Qt.Key_P)
     assert term.text.strip() == core.get_url()
+
+
+# ---------------------------------------------------------------- nova layout apply (control.py -> place)
+
+def test_place_moves_and_zooms_a_running_window(make, app):
+    w, core = make("100,100,640,360", "0.25,0.25,0.5,0.5")
+    core.connected(1920, 1080)
+    w.place("200,150,800,450", "0,0,0.5,0.5")
+    app.processEvents()
+    assert w.geometry() == QRect(200, 150, 800, 450)
+    assert w.zoomer.getRect() == (0, 0, 960, 540)
+    w._persist_if_changed()
+    assert stored(core) == ("200,150,800,450", "0.0,0.0,0.5,0.5")
+    w.place(None, "0,0,1,1")                     # zoom only: back to the whole picture
+    assert not w.zoomer.is_zoom()
+
+
+def test_place_before_the_first_frame_keeps_the_zoom_for_it(make, app):
+    w, core = make("100,100,640,360")
+    w.place("120,130,640,360", "0.5,0.5,0.5,0.5")
+    core.connected(1920, 1080)
+    assert w.zoomer.getRect() == (960, 540, 960, 540)

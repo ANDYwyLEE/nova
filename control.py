@@ -101,14 +101,20 @@ class ControlServer(QObject):
     def status(self):
         core = self.core
         w, h = core.width(), core.height()
-        last_frame = getattr(core.vid_worker, "last_frame_time", 0.0) or 0.0
-        playing = last_frame and time.monotonic() - last_frame < FRESH_FRAME_S
+        if self.view is not None:
+            # the overlay as shown: the first frame of a connection clears it
+            text = getattr(self.view, "render_error", None) or self.view.curr_txt or ""
+            playing = not text
+        else:
+            last_frame = getattr(core.vid_worker, "last_frame_time", 0.0) or 0.0
+            playing = bool(last_frame) and time.monotonic() - last_frame < FRESH_FRAME_S
+            text = "" if playing else (getattr(core, "last_status", "") or "")
         st = {
             "pid": os.getpid(), "camera": self.camera_id, "name": core.display_name,
             "uptime": int(time.time() - self.started), "window": self.view is not None,
             "video": f"{w}x{h}" if w > 0 and h > 0 else None,
-            "playing": bool(playing) if last_frame else None,
-            "status": "" if playing else (getattr(core, "last_status", "") or ""),
+            "playing": playing,
+            "status": text,
             "record": _player_state(getattr(core, "recorder", None)),
             "stream": _player_state(getattr(core, "streamer", None)),
             "audio": "on" if getattr(core, "audio", None) and core.audio.is_on() else "off",

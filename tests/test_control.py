@@ -37,6 +37,7 @@ class Core:
 
 class View:
     placed = None
+    curr_txt = "Unreachable:\n10.0.0.9:554"
     def place(self, geometry, zoom): View.placed = (geometry, zoom)
     def geometry(self):
         from PySide6.QtCore import QRect

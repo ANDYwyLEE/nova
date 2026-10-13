@@ -171,7 +171,7 @@ Status text in the window ("Connecting…", "Failed: …", "Stream error: …") 
 | `T / F8` | Toggle transmitting live stream (e.g. YouTube, Twitch). |
 | `S` | Save a snapshot to disk. |
 | `B` | Toggle the window border on or off. |
-| `P` | Print the stream URL to the terminal. |
+| `P` | Print the stream URL (the password only to a terminal, masked in a log file). |
 | `ESC` | Reset the zoom; leave fullscreen. |
 | `Home` | Reset to the video’s original 1:1 size, centred on screen. |
 | `Up/Down/Left/Right` | Move the window by one grid step. |
