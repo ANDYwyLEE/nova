@@ -40,8 +40,7 @@ class KeyHdlr:
 
         elif k == Qt.Key_Escape:
             if self.p.is_fullscreen(): self.p.show_normal()
-            self.p.zoomer.reset()
-            self.p.set_bt(); self.p.update()
+            self.p.reset_zoom()
 
         elif k == Qt.Key_F or k == Qt.Key_F11:
             if self.p.is_fullscreen(): self.p.show_normal()

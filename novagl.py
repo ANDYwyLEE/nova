@@ -329,7 +329,7 @@ class NovaGL(Nova):
 
     def _get_fit_model(self):
         ww, wh = self.width(), self.height()
-        tr = self.zoomer.ratio() if self.zoomer.is_zoom() else self.core.ratio()
+        tr = self._pic_ratio()
         if not tr: tr = 1.0
         vw, vh = (wh * tr, float(wh)) if (ww/wh > tr) else (float(ww), ww/tr)
         model = np.identity(4, dtype=np.float32)

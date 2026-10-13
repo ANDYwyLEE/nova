@@ -89,15 +89,16 @@ class Nova(QOpenGLWindow):
                 self.resize(320, 180)
         else: self.resize(320, 180)
 
-        self.pending_zoom_coord = False
+        # The zoom is kept as ratios of the picture until the decoder reports the frame size (vid_sz);
+        # from then on the zoomer holds it in frame pixels and keeps it across reconnects.
+        self.vid_sz = None
         zk = f"zoom_{self.url_hash}"
         z = zoom or self.qset.value(zk)
-        self.z_ratio = (0,0,1,1)
+        self.z_ratio = (0.0, 0.0, 1.0, 1.0)
         if z:
             try:
                 rx, ry, rw, rh = map(float, z.split(","))
                 self.z_ratio = (rx, ry, rw, rh)
-                self.pending_zoom_coord = True
             except Exception:
                 pass
 
@@ -136,17 +137,45 @@ class Nova(QOpenGLWindow):
 
     @Slot(int, int)
     def set_vid_sz(self, w, h):
-        if not self.is_running: return
+        """The decoder reports the frame size with the first frame of every connection, so after each
+        reconnect too. The same size keeps the zoom as it is; a new size (the camera's stream settings were
+        changed) keeps the zoomed region as fractions of the picture; the first size applies the remembered
+        (or --zoom) region."""
+        if not self.is_running or w <= 0 or h <= 0: return
+        if self.vid_sz == (w, h):
+            self.set_bt(); self.update()
+            return
+        if self.vid_sz is not None:
+            self.z_ratio = self._zoom_ratio()
+        self.vid_sz = (w, h)
         ww, wh = self._widget_wh()
         self.zoomer = Zoomer(w, h, ww, wh)
-        if self.pending_zoom_coord:
-            self.pending_zoom_coord = False
-            rx, ry, rw, rh = self.z_ratio
-            real_z = QRect(int(rx * w), int(ry * h), int(rw * w), int(rh * h))
-            self.zoomer.set_rect(real_z)
-        if w > 0:
-            self.setMinimumHeight(max(1, int(self.minimumWidth() / w * h)))
+        rx, ry, rw, rh = self.z_ratio
+        if (rx, ry, rw, rh) != (0.0, 0.0, 1.0, 1.0):
+            # round(), not int(): the ratios were written from whole pixels, int() lost one now and then
+            self.zoomer.set_rect(QRect(round(rx * w), round(ry * h), round(rw * w), round(rh * h)))
+        self.setMinimumHeight(max(1, int(self.minimumWidth() / w * h)))
         self.set_bt()
+        self.update()
+
+    def _zoom_ratio(self):
+        """The zoomed region as (rx, ry, rw, rh) fractions of the picture. Computed from the zoomer's own
+        frame size: the decoder's is 0 while it reconnects."""
+        if self.vid_sz is None:
+            return self.z_ratio
+        vw, vh = self.vid_sz
+        zx, zy, zw, zh = self.zoomer.getRect()
+        return (zx / vw, zy / vh, zw / vw, zh / vh)
+
+    def _vid_wh(self):
+        """Frame size: known since the first frame and kept while the decoder reconnects."""
+        return self.vid_sz or (self.core.width(), self.core.height())
+
+    def _pic_ratio(self):
+        """Aspect ratio of what is shown: the zoomed region, else the whole frame."""
+        if self.zoomer.is_zoom() or self.vid_sz is not None:
+            return self.zoomer.ratio()
+        return self.core.ratio()
 
     @Slot(str)
     def update_stat(self, text):
@@ -187,7 +216,7 @@ class Nova(QOpenGLWindow):
             img = df.to_qimage()
             if img is not None and not img.isNull():
                 src = self.zoomer.toRect() if self.zoomer.is_zoom() else img.rect()
-                r = self.zoomer.ratio() if self.zoomer.is_zoom() else self.core.ratio()
+                r = self._pic_ratio()
                 if wh < ww / r: h = wh; w = round(h * r)
                 else: w = ww; h = round(w / r)
                 x, y = (ww - w) // 2, (wh - h) // 2
@@ -281,7 +310,7 @@ class Nova(QOpenGLWindow):
     def set_bt(self):
         if not self.is_running: return
         ww, wh = self._widget_wh()
-        r = self.zoomer.ratio() if self.zoomer.is_zoom() else self.core.ratio()
+        r = self._pic_ratio()
         if wh < ww / r: h = wh; w = round(h * r)
         else: w = ww; h = round(w / r)
         x, y = (ww - w) // 2, (wh - h) // 2
@@ -350,6 +379,12 @@ class Nova(QOpenGLWindow):
             self.set_bt()
             self.update()
         return flag
+
+    def reset_zoom(self):
+        self.z_ratio = (0.0, 0.0, 1.0, 1.0)     # also before the first frame, while the zoomer is a placeholder
+        self.zoomer.reset()
+        self.set_bt()
+        self.update()
 
     def toggle_streamer(self):
         self.core.toggle_streamer()
@@ -441,18 +476,12 @@ class Nova(QOpenGLWindow):
             self._persist(force=True)
 
     def _state_strings(self):
-        """('x,y,w,h', 'rx,ry,rw,rh') for the window as it is now; zoom is None while the video size is
-        still unknown (a restored zoom must not be overwritten with a guess)."""
+        """('x,y,w,h', 'rx,ry,rw,rh') for the window as it is now. Until the first frame the zoom is the
+        remembered (or --zoom) one, never a guess: the decoder's frame size is 0 then, and again during every
+        reconnect, which used to write 0,0,1,1 over the zoom."""
         g = self.geometry()
         geom = f"{g.x()},{g.y()},{g.width()},{g.height()}"
-        if self.pending_zoom_coord:
-            return geom, None
-        zx, zy, zw, zh = self.zoomer.getRect()
-        vw, vh = self.core.width(), self.core.height()
-        rx = zx / vw if vw > 0 else 0.0
-        ry = zy / vh if vh > 0 else 0.0
-        rw = zw / vw if vw > 0 else 1.0
-        rh = zh / vh if vh > 0 else 1.0
+        rx, ry, rw, rh = self._zoom_ratio()
         return geom, f'{rx},{ry},{rw},{rh}'
 
     def _persist(self, force=False):
@@ -522,7 +551,7 @@ class Nova(QOpenGLWindow):
         self.set_bg("orange" if self.border else "none")
 
     def max_screen(self):
-        vw, vh = self.core.width(), self.core.height()
+        vw, vh = self._vid_wh()
         if vw <= 0 or vh <= 0: return
         if self.is_fullscreen(): self.show_normal()
 
@@ -543,7 +572,7 @@ class Nova(QOpenGLWindow):
         else: self.fullscreen()
 
     def cut_widget(self):
-        vw, vh = self.core.width(), self.core.height()
+        vw, vh = self._vid_wh()
         if vw <= 0 or vh <= 0: return
         if self.is_fullscreen(): self.max_screen(); return
 
@@ -556,7 +585,7 @@ class Nova(QOpenGLWindow):
         self._geom(nx, ny, nw, nh)
 
     def center_orig(self):
-        vw, vh = self.core.width(), self.core.height()
+        vw, vh = self._vid_wh()
         if vw <= 0 or vh <= 0: return
         if self.is_fullscreen(): self.show_normal()
 
