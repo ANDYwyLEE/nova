@@ -17,8 +17,8 @@ class WorkerRefused(Exception):
 
 
 class ErrorLog:
-    """Write errors per stream type: the first of each kind with its traceback, then at most one summary
-    line per SUMMARY_S. The owner keeps it across restarts, so a lasting cause (a -vf filter missing from
+    """Errors per activity ('video write', 'start', ...): the first of each kind with its traceback, then
+    at most one summary line per SUMMARY_S. The owner keeps it across restarts, so a lasting cause (a -vf filter missing from
     the FFmpeg build, a full disk) does not log a traceback per frame, nor one per retry."""
     SUMMARY_S = 30
     MAX_KINDS = 64
@@ -34,12 +34,12 @@ class ErrorLog:
         now = time.monotonic()
         if key not in self.seen and len(self.seen) < self.MAX_KINDS:
             self.seen.add(key)
-            logging.error(f"[{self.name}] {what} write failed: {e}\n{traceback.format_exc()}")
+            logging.error(f"[{self.name}] {what} failed: {e}\n{traceback.format_exc()}")
         else:
             self.since[what] = self.since.get(what, 0) + 1
             if now - self.last.get(what, 0) < self.SUMMARY_S:
                 return
-            logging.error(f"[{self.name}] {what} writes still failing ({self.since[what]}x since the "
+            logging.error(f"[{self.name}] {what} still failing ({self.since[what]}x since the "
                           f"last message): {e}")
         self.since[what] = 0
         self.last[what] = now
@@ -71,7 +71,7 @@ class AVRecWorker(QThread):
             self._fail(str(e))
             return
         except Exception as e:
-            logging.error(f"[{name}] failed to start: {e}\n{traceback.format_exc()}")
+            errlog.report("start", e)
             self._fail(str(e))
             return
 
@@ -87,8 +87,7 @@ class AVRecWorker(QThread):
                 self.owner.write(typ, frame)
                 errors[typ] = 0
             except OutputOpenError as e:
-                logging.error(f"[{name}] {e}")
-                logging.debug(f"[{name}] {traceback.format_exc()}")
+                logging.debug(f"[{name}] {traceback.format_exc()}")      # the owner logs the failure
                 failure = str(e)
                 break
             except av.error.ExitError as e:
@@ -100,7 +99,7 @@ class AVRecWorker(QThread):
             except Exception as e:
                 what = "video" if typ == 1 else "audio"
                 errors[typ] = errors.get(typ, 0) + 1
-                errlog.report(what, e)
+                errlog.report(f"{what} write", e)
                 if errors[typ] >= self.MAX_CONSECUTIVE_ERRORS:
                     logging.error(f"[{name}] giving up after {errors[typ]} consecutive {what} errors")
                     failure = f"{what}: {e}"

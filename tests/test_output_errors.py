@@ -63,7 +63,7 @@ def test_one_traceback_per_kind_then_rate_limited_summaries(caplog, monkeypatch)
         try:
             raise e
         except Exception as err:
-            log.report("audio", err)
+            log.report("audio write", err)
 
     for i in range(500):                                # 10 s of failures at 50 per second
         fail(ValueError("Frame does not match AudioResampler setup."))
