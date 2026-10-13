@@ -10,9 +10,13 @@ sys.path.insert(0, ROOT)
 
 
 def _stub():
+    from view import Nova
     repaints = []
-    return SimpleNamespace(is_running=True, osd_hlp=QImage(8, 8, QImage.Format_RGBA8888_Premultiplied),
-                           _widget_wh=lambda: (320, 180), update=lambda: repaints.append(1)), repaints
+    stub = SimpleNamespace(is_running=True, osd_hlp=QImage(8, 8, QImage.Format_RGBA8888_Premultiplied),
+                           _widget_wh=lambda: (320, 180), update=lambda: repaints.append(1),
+                           devicePixelRatio=lambda: 1.0)
+    stub._osd_image = lambda: Nova._osd_image(stub)
+    return stub, repaints
 
 
 def test_help_off_clears_the_dimming_layer():

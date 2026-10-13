@@ -24,6 +24,12 @@ SCREEN_SETTLE_MS = 5000   # after a monitor change, wait this long for the windo
 # OSD layers are painted premultiplied: QPainter composes them natively and the OpenGL path
 # uploads them without a per-frame format conversion.
 OSD_FORMAT = QImage.Format_RGBA8888_Premultiplied
+# Drawing order of the OSD layers, bottom to top, in both renderers: the status text ("Connecting...",
+# "Unreachable...") with its dimming under the help overlay and the control strip, the border on top.
+OSD_LAYERS = ("txt", "hlp", "bt", "bg")
+
+# Qt 6.6+: the window moved to a screen with another device pixel ratio
+_DPR_CHANGE = getattr(QEvent, "DevicePixelRatioChange", None)
 
 def _geom_str(g: QRect):
     return f"{g.x()},{g.y()},{g.width()},{g.height()}"
@@ -61,7 +67,7 @@ class Nova(QOpenGLWindow):
         self.is_running = True
         self.curr_df = None      # DisplayFrame currently shown
         self.curr_txt = None
-        self._focused = True
+        self._focused = self.isActive()     # the border colour follows it (orange focused, green not)
         app = QGuiApplication.instance()
         app.applicationStateChanged.connect(self._on_app_state)
         app.focusWindowChanged.connect(self._on_focus_window)
@@ -258,10 +264,23 @@ class Nova(QOpenGLWindow):
                 # scaling is done by the GL paint engine; no per-frame CPU copy/scaled()
                 p.drawImage(QRect(x, y, w, h), img, src)
 
-        if not self.osd_txt.isNull(): p.drawImage(0, 0, self.osd_txt)
-        if not self.osd_bt.isNull(): p.drawImage(0, 0, self.osd_bt)
-        if not self.osd_hlp.isNull(): p.drawImage(0, 0, self.osd_hlp)
-        if not self.osd_bg.isNull(): p.drawImage(0, 0, self.osd_bg)
+        for k in OSD_LAYERS:
+            img = getattr(self, f"osd_{k}")
+            if not img.isNull(): p.drawImage(0, 0, img)
+
+    def _osd_image(self):
+        """A transparent OSD layer covering the window, in device pixels so text and icons stay sharp on
+        HiDPI screens; QPainter draws on it in window coordinates."""
+        dpr = self.devicePixelRatio()
+        w, h = self._widget_wh()
+        img = QImage(max(1, round(w * dpr)), max(1, round(h * dpr)), OSD_FORMAT)
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.transparent)
+        return img
+
+    def _border_color(self):
+        if not self.border: return "none"
+        return "orange" if self._focused else "green"
 
 
     def set_bg(self, border="no-change"):
@@ -277,8 +296,7 @@ class Nova(QOpenGLWindow):
         if self.is_fullscreen(): return
 
         w, h = self._widget_wh()
-        img = QImage(w, h, OSD_FORMAT)
-        img.fill(Qt.transparent)
+        img = self._osd_image()
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(QPen(c, 1))
@@ -290,8 +308,7 @@ class Nova(QOpenGLWindow):
     def set_txt(self, text="", font=MONO, size=14, align=Qt.AlignCenter):
         if not self.is_running: return
         w, h = self._widget_wh()
-        img = QImage(w, h, OSD_FORMAT)
-        img.fill(Qt.transparent)
+        img = self._osd_image()
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
@@ -301,7 +318,7 @@ class Nova(QOpenGLWindow):
         f.setPointSize(size)
         p.setFont(f)
         p.setPen(QColor(255, 255, 255))
-        p.drawText(img.rect(), align, text)
+        p.drawText(QRect(0, 0, w, h), align, text)
         p.end()
         self.osd_txt = img
 
@@ -319,8 +336,7 @@ class Nova(QOpenGLWindow):
         if MAC: _min, _max, _base = 5, 14, 50
         if WINDOWS: _min, _max, _base = 5, 14, 70
         fsize = min(_max, max(_min, int(dim / _base)))
-        img = QImage(w, h, OSD_FORMAT)
-        img.fill(Qt.transparent)
+        img = self._osd_image()
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
@@ -367,8 +383,7 @@ class Nova(QOpenGLWindow):
         self._m_y = _y
         self._m_sz = sz
 
-        img = QImage(ww, wh, OSD_FORMAT)
-        img.fill(Qt.transparent)
+        img = self._osd_image()
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -463,12 +478,17 @@ class Nova(QOpenGLWindow):
             self._normal_geom = self.geometry()
         x, y = e.size().width(), e.size().height()
         self.zoomer.resize(x, y)
+        self._rebuild_osd()
+
+    def _rebuild_osd(self):
+        """Repaint the OSD layers for the window's size and device pixel ratio."""
         txt = self.curr_txt
         if txt is not None: self.set_txt(txt)
         self.set_bt()
         if self.helper.is_on(): self.helper._on() # refresh
         if not self.is_fullscreen():
-            self.set_bg("orange" if self.border else "none")
+            self.set_bg(self._border_color())
+        self.update()
 
 
     def event(self, e):
@@ -476,6 +496,8 @@ class Nova(QOpenGLWindow):
             self._set_focus(False)
         elif e.type() == QEvent.WindowActivate:
             self._set_focus(True)
+        elif e.type() == _DPR_CHANGE and self.is_running:
+            self._rebuild_osd()          # moved to a screen with another scale factor
         return super().event(e)
 
     def focusInEvent(self, e):
@@ -495,9 +517,7 @@ class Nova(QOpenGLWindow):
         if not self.is_running: return
         if self._focused == on: return
         self._focused = on
-        if on: self.set_bg("orange" if self.border else "none")
-        else:
-            self.set_bg("green" if self.border else "none")
+        self.set_bg(self._border_color())
 
     def closeEvent(self, e):
         super().closeEvent(e)
@@ -667,7 +687,7 @@ class Nova(QOpenGLWindow):
         if not self.is_fullscreen(): return
         if self._isFullScreen(): self.showNormal()
         self._fullscrn_flag = False
-        self.set_bg("orange" if self.border else "none")
+        self.set_bg(self._border_color())
 
     def max_screen(self):
         vw, vh = self._vid_wh()

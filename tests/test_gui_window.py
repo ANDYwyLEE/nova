@@ -455,3 +455,72 @@ def test_held_arrow_and_zoom_keys_still_repeat(make, app):
     for _ in range(3):
         key(w, Qt.Key_I, repeat=True)
     assert w.zoomer.width() < one
+
+
+# ---------------------------------------------------------------- OSD
+
+class RecordingPainter:
+    def __init__(self): self.drawn = []
+    def setRenderHint(self, *a): pass
+    def drawImage(self, *a): self.drawn.append(a[-1])
+
+
+def osd_layers(w):
+    w.set_txt("Unreachable: 10.0.0.1:554")
+    w.set_hlp("H : help")
+    w.set_bt()
+    w.border = True
+    w.set_bg("orange")
+    return {k: getattr(w, f"osd_{k}") for k in ("txt", "hlp", "bt", "bg")}
+
+
+def test_status_text_is_drawn_under_help_and_control_strip(make):
+    w, core = make("200,100,320,180", None)
+    layers = osd_layers(w)
+    p = RecordingPainter()
+    w._render(p)
+    order = [k for img in p.drawn for k, l in layers.items() if l is img]
+    assert order == ["txt", "hlp", "bt", "bg"]
+
+
+def test_opengl_draws_the_osd_layers_in_the_same_order(make, monkeypatch):
+    import novagl
+    from novagl import NovaGL
+    for name in dir(novagl):                     # no GL context here: every GL call is a no-op
+        if name.startswith("gl"):
+            monkeypatch.setattr(novagl, name, lambda *a, **k: None)
+    w, core = make("200,100,320,180", None, cls=NovaGL)
+    layers = osd_layers(w)
+    w.shader_program, w.loc = 1, {"mode": 0}
+    w.osd_texture_ids = {k: i for i, k in enumerate(layers)}
+    drawn = []
+    monkeypatch.setattr(w, "_upload_osd", lambda tid, img, nearest=False: None)
+    monkeypatch.setattr(w, "_draw_quad_fill", lambda tid: drawn.append(tid))
+    w.paintGL()
+    assert [list(layers)[t] for t in drawn] == ["txt", "hlp", "bt", "bg"]
+
+
+def test_osd_layers_have_device_pixels_on_hidpi_screens(make, monkeypatch):
+    w, core = make("200,100,320,180", None)
+    core.connected(1920, 1080)
+    monkeypatch.setattr(w, "devicePixelRatio", lambda: 2.0)
+    layers = osd_layers(w)
+    for k, img in layers.items():
+        assert (img.width(), img.height(), img.devicePixelRatio()) == (640, 360, 2.0), k
+    # drawn in window coordinates: the dimming covers the whole layer, the border runs along its edge
+    assert layers["txt"].pixelColor(638, 358).alpha() == 160
+    assert layers["bg"].pixelColor(0, 180).alpha() > 0 and layers["bg"].pixelColor(4, 180).alpha() == 0
+
+
+def test_border_colour_follows_focus_after_a_resize(make, app):
+    w, core = make("200,100,320,180", None, border=True)
+    other, _ = make("600,100,320,180", None, key="other_window", border=True)
+    w.requestActivate(); app.processEvents()
+    w._set_focus(True)
+    other.requestActivate(); app.processEvents()
+    w._set_focus(False)                          # as WindowDeactivate / focusWindowChanged deliver it
+    assert w.osd_bg.pixelColor(0, 90).green() > w.osd_bg.pixelColor(0, 90).red()
+    w.setGeometry(200, 100, 360, 200)            # resized (keys, layout, window manager) while unfocused
+    app.processEvents()
+    c = w.osd_bg.pixelColor(0, 100)
+    assert c.green() > c.red(), "unfocused window painted with the focused (orange) border"

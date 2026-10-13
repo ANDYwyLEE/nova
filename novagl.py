@@ -9,7 +9,7 @@ except ImportError:
     print("Error: PyOpenGL is required. Run 'pip install PyOpenGL PyOpenGL_accelerate'")
     sys.exit(1)
 
-from view import Nova
+from view import Nova, OSD_LAYERS
 
 GL_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FE
 GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FF
@@ -222,7 +222,7 @@ class NovaGL(Nova):
             glUniform1i(self.loc["mode"], 0)
             glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE)
             glActiveTexture(GL_TEXTURE0)
-            for k in ['bg', 'hlp', 'bt', 'txt']:
+            for k in OSD_LAYERS:
                 qimg = getattr(self, f"osd_{k}")
                 if not qimg.isNull():
                     tid = self.osd_texture_ids[k]

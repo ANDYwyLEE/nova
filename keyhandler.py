@@ -110,7 +110,7 @@ class KeyHdlr:
 
         elif k == Qt.Key_B:
             self.p.border = not self.p.border
-            self.p.set_bg(border='orange' if self.p.border else 'none')
+            self.p.set_bg(self.p._border_color())
 
     def release(self, event):
         k = event.key()
