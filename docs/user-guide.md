@@ -150,12 +150,12 @@ Each camera is a frameless window titled `Nova - NAME` (its name in `cameras.ini
 
 | Icon | Meaning |
 |---|---|
-| LIVE | streaming to the `-t` target (shown only when a target is configured) |
-| camera | recording |
+| LIVE | streaming to the `-t` target (shown only when a target is configured); gray while it waits to reconnect |
+| camera | recording; gray while it waits to retry after a failure |
 | speaker | audio playback |
 | ? | help overlay (same as **H**) |
 
-Status text in the window ("Connecting…", "Failed: …", "Stream error: …") comes from the decoder thread; Nova reconnects on its own every few seconds.
+Status text in the window ("Connecting…", "Failed: …", "Stream error: …") comes from the decoder thread; Nova reconnects on its own every few seconds. "Rendering failed (OpenGL)" means the OpenGL renderer gave up after rebuilding its state once (the log has the error): `nova restart ID`, or run that camera without `--opengl`.
 
 ![Help overlay](images/nova-help.png)
 
@@ -183,7 +183,7 @@ Status text in the window ("Connecting…", "Failed: …", "Stream error: …") 
 | `Ctrl-C` | Exit the program (both terminal and GUI). |
 <!-- /generated:keys -->
 
-Window moves and resizes happen in grid steps (`-g`, default 20 px) and are clamped to the virtual desktop, so a window can sit on a second monitor left of or above the primary one.
+Window moves and resizes happen in grid steps (`-g`, default 20 px) and are clamped to the virtual desktop, so a window can sit on a second monitor left of or above the primary one. A held key repeats only moves, resizes and zoom; toggles (R, T, A, F, H, S, P …) act once per press.
 
 ## Mouse
 
@@ -199,9 +199,11 @@ Window moves and resizes happen in grid steps (`-g`, default 20 px) and are clam
 | `Top-Left Corner` | Show the control strip (stream, record, audio, help). |
 <!-- /generated:mouse -->
 
+A double-click on a control-strip icon counts as one click (it no longer also toggles fullscreen). Where the platform cannot move or resize a window itself (border resize on macOS, X11 without a window manager), Nova follows the mouse.
+
 ## Zoom
 
-The wheel zooms around the cursor; **I**/**O** (or **+**/**−**) zoom around the centre. The zoomed region is a crop of the decoded frame, rendered at full window resolution, and it is remembered per camera (see [settings](#where-settings-are-stored)). **Esc** resets it. Middle-click fits the region to the window's aspect ratio; right-click resizes the window to the region's aspect ratio instead.
+The wheel zooms around the cursor, 10 % per notch (high-resolution wheels and touchpads by the fraction of a notch they report); **I**/**O** (or **+**/**−**) zoom around the centre. The zoomed region is a crop of the decoded frame, rendered at full window resolution, and it is remembered per camera (see [settings](#where-settings-are-stored)). **Esc** resets it. Middle-click fits the region to the window's aspect ratio; right-click resizes the window to the region's aspect ratio instead.
 
 Recording and streaming always use the full frame, never the zoomed view.
 
@@ -215,7 +217,7 @@ Recording and streaming always use the full frame, never the zoomed view.
 
 ## Where settings are stored
 
-Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom region. They are written within 2 s of every move, resize or zoom change, and once more when the window closes, on Ctrl-C and on `nova stop`. A layout (`nova layout save`) is a named snapshot of these values in `layouts/NAME.json`.
+Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom region. They are written within 2 s of every move, resize or zoom change, and once more when the window closes, on Ctrl-C and on `nova stop`. A fullscreen or maximized window keeps its normal place on record, and a camera reconnect never changes the zoom. When a monitor is unplugged or drops out while asleep, the windows keep their places on record and go back once the monitor returns (unless you moved them meanwhile); a remembered place on a monitor that is not connected opens on the primary screen. A layout (`nova layout save`) is a named snapshot of these values in `layouts/NAME.json`.
 
 | OS | Location |
 |---|---|
