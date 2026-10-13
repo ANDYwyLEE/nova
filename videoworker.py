@@ -3,6 +3,9 @@
 import os
 from urllib.parse import urlparse
 import socket
+import selectors
+import errno
+import threading
 import re
 import time
 import random
@@ -42,12 +45,26 @@ SEPARATE_DECODER_SUFFIX = {
 # schemes whose host is probed with a plain TCP connect before av.open(), and their default ports
 PROBE_PORTS = {"rtsp": 554, "rtsps": 322, "rtmp": 1935, "rtmps": 443, "http": 80, "https": 443, "tcp": None}
 HWACCEL_UNSAFE_FOR_OPEN = {"qsv", "vulkan", "drm", "opencl"}
+_CONNECT_IN_PROGRESS = {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
+                        getattr(errno, "WSAEWOULDBLOCK", 10035)}
 
 PATTERN = re.compile(r'^\[[^\]]+\]\s*([^:]+)')
 
 def _short_err(e: Exception) -> str:
     m = PATTERN.search(str(e))
     return m.group(1).strip() if m else str(e)
+
+
+def _mask(url) -> str:
+    """mask_url(), plus URLs whose password contains '/' or '@' (mask_url cannot see where such a
+    password ends): everything before the last '@' of the address is hidden."""
+    s = mask_url(url)
+    head, sep, rest = s.partition("://")
+    if sep and "@" in rest:
+        userinfo, _, tail = rest.rpartition("@")
+        if not re.fullmatch(r"[^:/@]*(:\*\*\*)?", userinfo):
+            return f"{head}://***@{tail}"
+    return s
 
 
 def _queue_nowait_put(q, i):
@@ -127,6 +144,10 @@ def _device_source(src: str):
         return m.group(2), m.group(1)
     return src, None
 
+def _strerror(code: int) -> str:
+    # socket.errorTab: Windows' WSA error texts (os.strerror() does not know them)
+    return getattr(socket, "errorTab", {}).get(code) or os.strerror(code)
+
 
 class VideoWorker(QThread):
     img_sig = Signal()
@@ -171,6 +192,8 @@ class VideoWorker(QThread):
         self.run_flag = True
         self.gpu_idx = _pick_gpu_index(gpu)
         self._unreachable = None        # last probe failure, to log state changes once
+        self._url_warned = False
+        self._url_hint = ""             # appended to a failure overlay when the URL cannot be parsed
         self.codec_name = "h264"
         self._clone_warned = False
 
@@ -226,7 +249,7 @@ class VideoWorker(QThread):
             except Exception as e:
                 errstr = _short_err(e)
                 self.stat_sig.emit(f"Stream error:\n{errstr}")
-                logging.error(f"[VideoWorker] Stream exception: {e}")
+                logging.error(f"[VideoWorker] Stream exception: {_mask(str(e))}")
                 logging.trace(f"[VideoWorker] Exception Traceback: {traceback.format_exc()}")
             finally:
                 try: container.close()
@@ -237,14 +260,19 @@ class VideoWorker(QThread):
 
         logging.debug("[VideoWorker] loop finished")
 
-    def stop(self):
+    def stop(self) -> bool:
+        """Stop and wait for the thread.  False: it is still blocked in I/O (av.open() and the stream
+        analysis cannot be interrupted and may take up to 2 x NOVA_TIMEOUT); the caller must not
+        destroy the thread object then."""
         if self.run_flag:
             self.run_flag = False
             self.clock.wake()
             if not self.wait(int(_timeout_seconds() * 1000) + 3000):
                 logging.warning("[VideoWorker] decoder thread did not finish in time (blocked in I/O)")
-            else:
-                logging.debug("[VideoWorker] stopped.")
+                return False
+            logging.debug("[VideoWorker] stopped.")
+            return True
+        return not self.isRunning()
 
     # ------------------------------------------------------------------ connection
     def _resolve_source(self):
@@ -313,65 +341,134 @@ class VideoWorker(QThread):
             if reason is not None:
                 self.stat_sig.emit(f"Unreachable:\n{reason}")
                 if reason != self._unreachable:
-                    logging.info(f"[VideoWorker] unreachable, retrying every 10 s: {reason} [{mask_url(file)}]")
+                    logging.info(f"[VideoWorker] unreachable, retrying every 10 s: {reason} [{_mask(file)}]")
                     self._unreachable = reason
                 else:
                     logging.debug(f"[VideoWorker] still unreachable: {reason}")
                 self.clock.sleep(10000)
                 return None
             if self._unreachable is not None:
-                logging.info(f"[VideoWorker] host answers again [{mask_url(file)}]")
+                logging.info(f"[VideoWorker] host answers again [{_mask(file)}]")
                 self._unreachable = None
 
-        logging.debug(f"[VideoWorker] av.open({mask_url(file)}, format={fmt}, options={open_opts})")
+        logging.debug(f"[VideoWorker] av.open({_mask(file)}, format={fmt}, options={open_opts})")
         try:
             return av.open(file, **kwargs)
         except (av.error.TimeoutError, av.error.OSError) as e:
-            self.stat_sig.emit(f"Failed:\n{_short_err(e)}")
-            logging.debug(f"[VideoWorker] open failed: {e}")
+            self.stat_sig.emit(f"Failed:\n{_short_err(e)}{self._url_hint}")
+            logging.debug(f"[VideoWorker] open failed: {_mask(str(e))}")
             self.clock.sleep(10000)
         except Exception as e:
             errstr = _short_err(e)
-            self.stat_sig.emit(f"Failed:\n{errstr}")
-            logging.error(f"[VideoWorker] open exception: {e}")
+            self.stat_sig.emit(f"Failed:\n{errstr}{self._url_hint}")
+            logging.error(f"[VideoWorker] open exception: {_mask(str(e))}")
             logging.trace(f"[VideoWorker] Exception Traceback: {traceback.format_exc()}")
             self.clock.sleep(10000)
         return None
 
     def _probe_host(self, url, budget_s):
         """TCP connect to the camera's host:port, in 0.5 s slices so stop() interrupts it at once.
-        None = the host answers (or the probe does not apply: devices, udp, srt, files);
-        otherwise a short reason.  A refused or unroutable host is reported immediately, a silent
-        one after budget_s (the same NOVA_TIMEOUT av.open() would have spent)."""
+        None = the host answers (or the probe does not apply: devices, udp, srt, files, a URL it cannot
+        parse); otherwise a short reason.  Every address of the host is tried at once, so a dead IPv6
+        address does not hide a working IPv4 one.  A host whose addresses all refuse or are unroutable
+        is reported immediately, a silent one after budget_s (the NOVA_TIMEOUT av.open() would spend)."""
+        self._url_hint = ""
         try:
             p = urlparse(url)
+            scheme, host = p.scheme, p.hostname
+            port = p.port if scheme in PROBE_PORTS and host else None
         except ValueError:
+            # e.g. a password with an unencoded / ? # [ ]: Python's error text contains a piece of it
+            self._warn_bad_url(url)
             return None
-        if p.scheme not in PROBE_PORTS or not p.hostname:
+        if scheme not in PROBE_PORTS or not host:
             return None
-        port = p.port or PROBE_PORTS[p.scheme]
+        port = port or PROBE_PORTS[scheme]
         if not port:
             return None
         try:
-            infos = socket.getaddrinfo(p.hostname, port, 0, socket.SOCK_STREAM)
-        except OSError as e:
-            return f"{p.hostname}: {e.strerror or e}"
+            return self._probe_tcp(host, port, budget_s)
+        except Exception as e:          # the probe is an optimisation; it must never take the worker down
+            logging.debug(f"[VideoWorker] probe of {host}:{port} skipped: {type(e).__name__}")
+            return None
+
+    def _warn_bad_url(self, url):
+        self._url_hint = "\n(check the URL: percent-encode\n/ ? # @ [ ] in the password)"
+        if not self._url_warned:
+            self._url_warned = True
+            scheme = url.split("://", 1)[0] if "://" in url else "?"
+            logging.warning(f"[VideoWorker] ⚠️ cannot read host:port from the {scheme}:// URL: a user name or password "
+                            f"containing / ? # @ [ ] must be percent-encoded (%2F %3F %23 %40 %5B %5D); trying anyway")
+
+    def _getaddrinfo(self, host, port, deadline):
+        """getaddrinfo() that stop() and the deadline can abandon (a DNS lookup cannot be interrupted).
+        Returns (infos, None), (None, reason), or (None, None) when stopped."""
+        box = {}
+        done = threading.Event()
+        def lookup():
+            try:
+                box["r"] = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+            except Exception as e:      # OSError, UnicodeError for an invalid name
+                box["e"] = e
+            finally:
+                done.set()
+        threading.Thread(target=lookup, name="nova-dns", daemon=True).start()
+        while not done.wait(0.25):
+            if not self.run_flag:
+                return None, None
+            if time.monotonic() >= deadline:
+                return None, f"{host}: name lookup timed out"
+        if "e" in box:
+            e = box["e"]
+            return None, f"{host}: {getattr(e, 'strerror', None) or e}"
+        return box["r"], None
+
+    def _probe_tcp(self, host, port, budget_s):
         deadline = time.monotonic() + budget_s
-        reason = f"{p.hostname}:{port} does not answer"
-        while self.run_flag and time.monotonic() < deadline:
+        infos, reason = self._getaddrinfo(host, port, deadline)
+        if infos is None:
+            return reason
+        sel = selectors.DefaultSelector()
+        pending = []
+        errors = []
+        try:
             for family, stype, proto, _, addr in infos:
-                sock = socket.socket(family, stype, proto)
-                sock.settimeout(0.5)
                 try:
-                    sock.connect(addr)
-                    return None
-                except socket.timeout:
-                    pass
+                    sock = socket.socket(family, stype, proto)
                 except OSError as e:
-                    return f"{p.hostname}:{port}: {e.strerror or e}"      # refused, no route, ...
-                finally:
+                    errors.append(e.strerror or str(e))
+                    continue
+                sock.setblocking(False)
+                rc = sock.connect_ex(addr)
+                if rc == 0:
                     sock.close()
-        return reason
+                    return None
+                if rc in _CONNECT_IN_PROGRESS:
+                    sel.register(sock, selectors.EVENT_WRITE)
+                    pending.append(sock)
+                else:
+                    errors.append(_strerror(rc))        # refused, no route, ...
+                    sock.close()
+            while pending and self.run_flag:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                for key, _ in sel.select(min(0.5, left)):
+                    sock = key.fileobj
+                    rc = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                    if rc == 0:
+                        return None
+                    errors.append(_strerror(rc))
+                    sel.unregister(sock)
+                    pending.remove(sock)
+                    sock.close()
+        finally:
+            for sock in pending:
+                sock.close()
+            sel.close()
+        if pending or not errors:
+            return f"{host}:{port} does not answer"
+        return f"{host}:{port}: {errors[-1]}"
 
     # ------------------------------------------------------------------ decoder selection
     def _open_named_decoder(self, name, base, hw=True):
