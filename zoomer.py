@@ -112,9 +112,9 @@ class Zoomer(QRectF):
         pos.setX(pos.x() if pos.x() <= self.right() else self.right())
         pos.setY(pos.y() if pos.y() <= self.bottom() else self.bottom())
 
-        # zooming calculate
-        K = 10 / 11 if step > 0 else 11 / 10
-        if step == 0: K = 1
+        # zooming calculate: 10 % per step (a key press, a wheel notch); a hi-res wheel or touchpad sends
+        # fractions of a notch and zooms by that fraction
+        K = (10 / 11) ** step if step > 0 else (11 / 10) ** -step
         x1 = pos.x() - (pos.x() - self.left()) * K
         x2 = pos.x() + (self.right() - pos.x()) * K
         y1 = pos.y() - (pos.y() - self.top()) * K

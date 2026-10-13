@@ -288,3 +288,132 @@ def test_a_user_move_during_the_hold_wins(make, app):
     w._screens_settled()
     w._persist_if_changed()
     assert stored(core)[0] == f"{w.x()},{w.y()},320,180" and w.x() != 100
+
+
+# ---------------------------------------------------------------- mouse
+
+class Mouse:
+    """Mouse events as Qt delivers them to the window, in window-local coordinates."""
+    def __init__(self, w):
+        self.w = w
+
+    def ev(self, x, y, button=Qt.LeftButton, buttons=None, dbl=False, delta=0):
+        w = self.w
+        g = w.mapToGlobal(QPoint(x, y))
+        from types import SimpleNamespace
+        flags = Qt.MouseEventCreatedDoubleClick if dbl else Qt.NoMouseEventFlag
+        return SimpleNamespace(
+            button=lambda: button, buttons=lambda: (button if buttons is None else buttons),
+            flags=lambda: flags, position=lambda: QPointF(x, y), globalPosition=lambda: QPointF(g),
+            angleDelta=lambda: QPoint(0, delta), accept=lambda: None)
+
+    def press(self, x, y, **kw): self.w.mousePressEvent(self.ev(x, y, **kw))
+    def release(self, x, y, **kw): self.w.mouseReleaseEvent(self.ev(x, y, buttons=Qt.NoButton, **kw))
+    def move(self, x, y, **kw): self.w.mouseMoveEvent(self.ev(x, y, button=Qt.NoButton, buttons=Qt.LeftButton, **kw))
+    def wheel(self, x, y, delta): self.w.wheelEvent(self.ev(x, y, button=Qt.NoButton, delta=delta))
+
+    def double_click(self, x, y):
+        """Qt: press, release, press (flagged as part of a double-click), double-click, release."""
+        self.press(x, y); self.release(x, y)
+        self.press(x, y, dbl=True)
+        self.w.mouseDoubleClickEvent(self.ev(x, y))
+        self.release(x, y)
+
+
+def spy(monkeypatch, w, name):
+    calls = []
+    orig = getattr(w, name)
+    def wrapper(*a, **kw):
+        calls.append(a)
+        return orig(*a, **kw)
+    monkeypatch.setattr(w, name, wrapper)
+    return calls
+
+
+def test_double_click_toggles_fullscreen_without_snapping_the_stale_rectangle(make, app, monkeypatch):
+    w, core = make("200,100,320,180", None)
+    core.connected(1920, 1080)
+    m = Mouse(w)
+    snaps = spy(monkeypatch, w, "align_grid")
+    m.double_click(100, 100)
+    app.processEvents()
+    assert w.is_fullscreen()
+    m.double_click(100, 100)                     # leave fullscreen
+    app.processEvents()
+    assert not w.is_fullscreen()
+    # one snap for the first click of each double-click (window was normal / fullscreen), none for the
+    # release after the double-click: geometry() is still the fullscreen rectangle at that moment
+    assert len(snaps) == 2
+    assert w.geometry() == QRect(200, 100, 320, 180)
+    m.press(100, 100); m.release(100, 100)      # an ordinary click afterwards snaps again
+    assert len(snaps) == 3
+
+
+def test_double_click_on_a_control_strip_icon_toggles_it_once(make, app):
+    w, core = make("200,100,640,360", None)
+    core.connected(1920, 1080)
+    m = Mouse(w)
+    m.move(10, 10)                               # the control strip appears
+    x = w._m_x + w._m_sz // 2
+    y = w._m_y + (w._m_sz + 4) * 1 + w._m_sz // 2   # the record icon
+    assert w.in_bt(QPoint(x, y), 1)
+    m.double_click(x, y)
+    app.processEvents()
+    assert core.calls == ["rec"] and core.rec
+    assert not w.is_fullscreen()
+
+
+def test_wheel_and_middle_click_repaint(make, monkeypatch):
+    w, core = make("200,100,640,360", None)
+    core.connected(1920, 1080)
+    repaints = spy(monkeypatch, w, "update")
+    Mouse(w).wheel(320, 180, -120)
+    assert w.zoomer.is_zoom() and repaints
+    repaints.clear()
+    Mouse(w).press(320, 180, button=Qt.MiddleButton)
+    assert repaints
+
+
+def test_a_wheel_notch_zooms_ten_percent_and_fine_steps_zoom_by_their_fraction(make):
+    w, core = make("200,100,640,360", None)
+    core.connected(1920, 1080)
+    m = Mouse(w)
+    for _ in range(5):
+        w.zoomer.zoom(None, 1)                   # start zoomed in, away from the edges
+    start = w.zoomer.getRect()
+
+    from zoomer import Zoomer
+    ref = Zoomer(1920, 1080, 640, 360)
+    ref.setRect(*start)
+    ref.zoom(QPoint(300, 170), 1)                # what a notch has always done: 10 % (key I)
+    m.wheel(300, 170, -120)
+    assert w.zoomer.getRect() == pytest.approx(ref.getRect())
+
+    w.zoomer.setRect(*start)
+    for _ in range(8):                           # a hi-res wheel: 8 events of 15 make one notch
+        m.wheel(300, 170, -15)
+    assert w.zoomer.getRect() == pytest.approx(ref.getRect(), abs=0.5)
+
+    w.zoomer.setRect(*start)
+    m.wheel(300, 170, -15)
+    assert w.zoomer.width() == pytest.approx(start[2] * (10 / 11) ** 0.125)
+
+
+def test_move_and_resize_by_hand_where_the_platform_cannot(make, app):
+    # The offscreen platform, like macOS for startSystemResize, does not move or resize windows itself.
+    w, core = make("200,100,320,180", None, grid=1)
+    core.connected(1920, 1080)
+    m = Mouse(w)
+    m.press(200, 100)                            # right of the control strip
+    m.move(250, 130)
+    assert (w.x(), w.y()) == (250, 130)
+    m.release(250, 130)
+    m.press(318, 178)                            # bottom-right corner
+    m.move(358, 198)
+    assert (w.width(), w.height()) == (360, 200)
+    m.release(358, 198)
+    m.press(1, 90)                               # left edge: the right edge stays
+    right = w.x() + w.width()
+    m.move(-29, 90)
+    assert w.x() + w.width() == right and w.width() == 390
+    m.release(-29, 90)
