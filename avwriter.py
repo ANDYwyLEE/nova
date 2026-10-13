@@ -38,6 +38,7 @@ def _family(name: str) -> str:
     return "h264"
 
 LIVE_FORMATS = ("flv", "mpegts", "hls", "rtsp", "rtp_mpegts")
+AUDIO_WAIT = 2.0    # s of video a writer waits for the camera's first audio frame before deciding the track
 
 # Codec families each container can carry (and that typical ingest servers accept).
 # YouTube/Twitch RTMP: H.264 only.  YouTube HLS: H.264 / HEVC.
@@ -415,6 +416,7 @@ class AVWriter:
             v_tag=None, a_encoder=None,
             live=False,
             vf=None, metadata=None,
+            audio_wait=None,
         ):
         self.path = path
         self.src_width, self.src_height = width, height
@@ -446,6 +448,15 @@ class AVWriter:
         self._a_opts_checked = False
         self._video_started = False
         self._held_audio = []
+        # sample_rate 0: the decoder has not seen an audio frame yet (a writer opened at the first video
+        # frame). The track is then decided by the first audio frame, or after audio_wait seconds of
+        # video without one; until then the encoded video packets are held (the header needs all streams).
+        self.audio_wait = AUDIO_WAIT if audio_wait is None else audio_wait
+        self._audio_pending = False
+        self._audio_deadline = None
+        self._pending = []
+        self._a_conv = None             # camera audio -> the encoder's format/layout/rate
+        self._a_conv_key = None
 
         out_size = _parse_size(self.enc_v_opts.pop('s', None))
         if out_size: self.width, self.height = out_size
@@ -497,7 +508,8 @@ class AVWriter:
         self.v_tl = _Timeline(self.origin)
         self.a_tl = _Timeline(self.origin)
         logging.info(f"[AVWriter] {self.v_encoder} {self.width}x{self.height}@{self.fps} -> {fmt} "
-                     f"audio={'silence' if self.silence else (self.a_stream.codec_context.codec.name if self.a_stream else 'none')}")
+                     f"audio={'silence' if self.silence else (self.a_stream.codec_context.codec.name if self.a_stream else 'none')}"
+                     f"{' (waiting for camera audio)' if self._audio_pending else ''}")
 
     # ------------------------------------------------------------------ setup
     def _open_container(self):
@@ -512,9 +524,11 @@ class AVWriter:
         except Exception as e: logging.debug(f"[AVWriter] container close: {e}")
         self.v_encoder = v_encoder
         self._held_audio.clear()
+        self._pending.clear()
         self._video_started = False
         self._v_opts_checked = self._a_opts_checked = False
         self.a_frames = 0
+        self._a_conv_key = None
         self.container = self._open_container()
         try:
             self._setup_video(self._v_tag)
@@ -588,6 +602,9 @@ class AVWriter:
         if not audio_enable:
             return
         if not have_src_audio:
+            if self.audio_wait > 0:
+                self._audio_pending = True
+                return
             if not self.live:
                 return
             # live target without camera audio -> silent AAC so the ingest server accepts the stream
@@ -640,6 +657,23 @@ class AVWriter:
         a_ctx = stream.codec_context
         logging.debug(f"[AVWriter] audio {self.a_codec} {self.sample_rate}Hz {a_ctx.layout.name} opts={a_ctx.options}")
 
+    def _decide_audio(self, frame):
+        """End of the wait for camera audio: frame is its first audio frame, or None (none came)."""
+        self._audio_pending = False
+        self.audio_wait = 0
+        if frame is not None:
+            self.sample_rate = int(frame.sample_rate or 0)
+            self.channels = int(frame.layout.nb_channels or 0)
+        self._setup_audio(True, self.a_codec)
+        if frame is None:
+            logging.info(f"[AVWriter] no camera audio within {AUDIO_WAIT:g} s: "
+                         f"{'silent track' if self.silence else 'no audio track'}")
+        else:
+            logging.info(f"[AVWriter] camera audio: {self.sample_rate} Hz, {self.channels} ch -> "
+                         f"{self.a_stream.codec_context.codec.name if self.a_stream else 'no audio track'}")
+        pending, self._pending = self._pending, []
+        self._mux(pending)
+
     # ------------------------------------------------------------------ writing
     @property
     def frames_written(self): return self.v_frames
@@ -651,6 +685,9 @@ class AVWriter:
         B-frame DTS negative ('Packets poorly interleaved, failed to avoid negative timestamp').
         Starting with video also keeps RTMP ingest servers happy."""
         for packet in packets:
+            if self._audio_pending:              # the streams are not final yet: no header possible
+                self._pending.append(packet)
+                continue
             if not self._video_started:
                 if self.v_stream is not None and packet.stream is self.v_stream:
                     self._video_started = True
@@ -702,6 +739,11 @@ class AVWriter:
         for f in self._filter(frame):
             self._encode_video(f, out_t)
 
+        if self._audio_pending:
+            if self._audio_deadline is None:
+                self._audio_deadline = out_t + self.audio_wait
+            elif out_t >= self._audio_deadline or len(self._pending) > 2000:
+                self._decide_audio(None)
         if self.silence:
             self._fill_silence(out_t)
 
@@ -833,27 +875,54 @@ class AVWriter:
             logging.warning(f"[AVWriter] ⚠️ {what} {ctx.codec.name} ignored unknown --ffmpeg options: {unused}")
 
     def write_audio(self, frame):
-        if not self.a_stream or self.silence or frame is None or not self.run_flag: return
+        if frame is None or not self.run_flag: return
         if self.open_failed: self._refuse()
+        if self._audio_pending:
+            self._decide_audio(frame)
+        if not self.a_stream: return
+        if self.silence:
+            # the camera's audio started later than audio_wait: it replaces the silent track (it used
+            # to be dropped for the rest of the stream)
+            self.silence = False
+            logging.info("[AVWriter] camera audio arrived; it replaces the silent track")
         out_t = self.a_tl.map(_src_time(frame))
-        pts = int(round(out_t * self.sample_rate))
-        if pts < self.last_a_end:
-            pts = self.last_a_end
-        src_rate = frame.sample_rate or self.sample_rate
-        self.last_a_end = pts + int(round(frame.samples * self.sample_rate / src_rate))
-        frame.pts = pts
-        frame.time_base = self.a_time_base
-        self._mux(self.a_stream.encode(frame))
+        pts = max(int(round(out_t * self.sample_rate)), self.last_a_end)
+        frame.pts = None                          # timestamps are set on the converted frames below
+        for f in self._convert(frame):
+            f.pts = pts
+            f.time_base = self.a_time_base
+            pts += f.samples
+            self._mux(self.a_stream.encode(f))
+        self.last_a_end = pts
         self.a_frames += 1
         if not self._a_opts_checked:
             self._a_opts_checked = True
             self._report_unused(self.a_stream.codec_context, "audio encoder", self.enc_a_opts)
 
+    def _convert(self, frame):
+        """Camera audio in the encoder's own format, layout and rate. PyAV's encoder-side resampler
+        is set up from the first frame and refuses every other format ('Frame does not match
+        AudioResampler setup'), so a camera whose audio changed after a reconnect lost the track."""
+        key = (frame.format.name, frame.layout.name, frame.sample_rate)
+        if key != self._a_conv_key:
+            if self._a_conv_key is not None:
+                logging.info(f"[AVWriter] camera audio changed to {key[2]} Hz {key[1]} {key[0]}")
+            ctx = self.a_stream.codec_context
+            self._a_conv = av.AudioResampler(format=ctx.format, layout=ctx.layout, rate=ctx.sample_rate)
+            self._a_conv_key = key
+        return self._a_conv.resample(frame)
+
     def _fill_silence(self, out_t):
         target = int(out_t * self.sample_rate)
+        if target - self.last_a_end > self.sample_rate * _Timeline.MAX_JUMP:
+            # a camera outage, which the video timeline re-anchors over: leave the same gap instead of
+            # encoding it as silence in one burst (10 h took ~33 s while the decoder's queue overflowed)
+            self.last_a_end = target
+        ctx = self.a_stream.codec_context
         n = 1024
         while self.last_a_end < target:
-            f = av.AudioFrame(format="s16", layout="mono", samples=n)
+            # in the encoder's format, like converted camera audio, so either can follow the other
+            f = av.AudioFrame(format=ctx.format.name, layout=ctx.layout.name, samples=n)
             f.sample_rate = self.sample_rate
             for p in f.planes:
                 p.update(bytes(p.buffer_size))
@@ -866,6 +935,10 @@ class AVWriter:
     def _flush(self):
         if self.open_failed:
             return                                    # flushing would mux again (see _write): only free it
+        if self._audio_pending:                       # closed before any camera audio: no track
+            self._audio_pending = False
+            pending, self._pending = self._pending, []
+            self._mux(pending)
         if self.v_frames and self.v_stream:
             self._mux(self.v_stream.encode())
         if self.a_frames and self.a_stream:
