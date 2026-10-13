@@ -1,11 +1,15 @@
 # streamer.py
 import logging
+import time
 import traceback
 from player import Player
 from recworker import AVRecWorker
-from avwriter import AVWriter
+from avwriter import AVWriter, is_network_target
 from util import mask_url
-from PySide6.QtCore import Slot, Signal
+from PySide6.QtCore import Slot, Signal, QTimer
+
+RETRY_DELAYS = (5, 10, 20, 40, 60) # s between reconnects; the last one repeats
+STABLE_AFTER = 60                  # s; a stream that ran this long starts the series again
 
 class AVStreamer(Player):
     stat_sig = Signal(bool)
@@ -22,10 +26,42 @@ class AVStreamer(Player):
         self.worker = None
         self.writer = None
 
+        # A network stream that fails while it is switched on is reopened after a delay; meanwhile
+        # it stays "on" with a gray icon. A file target is not reopened (that would overwrite it).
+        self._retries = 0
+        self._started = 0.0
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._reconnect)
+
     @Slot(str)
     def _handle_worker_error(self, err_msg):
         logging.error(f"[AVStreamer] worker stopped: {err_msg}")
-        if self._on: self.off()
+        if not self._on: return
+        if not is_network_target(self.target_url):
+            self.off()
+            return
+        self._stop_worker()
+        if time.monotonic() - self._started >= STABLE_AFTER: self._retries = 0
+        delay = RETRY_DELAYS[min(self._retries, len(RETRY_DELAYS) - 1)]
+        self._retries += 1
+        logging.warning(f"[AVStreamer] reconnecting in {delay} s (attempt {self._retries})")
+        self._retry_timer.start(delay * 1000)
+        self.stat_sig.emit(True)
+
+    @Slot()
+    def _reconnect(self):
+        if not self._on: return
+        logging.info(f"[AVStreamer] reconnecting to: {mask_url(self.target_url)}")
+        self._start_worker()
+        self.stat_sig.emit(True)
+
+    def is_waiting(self):
+        """Switched on, but the connection failed and the next attempt is pending."""
+        return self._retry_timer.isActive()
+
+    def get_icon(self):
+        return self.icon_gray if self.is_waiting() else super().get_icon()
 
     #@abstractmethod
     def available(self):
@@ -47,29 +83,38 @@ class AVStreamer(Player):
             logging.warning("[AVStreamer] no video yet; cannot start streaming")
             return
         logging.info(f"[AVStreamer] starting stream to: {mask_url(self.target_url)}")
-        self._drain(self.q)
         self._on = True
-        self.worker = AVRecWorker(self, self.q)
-        self.worker.exit_sig.connect(self._handle_worker_error)
-        self.worker.start()
-        self.vid_worker.set_stream_on(True)
+        self._retries = 0
+        self._start_worker()
         self.stat_sig.emit(True)
 
     #@abstractmethod
     def off(self):
         if self.is_off(): return
         self._on = False
-        self.vid_worker.set_stream_on(False)
-        if self.worker:
-            self.worker.stop()
-            self.worker.wait()
-            self.worker = None
+        self._retry_timer.stop()
+        self._stop_worker()
         self.stat_sig.emit(False)
         logging.info(f"[AVStreamer] stopped stream to: {mask_url(self.target_url)}")
 
     #@abstractmethod
     def close(self):
         self.off()
+
+    def _start_worker(self):
+        self._drain(self.q)
+        self._started = time.monotonic()
+        self.worker = AVRecWorker(self, self.q)
+        self.worker.exit_sig.connect(self._handle_worker_error)
+        self.worker.start()
+        self.vid_worker.set_stream_on(True)
+
+    def _stop_worker(self):
+        self.vid_worker.set_stream_on(False)
+        if self.worker:
+            self.worker.stop()
+            self.worker.wait()
+            self.worker = None
 
     # ---- called on the worker thread ------------------------------------------------
     def _open_writer(self):

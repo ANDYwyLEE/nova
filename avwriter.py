@@ -183,13 +183,16 @@ LIVE_OPEN_TIMEOUT = 30.0 # s; YouTube took 9 s to accept a publish
 def _net_timeout_us():
     return int(os.getenv("NOVA_TIMEOUT", "10000000"))
 
+def is_network_target(path):
+    return bool(path) and path.lower().startswith(NET_SCHEMES)
+
 def _net_timeouts(path):
     """(open, write) deadlines in seconds for av.open(timeout=), None for files.
 
     PyAV opens the output with avio_open2(..., NULL): protocol options such as rw_timeout,
     tcp_nodelay or SRT's latency never reach the protocol, so a stalled RTMP server used to block
     the writer (and `nova stop`) forever. PyAV's deadline is the only write timeout there is."""
-    if not path.lower().startswith(NET_SCHEMES): return None
+    if not is_network_target(path): return None
     t = max(1.0, _net_timeout_us() / 1_000_000)
     return max(LIVE_OPEN_TIMEOUT, t), t
 
@@ -290,6 +293,12 @@ def _parse_size(s):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+class OutputOpenError(Exception):
+    """The output could not be started. PyAV retries the open on every later packet, so the
+    caller must give up on this writer instead of writing on (a refused stream would otherwise
+    reconnect once per packet)."""
+
+
 class AVWriter:
     """Encodes decoded frames into a file or a live stream.
 
@@ -367,9 +376,9 @@ class AVWriter:
             self.mux_opts['movflags'] = '+frag_keyframe+empty_moov'
 
         container_opts = _build_conn_options(fmt, self.mux_opts)
-        timeout = _net_timeouts(self.path)
-        logging.debug(f"[AVWriter] av.open({self.path}, format={fmt}, options={container_opts}, timeout={timeout})")
-        self.container = av.open(self.path, mode="w", format=fmt, options=container_opts, timeout=timeout)
+        self.timeout = _net_timeouts(self.path)
+        logging.debug(f"[AVWriter] av.open({self.path}, format={fmt}, options={container_opts}, timeout={self.timeout})")
+        self.container = av.open(self.path, mode="w", format=fmt, options=container_opts, timeout=self.timeout)
 
         try:
             self.v_encoder = EncoderManager().get_encoder(accel, encoder, source_codec, self.enc_v_opts, allowed)
@@ -497,10 +506,17 @@ class AVWriter:
             self._write(packet)
 
     def _write(self, packet):
-        self.container.mux(packet)
-        if not self.first_packet_sent:
-            self.first_packet_sent = True
-            logging.debug("[AVWriter] first packet muxed")
+        if self.first_packet_sent:
+            self.container.mux(packet)
+            return
+        try:
+            self.container.mux(packet)     # the first packet opens the output: connect, handshake, header
+        except av.error.ExitError as e:
+            raise OutputOpenError(f"cannot open output: no answer within {self.timeout[0]:g} s") from e
+        except Exception as e:
+            raise OutputOpenError(f"cannot open output: {e}") from e
+        self.first_packet_sent = True
+        logging.debug("[AVWriter] first packet muxed")
 
     def write_video(self, frame):
         if frame is None or not self.run_flag: return

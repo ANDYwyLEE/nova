@@ -4,6 +4,7 @@ import queue
 import traceback
 import av
 from PySide6.QtCore import QThread, Signal
+from avwriter import OutputOpenError
 
 class AVRecWorker(QThread):
     """Drains an (typ, frame) queue into an AVRecorder/AVStreamer.
@@ -39,6 +40,10 @@ class AVRecWorker(QThread):
             try:
                 self.owner.write(typ, frame)
                 errors = 0
+            except OutputOpenError as e:
+                logging.error(f"[{name}] {e}")
+                failure = str(e)
+                break
             except av.error.ExitError as e:
                 # a network write ran past its deadline: the connection is stalled and the
                 # half-written packet has broken the stream, so retrying cannot help

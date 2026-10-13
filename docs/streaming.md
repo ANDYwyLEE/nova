@@ -24,7 +24,8 @@ Nova adapts to the target on its own:
 - Keyframe every 2 s (YouTube asks for ≤ 4 s).
 - A camera without audio gets a **silent AAC track**: YouTube and most ingest servers refuse video-only streams. `--ffmpeg "-an"` disables that.
 - Audio is sent only after the first video packet, so the ingest server sees video first.
-- The connection and the encoder are set up on a worker thread; a slow or dead server never freezes the window. A broken connection stops the stream and turns the icon off; press **T** to retry.
+- The connection and the encoder are set up on a worker thread; a slow or dead server never freezes the window.
+- **Reconnect.** When a network stream fails (refused, reset, or no progress for `NOVA_TIMEOUT`, 10 s in `cameras.ini`), Nova reopens it after 5, 10, 20, 40 s and then every 60 s, for as long as the stream is switched on; a stream that ran for a minute starts the series again. Meanwhile the LIVE icon stays visible but **gray**, and the log says `[AVStreamer] reconnecting in N s (attempt K)`. **T** switches it off for good. A file target (`-t out.flv`) is not reopened: that would overwrite it.
 
 ## YouTube (RTMP)
 
@@ -94,7 +95,7 @@ SRT options (`latency`, `mode`, `passphrase`, `pbkeylen`, `streamid`) go into `-
 
 ## Checklist when the stream does not show up
 
-1. The log says `[AVStreamer] starting stream to: …` followed by `[AVWriter] h264_nvenc … -> flv audio=aac` (or `audio=silence`). If instead you see `worker stopped: …`, the connection failed: wrong key, blocked outbound port 1935, or DNS.
+1. The log says `[AVStreamer] starting stream to: …` followed by `[AVWriter] h264_nvenc … -> flv audio=aac` (or `audio=silence`). If instead you see `cannot open output: …` and `reconnecting in N s`, the connection failed: wrong key, blocked outbound port 1935, or DNS. Nova keeps retrying (up to once a minute) until you press **T**.
 2. `EncoderManager … rejects your --ffmpeg options`: the chosen encoder does not understand an option (NVENC presets are `p1`–`p7`, libx264's are `ultrafast`–`veryslow`).
 3. YouTube shows "no data": the key is for a different stream, or the stream was never started in Studio.
 4. YouTube shows video but complains about audio: the camera sends G.711 at 8 kHz; Nova re-encodes it to AAC, which YouTube accepts, but `--ffmpeg "-ar 48000"` removes any doubt.

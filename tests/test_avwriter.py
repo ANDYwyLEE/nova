@@ -1,4 +1,4 @@
-"""AVWriter helpers that need no container: bitrate parsing and the AAC bitrate cap."""
+"""AVWriter helpers that need no real container: bitrate parsing, the AAC bitrate cap, network deadlines, open errors."""
 import avwriter
 
 
@@ -37,3 +37,43 @@ def test_aac_cap_applies_only_above_the_encoder_limit():
     ctx = Ctx(b="lots")
     writer(8000, 1, b="lots")._cap_aac_bitrate(ctx, "mono")     # not a number: FFmpeg reports it
     assert ctx.bit_rate == 0 and ctx.options["b"] == "lots"
+
+
+def test_network_targets_get_pyav_deadlines_not_protocol_options(monkeypatch):
+    monkeypatch.setenv("NOVA_TIMEOUT", "10000000")
+    assert avwriter._net_timeouts("rtmp://a.rtmp.youtube.com/live2/KEY") == (30.0, 10.0)
+    assert avwriter._net_timeouts("srt://host:9000?latency=200000") == (30.0, 10.0)
+    assert avwriter._net_timeouts("videos/cam/out.mp4") is None
+    # PyAV opens outputs with avio_open2(..., NULL): protocol options would only be reported unused
+    assert avwriter._build_conn_options("flv", {"f": "flv", "flvflags": "no_duration_filesize"}) == \
+        {"flvflags": "no_duration_filesize"}
+    assert avwriter._build_conn_options("hls", {}) == {"method": "POST", "timeout": "10000000us"}
+
+
+class Container:
+    def __init__(self, error):
+        self.error, self.muxed = error, []
+
+    def mux(self, packet):
+        if self.error: raise self.error
+        self.muxed.append(packet)
+
+
+def test_a_failed_first_packet_is_an_open_error_later_ones_are_not():
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)
+    w.first_packet_sent, w.timeout = False, (30.0, 10.0)
+    w.container = Container(ConnectionRefusedError(111, "Connection refused"))
+    try:
+        w._write("p1")
+        assert False, "no OutputOpenError"
+    except avwriter.OutputOpenError as e:
+        assert "Connection refused" in str(e)
+    w.container.error = None
+    w._write("p1")
+    assert w.first_packet_sent and w.container.muxed == ["p1"]
+    w.container.error = BrokenPipeError(32, "Broken pipe")
+    try:
+        w._write("p2")
+        assert False, "no BrokenPipeError"
+    except BrokenPipeError:
+        pass

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-13 — live streams reconnect
+
+### Added
+- A network stream (RTMP, SRT, HLS, UDP) that fails while switched on is reopened by itself: after 5, 10, 20, 40 s, then every 60 s until it connects or **T** switches it off; a stream that ran for a minute starts the series again. While it waits the LIVE icon stays visible but gray, and the log says `[AVStreamer] reconnecting in N s (attempt K)`. Previously any failure switched the stream off for good, which ends an overnight stream at the first network blip. File targets are not reopened (that would overwrite the file). Tested against a local RTMP server killed and restarted, and one paused mid-stream: the stream came back on the first attempt after the server did.
+
+### Fixed
+- An output that cannot be opened (connection refused, wrong key, DNS) is given up at once: PyAV retries the open on every later packet, so a refused stream used to reconnect up to 60 times a second before the worker gave up.
+
 ## 2026-10-13 — a stalled stream no longer hangs Nova
 
 ### Fixed
