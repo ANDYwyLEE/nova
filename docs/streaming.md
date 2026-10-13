@@ -84,7 +84,7 @@ python nova.py -i rtsp://... -t udp://192.168.1.50:5004                      # u
 python nova.py -i rtsp://... -t /mnt/nas/lobby.mkv                           # a file, with the live encoder settings
 ```
 
-SRT options (`latency`, `mode`, `passphrase`, `pbkeylen`, `streamid`) go into `--ffmpeg` or the URL query. The PyPI wheel does not include SRT; see [custom-ffmpeg.md](custom-ffmpeg.md).
+SRT options (`latency`, `mode`, `passphrase`, `pbkeylen`, `streamid`) go into the URL query (`srt://host:port?latency=200000&passphrase=…`); `--ffmpeg` cannot reach the output protocol, see [ffmpeg-options.md](ffmpeg-options.md). The PyPI wheel does not include SRT; see [custom-ffmpeg.md](custom-ffmpeg.md).
 
 ## Bitrate and latency
 

@@ -46,7 +46,7 @@ enabled = no
 | Key | Meaning |
 |---|---|
 | `url` | anything FFmpeg can open: `rtsp://`, `rtmp://`, `srt://`, `http(s)://`, `udp://`, a file, or the shortcuts `onvif://user:pw@ip[:port][/0\|1]`, `xmeye://`, `hik://`, `dahua://`, `0` / `v4l2:///dev/video2` / `dshow://video=NAME` / `avfoundation://0` for capture devices |
-| `name` | window title and the folder name under `videos/` and `snapshots/` (default: the section name) |
+| `name` | window title, the folder under `videos/` and the start of snapshot file names (default: the section name; characters other than letters, digits, `.`, `_`, `-` become `_`) |
 | `opts` | any `nova.py` options; appended to `[defaults] opts` |
 | `enabled` | `no` keeps the camera out of `start` (it can still be started by id) |
 
@@ -62,18 +62,21 @@ nova record [ID ...] [options]       the same without windows, recording from th
 nova run    [ID]     [options]       one camera in this terminal: log on screen, Ctrl-C quits
 nova stop   [ID ...] [--timeout S]   stop cameras started by start/record (saves state like Ctrl-C)
 nova restart [ID ...] [options]      stop, then start again as launched (record stays record, layout stays)
-nova status                          launched cameras: running or exited, uptime, mode, gpu, layout
+nova status                          launched cameras: running or exited, uptime, and what each is doing now
 nova list                            cameras, enabled state and options (passwords masked)
 nova -h                              help; `python nova.py --help` lists the camera options
 ```
 
 - Words that do not start with `-` are camera ids; everything from the first option on is passed to `nova.py`: `nova start frontdoor -r` shows the window and records, `nova record yard -t rtmp://…` records without a window and streams.
 - Options a camera should always get belong in its `cameras.ini` section (`opts = -r`), so a plain `nova start` does the right thing per camera.
-- `start` and `record` detach from the terminal, write each camera's output to `logs/ID.log` and remember the process ids in `.nova-pids.json`. A camera that exits within the first seconds is reported with the end of its log instead of being called "running".
+- `start` and `record` detach from the terminal, write each camera's output to `logs/ID.log` (moved to `ID.log.1` at a start once it passes 50 MB) and remember the process ids in `.nova-pids.json`. A camera that exits within the first seconds is reported with the end of its log instead of being called "running".
+- A launched camera gets only its id on the command line (`nova.py --camera ID --config cameras.ini`) and reads URL, name and options from `cameras.ini` itself: a process's command line is visible to every user of the machine (`ps`), its passwords and stream keys are not.
+- Each camera has a **control channel**, a socket only you can open (in `$XDG_RUNTIME_DIR/nova/`; a named pipe on Windows). `stop`, `status` and `layout apply` use it; cameras started by an older Nova are still stopped with a signal.
+- Launcher commands that start or stop cameras take turns (a lock), and a pid entry only counts while that process is a Nova camera, so an entry left over from a reboot or crash is ignored instead of stopping whatever program got that pid.
 - A camera without a window that neither records nor streams can neither be seen nor controlled, so `start --headless` without `-r` or `-t` is refused; `record` is the shorthand for `--headless -r`.
-- `stop` only touches processes it started and waits for them to exit cleanly (window geometry, zoom and open recordings are saved).
-- `restart` stops the launched cameras (or the given ids) and starts them again the way they were launched: a camera from `record` stays headless, a window keeps its layout (`--layout NAME` switches), and the options from `cameras.ini` apply as always. Options typed after `start` are not remembered, so give them again. A camera that is not running is simply started.
-- `status` lists every camera the launcher started: pid, running or exited, uptime, mode (window / headless, rec, stream), GPU and layout.
+- `stop` only touches processes it started and waits for them to exit cleanly (window geometry, zoom and open recordings are saved); `--timeout` defaults to 2 × `NOVA_TIMEOUT` + 5 s (25 s with the example config), the longest a camera needs while its stream is stalled.
+- `restart` stops the launched cameras (or the given ids) and starts them again the way they were launched: a camera from `record` stays headless, a window keeps its layout (`--layout NAME` switches), and the options from `cameras.ini` apply as always. Options typed after `start` are not remembered, so give them again. A camera that is not running is simply started; a missing layout ends the command before anything is stopped.
+- `status` lists every camera the launcher started: pid, running or exited, uptime, mode as launched (window / headless, rec, stream), GPU and layout, and below it what the camera reports right now: video size, recording and stream `on` / `waiting` (reconnecting) / `off`, and the overlay message while it has no picture (`Unreachable: …`).
 - `run` keeps one camera in the foreground: the log appears in the terminal (`nova run ID -l DEBUG` for diagnosis) and Ctrl-C quits. Without an id it runs `[defaults] camera`, or the first enabled camera.
 
 ## Layouts
@@ -84,6 +87,7 @@ Every window remembers its own place. A layout remembers the whole wall: which c
 nova layout save NAME        write the open cameras' windows to layouts/NAME.json
 nova layout list             saved layouts and their cameras
 nova start --layout NAME     open exactly the cameras of that layout, where they were saved
+nova layout apply NAME       move the open windows to that layout's places now (no restart)
 nova run ID --layout NAME    one camera at its place in that layout
 nova layout export NAME FORMAT   window rules that place the layout on a Wayland desktop
                                  (FORMAT: sway, kwin, hyprland = Lua config 0.55+, hyprlang = 0.53-0.54)
@@ -99,7 +103,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
   - **sway** (i3 too): windows are tiled, XWayland or native, unless a rule floats them: `nova layout export work sway` prints `for_window` lines for `~/.config/sway/config`.
   - **Hyprland**: tiles as well; `nova layout export work hyprlang` for 0.53–0.54 (`windowrule { }` blocks; Ubuntu 26.04 ships 0.53), `hyprland` for 0.55 and later (Lua, `hl.window_rule`). Hyprland's `move` is monitor-local; with several monitors subtract the monitor's position.
 
-  The rules match the window title `Nova - NAME` (the camera's name from `cameras.ini` / `-n`), XWayland and native windows alike, so they keep working across restarts; the positions are the absolute coordinates Nova saved. Under a rule the window still remembers where you drag it, as usual. **NVIDIA**: with the proprietary driver (595 at the time of writing) a native Wayland Nova window stays invisible, because NVIDIA's EGL does not display frameless OpenGL windows on Wayland (decorated windows and Mesa drivers are fine); XWayland, the default, is not affected.
+  The rules match the window title `Nova - NAME` (the camera's name from `cameras.ini` / `-n`), XWayland and native windows alike, so they keep working across restarts; the positions are the absolute coordinates Nova saved. Under a rule the window still remembers where you drag it, as usual.
 
 ## Command-line options
 
@@ -221,15 +225,17 @@ Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom regio
 
 Resolved `onvif://` / `xmeye://` / `hik://` / `dahua://` URLs are cached for one day in `.uri_cache.json` next to `nova.py`, without the password.
 
+Everything Nova and the launcher write (recordings, snapshots, logs, layouts, the pid file, the settings file) is created readable by you only (umask 077 on Linux and macOS): footage and logs are private on a shared machine. Files from older versions keep their permissions; `chmod -R go-rwx videos snapshots logs layouts` tightens them. Keep `cameras.ini` at `chmod 600`; the launcher warns when others can read it.
+
 ## Environment variables
 
 | Variable | Meaning |
 |---|---|
-| `NOVA_TIMEOUT` | socket / read timeout in microseconds (default 5 s; `cameras.ini` sets 10 s). Also bounds how long shutdown can take while a camera answers but stalls in the RTSP handshake; a camera that is down is detected by a TCP probe first and stops at once. For a network stream target (`-t rtmp://…`, SRT, HLS) it is the write deadline: a connection that accepts nothing for that long ends the stream (connecting may take up to 30 s). |
+| `NOVA_TIMEOUT` | socket / read timeout in microseconds (default 5 s for camera input and 10 s for a stream target; `cameras.example.ini` sets 10 s). Also bounds how long shutdown can take while a camera answers but stalls in the RTSP handshake; a camera that is down is detected by a TCP probe first and stops at once. For a network stream target (`-t rtmp://…`, SRT, HLS) it is the write deadline: a connection that accepts nothing for that long ends the stream (connecting may take up to 30 s). |
 | `NOVA_GPU_DEVICES` | GPU index, or a comma list (`0,1`). With a list, `nova start` / `nova run` deal the cameras over the GPUs in file order, so a camera always lands on the same one (14 cameras on `0,1` → 7 + 7); `--gpu N` in a camera's `opts` pins it. A bare `python nova.py` given a list picks one at random |
 | `NOVA_AUDIO_DEVICE_INDEX` | force a PortAudio output device |
 | `QT_QPA_PLATFORM` | `offscreen` is set automatically for `--headless`; on a Wayland session Nova sets `xcb` (XWayland) itself, `wayland` asks for a native window |
 
 ## Logs
 
-`-l` sets the level: `CRITICAL ERROR WARNING INFO VERBOSE DEBUG TRACE` (or a number). `INFO` shows connections, decoder/encoder choices and saved files; `DEBUG` adds the FFmpeg negotiation; `TRACE` adds ONVIF SOAP bodies and audio device lists. Passwords are masked everywhere. `nova start` and `nova record` write each camera to `logs/ID.log`.
+`-l` sets the level: `CRITICAL ERROR WARNING INFO VERBOSE DEBUG TRACE` (or a number). `INFO` shows connections, decoder/encoder choices and saved files; `DEBUG` adds the FFmpeg negotiation; `TRACE` adds ONVIF SOAP bodies and audio device lists. Passwords and stream keys are masked in every log line, traceback and launcher output (`user:***@`, `password=***`, the last part of an `rtmp://` URL, SRT passphrase and streamid). `nova start` and `nova record` write each camera to `logs/ID.log`.

@@ -69,7 +69,7 @@ if __name__ == "__main__":
         "-n", "--name", "--camera-name",
         dest="camera_name",
         type=str,
-        help="Camera name: the window title becomes 'Nova - NAME', snapshots and recordings go to NAME/."
+        help="Camera name: the window title becomes 'Nova - NAME', recordings go to videos/NAME/ and snapshots are named NAME_<time>.png."
     )
     parser.add_argument(
         "--opengl",

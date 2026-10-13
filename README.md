@@ -33,7 +33,7 @@ pip install -U pip && pip install -r requirements.txt   # Linux first: sudo apt 
 python nova.py --opengl --accel cuda -b -i "rtsp://user:pass@192.168.1.10:554/stream_0"
 ```
 
-Press **H** in the window for the key map, **R** to record, **A** for audio, **S** for a snapshot. Add `-t rtmp://a.rtmp.youtube.com/live2/YOUR-KEY` and press **T** to go live.
+Press **H** in the window for the key map, **R** to record, **A** for audio, **S** for a snapshot. Add `-t rtmp://a.rtmp.youtube.com/live2/YOUR-KEY` and the camera goes live with its first frame; **T** switches the stream off and on.
 
 More than one camera: put them in `cameras.ini` (git-ignored, so passwords stay on your machine) and use the launcher.
 
@@ -54,7 +54,7 @@ cp cameras.example.ini cameras.ini      # one [section] per camera; presets per 
 - **Zero-copy OpenGL rendering.** NV12/YUV planes go straight into textures and are converted in a shader (BT.601/BT.709 per stream); overlays are cached. The CPU never touches pixels on the display path.
 - **Recordings you can trust.** Fragmented MP4 segments survive crashes; timestamps come from the camera clock, so audio and video stay in sync even when a camera lies about its frame rate, and outages become gaps instead of fast-forward.
 - **Streaming that matches the target.** H.264 for RTMP (what YouTube accepts), H.264/HEVC for HLS, 2-second keyframes, a silent audio track when the camera has none.
-- **Encoders chosen for you.** NVENC, Quick Sync, AMF, VideoToolbox or libx264, probed once per process under a cross-process lock.
+- **Encoders chosen for you.** With `--accel`, the matching hardware encoder (NVENC, Quick Sync, AMF, VideoToolbox), else libx264; probed once per process under a cross-process lock.
 - **Real FFmpeg option pass-through.** `--ffmpeg "-rtsp_transport udp -b:v 4M -vf transpose=1 -r 10"` is routed to the right place, and anything the library cannot honour is reported instead of silently dropped.
 - **Camera discovery.** `onvif://`, `xmeye://`, `hik://`, `dahua://` resolve the RTSP URL for you; results are cached without the password.
 - **Built for camera walls.** Grid snapping, keyboard move/resize, wheel zoom with remembered regions, fullscreen, per-camera geometry restored on the next start, multi-monitor aware.

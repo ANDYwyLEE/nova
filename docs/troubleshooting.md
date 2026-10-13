@@ -34,8 +34,8 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 | windows open centred or tiled, keyboard moves do nothing | native Wayland window (`QT_QPA_PLATFORM=wayland`): the compositor ignores client-side positioning | drop that setting (Nova then uses XWayland, where GNOME and KDE honour positions), or on sway / Hyprland / KDE import rules from `nova layout export NAME …` (user guide, Layouts) |
 | window exists but shows nothing (native Wayland, NVIDIA, `--opengl`) | an older Nova: the OpenGL draw buffer was left at `GL_NONE` (fixed 2026-10-13) | update, or run under XWayland: unset `QT_QPA_PLATFORM` (the default) |
 | colours slightly off (greenish skin tones) | camera signals no colour space | Nova assumes BT.709 above 576 lines, BT.601 below; cameras that lie cannot be helped without `-vf colorspace=…` |
-| high CPU with `--opengl` and `--accel cuda` | the stream is not H.264/HEVC (MJPEG cameras decode in software) | `--ffmpeg "-skip_frame nokey"` for a cheap preview, or `-f 10` |
-| the window is huge on a 4K camera | windows default to the saved geometry, first run uses 320×180 | **Home** gives 1:1, right-click fits, **PgDown** shrinks |
+| high CPU with `--opengl` and `--accel cuda` | the stream is not H.264/HEVC (MJPEG cameras decode in software) | `-f 10`; or `--ffmpeg "-skip_frame nokey"` for a cheap preview of a camera you do not record (recordings and streams get the same one frame per GOP) |
+| the window is huge on a 4K camera | windows default to the saved geometry, first run uses 320×180 | **Home** gives 1:1, right-click fits, **PgUp** shrinks |
 | control strip never appears | the mouse must enter the top-left corner of the *video area* (not the letterbox) | press **H** instead, or widen the window |
 
 ## Recording and streaming
@@ -67,7 +67,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 - **One GPU, many cameras**: NVDEC on a single RTX 4090 decodes well over 20 1080p streams; the limit is usually the display rate. `-f 15` halves the upload to the GPU without touching recordings.
 - **Two GPUs**: `NOVA_GPU_DEVICES = 0,1` in `[env]`; `nova start` deals the cameras over them in turn and `nova list` shows who gets which. `opts = --gpu 1` pins a camera. `nvidia-smi` lists one process per camera under the GPU it uses.
 - **Big cameras, small windows**: `--ffmpeg "-resize 960x540"` (cuvid) scales inside the decoder, so display, recording and streaming all work on the smaller frame.
-- **Software decoding**: `--ffmpeg "-threads 2"` per camera avoids 15 processes each spawning 32 threads; `-skip_loop_filter all` trades a little quality for ~20 % CPU; `-skip_frame nokey` shows one frame per GOP almost for free.
+- **Software decoding**: `--ffmpeg "-threads 2"` per camera avoids 15 processes each spawning 32 threads; `-skip_loop_filter all` trades a little quality for ~20 % CPU; `-skip_frame nokey` shows one frame per GOP almost for free (and records and streams only those frames, so not for a camera you record).
 - **Recording cost**: NVENC is nearly free; libx264 `-preset veryfast` or `ultrafast` when there is no hardware encoder.
 - **A camera that is down**: the window shows `Unreachable: host:port …` and Nova retries every 10 s. The host is probed with a plain TCP connect before the RTSP open, so `nova stop` ends such a camera at once. Only a camera that *answers* but then stalls in the RTSP handshake can hold a stop for up to `NOVA_TIMEOUT` (that open cannot be interrupted earlier).
 - **Start-up storms**: `nova start` staggers starts (`stagger = 0.5`) and encoders are probed under a cross-process lock, so 15 cameras can start at once without fighting over the GPU.

@@ -1,11 +1,11 @@
 # Installation
 
-Nova needs Python 3.10 or newer and the packages in `requirements.txt`. Nothing else: the `av` package from PyPI ships its own FFmpeg, and the GPU paths use the driver that is already installed.
+Nova needs Python 3.12 or newer and the packages in `requirements.txt`. Nothing else: the `av` package from PyPI ships its own FFmpeg, and the GPU paths use the driver that is already installed.
 
 - [What the PyPI FFmpeg can do](#what-the-pypi-ffmpeg-can-do)
-- [Linux](#linux-ubuntu-2404)
+- [Linux](#linux-ubuntu-2404-and-2604)
 - [Windows](#windows)
-- [macOS](#macos-117-big-sur-or-later)
+- [macOS](#macos)
 - [Updating](#updating)
 - [Custom FFmpeg](custom-ffmpeg.md) (only for SRT or VAAPI)
 

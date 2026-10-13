@@ -12,7 +12,7 @@
 
 - **R** (or F7, or the camera icon in the control strip) toggles recording.
 - `-r` starts recording as soon as the first frame arrives; put it in a camera's `opts` in `cameras.ini` to record that camera permanently.
-- `--headless -r` records without a window (servers, cron jobs); `nova record [ID ...]` is the shorthand for every camera in `cameras.ini`.
+- `--headless -r` records without a window (servers, cron jobs); `nova record [ID ...]` is the shorthand for every enabled camera in `cameras.ini`.
 - Stopping Nova (window close, Ctrl-C, `nova stop`) closes the current segment cleanly.
 
 ## Files and segments
@@ -82,8 +82,8 @@ Examples:
 ```bash
 # everyday archive at 10 fps, 1 Mbit/s, 1-hour files
 python nova.py -i rtsp://... -r --record-interval 1h --ffmpeg "-r 10 -b:v 1M"
-# HEVC with NVENC, keyframe-only decode on the display side (saves CPU on a busy box)
-python nova.py -i rtsp://... -r -e hevc_nvenc --ffmpeg "-skip_frame nokey"
+# HEVC with NVENC
+python nova.py -i rtsp://... -r -e hevc_nvenc
 ```
 
 ## Disk usage and housekeeping

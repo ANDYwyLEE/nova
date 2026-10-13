@@ -23,7 +23,7 @@ PATTERNS = [p for p in util._SECRET_PATTERNS if p not in (util._RE_DICT_PWD, uti
 
 def real(secret, pattern):
     s = secret.strip("`'\".,;:)]}…")
-    if not s or PLACEHOLDER.fullmatch(s) or PLACEHOLDER.fullmatch(secret):
+    if not s or "`" in s or PLACEHOLDER.fullmatch(s) or PLACEHOLDER.fullmatch(secret):   # `..` = Markdown
         return False
     if pattern is util._RE_RTMP_KEY:               # any rtmp path: docs say rtmp://host/live/cam1
         return len(s) >= 8 and any(c.isdigit() for c in s)
