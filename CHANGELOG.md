@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-10-14 — second full review: crashes, silent stops, secrets, the launcher
+
+A review of every module (five reviewers in parallel, each finding reproduced or confirmed in the code) and the fixes, tested against the old code where a reproduction was possible.
+
+### Added
+- **Control channel per camera.** A launched camera listens on a socket only its user can open (`$XDG_RUNTIME_DIR/nova/ID.sock`, a named pipe on Windows). `nova stop` uses it (signals remain the fallback for cameras started before), `nova status` shows what each camera does now (`video 1920x1080, record on, stream waiting`, or the overlay message while it has no picture), and **`nova layout apply NAME`** moves open windows to a layout's places and zoom without restarting them.
+- Recording restarts by itself after a failure (disk full, unwritable folder, encoder failure): 5, 10, 20, 40 s, then every 60 s, gray camera icon meanwhile, `record waiting` in `nova status`. Before, one failure switched recording off for good and nothing showed it.
+- A crash leftover (`<name>_output.mp4` after power loss or `kill -9`) is kept as `YYYYMMDD_HHMM_recovered.mp4`; the next start used to overwrite it. One process records a camera folder at a time (`.nova-recording.lock`).
+
+### Changed
+- **No secrets on command lines.** A launched camera runs as `nova.py --camera ID --config cameras.ini` and reads URL, name and options itself; its command line, readable by every local user (`ps`), carried the camera password and the YouTube key.
+- **Private files.** Nova and the launcher create files readable by their user only (umask 077): recordings, snapshots, logs, layouts, the pid file, Nova.conf on its next write. The launcher warns when cameras.ini is readable by others.
+- `--accel cuda`: the container is opened without hardware acceleration and the decoder is chosen after the stream is known, so each camera has one CUDA context instead of two: 796 → 410 MiB of VRAM per camera on an RTX 4090 (≈ 5.7 GB over 15 cameras; measured again with two cameras decoding, recording and streaming on one GPU).
+- Segments follow the local clock (and daylight-saving time) instead of UTC: `24h` cut at 01:00/02:00 in Central Europe.
+- `nova stop`/`restart` wait 2 × NOVA_TIMEOUT + 5 s by default (25 s with the example config), the longest a camera needs while its stream is stalled.
+- Held keys repeat only moves, resizes and zoom; a wheel notch zooms 10 % and touchpads by their fraction of a notch (they zoomed 8–15× too fast).
+
+### Fixed — crashes
+- A recording or stream whose output could not be started (disk full when a segment begins, a publish refused after connect) **crashed Nova**: PyAV writes the header a second time and segfaults. Reproduced with PyAV alone and with a segment file on /dev/full; now the writer is freed and recording restarts.
+- An encoder that passed the probe but does not open at the real size (NVENC session limit, GPU fault) **crashed Nova** at its second frame; the writer now continues with the next encoder, ending at libx264, without losing a frame. An audio encoder that cannot open leaves the audio track out.
+- A decoder thread still blocked at exit made Qt abort the process (SIGABRT, a crash report); Nova now leaves without it.
+- `-l VERBOSE` failed at start (`Unknown level`).
+
+### Fixed — recordings and streams
+- Video errors were reset by every successful audio write: no escalation, a traceback per frame, and the segment was then deleted with its audio. Errors are now counted per stream type, logged once per kind, and end the writer after 60 in a row (so recording restarts).
+- The first segment had no audio, and a stream stayed silent, when the writer opened before the camera's first audio frame; a camera's audio format change broke the track (`Frame does not match AudioResampler setup`).
+- With recording and streaming both on, the stream lost its video for MJPEG 4:2:2, 10-bit HEVC (`hevc_cuvid`) and odd frame sizes (2 frames instead of 274 in the test).
+- `-e hevc_nvenc` turned RTMP streams into HEVC (YouTube: no data); a forced encoder the target cannot carry is now skipped with a warning.
+- A 10 h camera outage was sent to a live target as a 33 s burst of silent AAC; no audio device gave ~100 ERROR lines a second; frames dropped by a writer that cannot keep up are now reported; a segment cut by an outage is named by its last frame; a failed rename no longer lets the next segment overwrite the file; the encoder probe lock is per user (another account could stall every probe); a malformed `NOVA_TIMEOUT` no longer stops streams.
+
+### Fixed — cameras and decoding
+- A hardware decoder that cannot be used (wrong `--gpu`, GPU out of memory, a stream it cannot decode such as rawvideo webcams or MJPEG 4:2:2) failed the connection every 10 s forever; Nova now decodes in software at once, without reconnecting, and tries hardware again after 5 min (then 10, 20, 40, every 60 min) alongside the software decoder.
+- One damaged video or audio packet ended the connection; it is skipped. Video that stops while audio flows, or a picture that stops, now triggers a reconnect.
+- **The zoom was lost at every camera reconnect** and the reset was saved (also into layouts): the decoder reported the size again, the window rebuilt its zoom and saved `0,0,1,1` while the size read 0. The decoder now keeps the size across reconnects and the window keeps its zoom either way; a restored zoom no longer drifts a pixel per restart.
+- A password with an unencoded `/ ? #` crashed the camera worker (and printed part of the password); a dual-stack host with a dead IPv6 address was reported unreachable; slow DNS held up stop. A frame rate taken from the RTP clock gave writers a keyframe interval of 180000. Repeated open errors (401 …) are logged once.
+
+### Fixed — windows
+- Quitting while fullscreen or maximized saved the screen-sized rectangle as the window's place.
+- A place on a monitor that is not connected opened the window off-screen; when a monitor drops out (unplugged, DisplayPort asleep) the window manager's moves were saved. Windows keep their places and return when the monitor is back.
+- Double-click: leaving fullscreen could snap to the fullscreen rectangle; on a control-strip icon it toggled twice and switched fullscreen. Wheel and middle-click zoom showed only with the next frame.
+- OpenGL errors logged a traceback per frame and left the window black; they are reported once a minute, the GL state is rebuilt once, then the window says "Rendering failed (OpenGL)". OSD layers drew in a different order in the two renderers, were blurry on HiDPI, and the border turned orange on unfocused windows after a resize. Where the platform cannot move or resize a window (macOS border resize), Nova does it.
+
+### Fixed — launcher
+- A stale pid entry (after a reboot or crash) made `nova stop` interrupt whatever process had that pid and `start` skip the camera; an entry now counts only while that process is a Nova camera. Two parallel commands launched cameras twice and lost pids; commands that start or stop cameras take turns, the pid file is replaced atomically, and an unreadable one stops the command.
+- `restart` stopped cameras and then failed on a missing layout; layouts are checked first. cameras.ini: keys are case-insensitive (`Enabled = no` was ignored) and unknown keys reported, a BOM is accepted, parse errors no longer echo a URL, ids that cannot name a log file are skipped. Logs rotate at 50 MB per start. `./nova` works through a symlink; Windows cameras run without a console (closing the terminal killed them) and keep backslashes in `opts` paths; sway/KWin exports survive quotes and brackets in names; headless cameras always use the offscreen platform.
+
+### Fixed — secrets and the camera shortcuts
+- Passwords reached logs: the **P** key printed the full URL into `logs/ID.log`; `nova list` printed stream keys in `opts`; masking missed an `@` or `/` inside a password, XM `_password=`, `psw=`, SRT `passphrase`/`streamid`, RTMP keys other than YouTube/Twitch, dict and argv forms, and tracebacks (logged and uncaught). One pattern table now serves the logs, `nova list` and the pre-commit hook, which also checks moved files, copes with spaces in names and refuses cameras*.ini, logs and layouts; CI runs the same scan over all tracked files.
+- `onvif://`, `hik://`, `dahua://`, `xmeye://`: the device's answer decided where the password was sent (a port of `554@other-host` redirected it); ports must be 1..65535 and stream URIs rtsp/rtsps on the camera's own address. Hikvision no longer falls back to HTTP Basic over plain http. `&amp;` in ONVIF URIs is decoded (substreams were ignored), passwords may contain `@`, percent-encoded credentials are decoded, fallback URLs are not cached, the ONVIF port scan takes 1.5 s instead of up to 37 s, and TRACE logs no longer show the WS-Security digest.
+
+### Docs
+- Corrected: the stream starts with `-t` (T stops it), `-skip_frame nokey` also thins recordings, SRT options go in the URL, PgUp shrinks, snapshot names, NOVA_TIMEOUT defaults, Python 3.12+, encoder order, quoted log messages checked against the code. `python-dvr` is listed for `xmeye://`.
+
 ## 2026-10-13 — native Wayland windows on NVIDIA show the picture
 
 ### Fixed
