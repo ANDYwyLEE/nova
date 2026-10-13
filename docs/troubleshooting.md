@@ -43,14 +43,20 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 
 | Message | Meaning | What to do |
 |---|---|---|
-| `[AVRecorder] worker stopped: …` | the encoder or the disk failed | the message says which; `No space left`, `Permission denied`, or an encoder error |
+| `[AVRecorder] worker stopped: …` then `[AVRecorder] restarting in N s` | the encoder or the disk failed | the message says which (`No space left`, `Permission denied`, an encoder error); recording starts again by itself (5, 10, 20, 40 s, then every 60 s) once the cause is gone |
+| `[AVRecorder] not recording: … another Nova process (pid N) …` | a second Nova runs the same camera and its recorder holds the folder | stop one of them (`nova status`, `ps`); this one takes over within a minute after the other stops |
+| `segment left by a crash kept: …_recovered.mp4` | the previous run was killed (power loss, OOM, `kill -9`) mid-segment | nothing: the file plays up to its last fragment |
+| `cannot rename … it keeps its name, the next segment is written next to it` | the finished segment could not be renamed (permissions, a file locked by a player on Windows) | the rename is tried again later; the file is complete under its temporary name |
+| `⚠️ h264_nvenc does not open at WxH (…); using libx264` | the probe passed but the real size did not open (NVENC session limit with many cameras, a GPU fault) | nothing to do; the encoder is tried again after an hour. Fewer NVENC sessions: record some cameras with `-e libx264` |
+| `⚠️ -e hevc_nvenc: flv carries h264 only` | the forced encoder's codec does not fit the target (RTMP is H.264) | drop `-e` for that camera, or use HLS for HEVC |
+| `audio encoder … does not open at N Hz …; no audio track` | the camera's audio format cannot be encoded as set (`-ar`/`-ac`) | change or drop `-ar`/`-ac`; video is unaffected |
 | `EncoderManager ⚠️ h264_nvenc rejects your --ffmpeg options {…}` | option names differ per encoder | NVENC: `-preset p1…p7 -tune hq/ll/ull -cq N`; libx264: `-preset ultrafast…veryslow -crf N -tune zerolatency` |
 | `video encoder … ignored unknown --ffmpeg options` | the key is not an option of that encoder | see the tables in [ffmpeg-options.md](ffmpeg-options.md) |
 | `… are ffmpeg command-line options without a library equivalent; ignored` | `-t -ss -map -re -vsync …` only exist in the `ffmpeg` program | use `--record-interval`, `-r`, `-vf` instead |
 | `-vf: filter 'drawtext' is not available in this FFmpeg build` | the PyPI wheel has no libfreetype | custom build, or burn text in later with ffmpeg |
-| `empty segment discarded` | no frame arrived during the segment | the camera was down; nothing lost |
+| `empty segment discarded` | nothing was written during the segment (no frame arrived, or the file could not be started) | the camera was down, or see the error before it; nothing lost |
 | recordings play too fast / audio drifts | fixed in the 2026-10-11 release (timestamps now follow the camera clock) | update |
-| YouTube: "no video" | the encoder produced AV1/HEVC for RTMP (old release) or the key is wrong | update; RTMP now always gets H.264 |
+| YouTube: "no video" | the encoder produced AV1/HEVC for RTMP (old release) or the key is wrong | update; RTMP now always gets H.264, also with `-e hevc_nvenc` set |
 | `[AVStreamer] write timed out, giving up` then `reconnecting in N s` | the ingest server or the uplink stopped accepting data for `NOVA_TIMEOUT` | nothing: Nova reconnects by itself (5 s, 10 s, … then every 60 s) while the gray LIVE icon shows; press `T` to stop trying |
 | `[AVStreamer] cannot open output: …` repeating | the connection is refused at every attempt: wrong key, server down, DNS, port 1935 blocked | fix the cause; the next attempt (at most a minute later) picks it up |
 | `AVStreamer worker stopped: [Errno 5] Input/output error` right after start | the ingest server closed the connection: wrong key or unsupported codec | check the key; for RTMP keep H.264 |
@@ -59,7 +65,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 
 | Message | Meaning | What to do |
 |---|---|---|
-| `Audio open failed` / `Audio stream open error` | no usable PortAudio output device, or the sample rate is refused | `NOVA_AUDIO_DEVICE_INDEX=N` (devices are listed with `-l TRACE`); Nova already retries at 48 kHz |
+| `[AudioWorker] cannot open an audio output: …` (once; retried every 3 s) / `Audio stream open error` | no usable PortAudio output device, or the sample rate is refused | `NOVA_AUDIO_DEVICE_INDEX=N` (devices are listed with `-l TRACE`); Nova already retries at 48 kHz |
 | crackling, drop-outs | the audio thread is starved or the device buffer is small | close other audio apps; on Linux prefer the PipeWire/Pulse device (chosen automatically when present) |
 | no sound but the icon is on | the camera stream has no audio track | the window title/log shows `audio=none`; check the camera's audio setting |
 

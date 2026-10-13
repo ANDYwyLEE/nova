@@ -22,10 +22,10 @@ Nova adapts to the target on its own:
 | `file.mp4` / `.mkv` | file | as for recording | AAC |
 
 - Keyframe every 2 s (YouTube asks for ≤ 4 s).
-- A camera without audio gets a **silent AAC track**: YouTube and most ingest servers refuse video-only streams. `--ffmpeg "-an"` disables that.
+- A camera without audio gets a **silent AAC track**: YouTube and most ingest servers refuse video-only streams. `--ffmpeg "-an"` disables that. The writer waits up to 2 s for the camera's first audio frame; camera audio that starts later replaces the silence.
 - Audio is sent only after the first video packet, so the ingest server sees video first.
 - The connection and the encoder are set up on a worker thread; a slow or dead server never freezes the window.
-- **Reconnect.** When a network stream fails (refused, reset, or no progress for `NOVA_TIMEOUT`, 10 s in `cameras.ini`), Nova reopens it after 5, 10, 20, 40 s and then every 60 s, for as long as the stream is switched on; a stream that ran for a minute starts the series again. Meanwhile the LIVE icon stays visible but **gray**, and the log says `[AVStreamer] reconnecting in N s (attempt K)`. **T** switches it off for good. A file target (`-t out.flv`) is not reopened: that would overwrite it.
+- **Reconnect.** When a network stream fails (refused, reset, or no progress for `NOVA_TIMEOUT`, 10 s in `cameras.ini`), Nova reopens it after 5, 10, 20, 40 s and then every 60 s, for as long as the stream is switched on; a stream that ran for a minute (counted from its first packet sent) starts the series again. Meanwhile the LIVE icon stays visible but **gray**, and the log says `[AVStreamer] reconnecting in N s (attempt K)`. **T** switches it off for good. A file target (`-t out.flv`) is not reopened: that would overwrite it.
 
 ## YouTube (RTMP)
 
