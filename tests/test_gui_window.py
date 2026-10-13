@@ -417,3 +417,41 @@ def test_move_and_resize_by_hand_where_the_platform_cannot(make, app):
     m.move(-29, 90)
     assert w.x() + w.width() == right and w.width() == 390
     m.release(-29, 90)
+
+
+# ---------------------------------------------------------------- keyboard
+
+def key(w, k, mods=Qt.NoModifier, repeat=False):
+    w.keyPressEvent(QKeyEvent(QEvent.KeyPress, k, mods, "", repeat))
+
+
+def test_held_keys_do_not_repeat_toggles_and_one_shot_actions(make, app):
+    w, core = make("200,100,320,180", None, grid=20)
+    core.connected(1920, 1080)
+    key(w, Qt.Key_R)
+    for _ in range(10):
+        key(w, Qt.Key_R, repeat=True)            # R held: recording on once, not on/off/on/...
+        key(w, Qt.Key_S, repeat=True)
+        key(w, Qt.Key_A, repeat=True)
+    assert core.calls == ["rec"] and core.rec
+    key(w, Qt.Key_F)
+    for _ in range(5):
+        key(w, Qt.Key_F, repeat=True)
+        key(w, Qt.Key_H, repeat=True)
+    app.processEvents()
+    assert w.is_fullscreen() and not w.helper.is_on()
+
+
+def test_held_arrow_and_zoom_keys_still_repeat(make, app):
+    w, core = make("200,100,320,180", None, grid=20)
+    core.connected(1920, 1080)
+    key(w, Qt.Key_Right)
+    for _ in range(4):
+        key(w, Qt.Key_Right, repeat=True)
+    app.processEvents()
+    assert w.x() == 300
+    key(w, Qt.Key_I)
+    one = w.zoomer.width()
+    for _ in range(3):
+        key(w, Qt.Key_I, repeat=True)
+    assert w.zoomer.width() < one
