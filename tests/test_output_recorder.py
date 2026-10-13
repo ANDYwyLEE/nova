@@ -178,7 +178,10 @@ def test_the_folder_lock_works_across_processes(app, tmp_path):
     finally:
         p.kill()
         p.wait()
-    assert mine.acquire()                                   # the OS released it with the process
+    deadline = time.monotonic() + 5                         # (Windows releases a dead process's locks lazily)
+    while not mine.acquire() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert mine.fd is not None                              # the OS released it with the process
     mine.release()
 
 
