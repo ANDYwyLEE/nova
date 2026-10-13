@@ -152,6 +152,18 @@ def test_zoom_is_carried_over_as_ratios_when_the_size_changes(make):
     assert ratios(stored(core)[1]) == (0.25, 0.25, 0.5, 0.5)
 
 
+def test_picture_keeps_its_aspect_ratio_while_the_camera_reconnects(make):
+    # core.ratio() is 1.0 while the decoder's size is 0: a repaint ("Connecting...") squeezed the last
+    # frame to a square and moved the control strip.
+    w, core = make("100,100,640,360", None)
+    core.connected(1920, 1080)
+    strip = w._m_area
+    core.reconnecting()
+    w.update_stat("Connecting...")
+    w.set_bt()
+    assert w._pic_ratio() == pytest.approx(16 / 9) and w._m_area == strip
+
+
 def test_no_zoom_is_persisted_as_a_guess_before_the_first_frame(make):
     w, core = make("100,100,640,360", "0.1,0.2,0.3,0.4")
     w._persist_if_changed()                      # camera still connecting: size 0
