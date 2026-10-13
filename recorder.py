@@ -14,6 +14,55 @@ except ImportError: msvcrt = None
 DEFAULT_DIR = "./videos"
 DEFAULT_INTERVAL_S = 1800
 LOCK_NAME = ".nova-recording.lock"
+GAP_S = 60                  # a stop this long after the last frame ends the segment at that frame
+
+
+def _min_interval():
+    """60 s; tests set NOVA_MIN_RECORD_INTERVAL to get segments of a few seconds."""
+    try:
+        return max(1, int(os.getenv("NOVA_MIN_RECORD_INTERVAL", "60")))
+    except ValueError:
+        return 60
+
+
+def _gmtoff(t):
+    return time.localtime(t).tm_gmtoff
+
+
+def _on_boundary(w, interval):
+    """w: local wall time as seconds since the epoch (UTC offset added)."""
+    if interval >= 86400:
+        return w % 86400 == 0 and (w // 86400) % (interval // 86400) == 0
+    return (w % 86400) % interval == 0
+
+
+def next_boundary(now, interval):
+    """The first segment boundary after now, on the local wall clock: the time of day is a multiple of
+    interval counted from local midnight (a day or more: local midnight every N days). UTC alignment
+    cut 24h files at 01:00/02:00 in Central Europe and 1h files at :30 in +5:30 zones. Offset changes
+    are followed: on the fall-back night 1h segments start at 02:00 twice, on the spring-forward night
+    03:00 follows 01:00."""
+    t = int(now)
+    while True:
+        off = _gmtoff(t)
+        w = t + off
+        if interval >= 86400:
+            days = interval // 86400
+            nxt = ((w // 86400) // days + 1) * days * 86400
+        else:
+            day = w - w % 86400
+            nxt = min(day + ((w - day) // interval + 1) * interval, day + 86400)
+        cand = nxt - off
+        if _gmtoff(cand) == off:
+            return cand
+        lo, hi = t, cand                    # the offset changes in between: find its first second
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if _gmtoff(mid) == off: lo = mid
+            else: hi = mid
+        if _on_boundary(hi + _gmtoff(hi), interval):
+            return hi
+        t = hi
 
 
 class DirLock:
@@ -126,7 +175,7 @@ class AVRecorder(Player):
         os.makedirs(self.dir, exist_ok=True)
 
     def set_interval(self, sec):
-        self.interval_s = max(60, int(sec))
+        self.interval_s = max(_min_interval(), int(sec))
 
     #@abstractmethod
     def available(self):
@@ -264,7 +313,10 @@ class AVRecorder(Player):
             if self.writer is not None:
                 writer, path, start = self.writer, self.path, self.start_ts
                 self.writer = None
-                self._finish(writer, path, start, int(time.time()))
+                now = time.time()
+                # stopped during a camera outage: the segment ended with its last frame
+                end = self.last_now if now - self.last_now > GAP_S else now
+                self._finish(writer, path, start, int(end))
         finally:
             self._release_lock()
 
@@ -274,11 +326,13 @@ class AVRecorder(Player):
         now = time.time()
         if typ == 1:                            # segments start with a video frame, at its size
             if self.writer is None:
-                self._start_segment(now, frame, aligned=True)
+                self._start_segment(now, frame)
                 logging.info(f"[AVRecorder] recording: {self.path}, next={int(self.next_ts)}")
             elif self._time_jump(now):
+                # an outage longer than the jump limit (or the clock was set): the old segment ends
+                # with its last frame, not at the reconnect hours later
                 logging.debug(f"[AVRecorder] time-jump: {self.url_name}, last={int(self.last_now)}, now={int(now)}")
-                self._rollover("time-jump", now, end_ts=int(now), frame=frame)
+                self._rollover("time-jump", now, end_ts=int(self.last_now), frame=frame)
             elif now >= self.next_ts:
                 self._rollover("interval", now, end_ts=int(self.next_ts), frame=frame)
         elif self.writer is None or self._time_jump(now):
@@ -296,7 +350,7 @@ class AVRecorder(Player):
         # finish the old segment first: if its rename fails, the new one must take another file name
         # (it used to reopen the same name and truncate it)
         self._finish(old_writer, old_path, old_start, end_ts)
-        self._start_segment(now, frame, aligned=True)
+        self._start_segment(now, frame)
         logging.debug(f"[AVRecorder] chunked: {self.url_name}, reason={reason}, "
                       f"{int(old_start)}->{int(end_ts)}, next={int(self.next_ts)}")
 
@@ -308,20 +362,16 @@ class AVRecorder(Player):
             path = f"{base}_{n}{self.ext}"; n += 1
         return path
 
-    def _start_segment(self, now, frame, aligned):
-        self.start_ts = int(now)
-        self.next_ts = self._next_boundary(now) if aligned else now + self.interval_s
-        self.last_now = now
-
+    def _start_segment(self, now, frame):
         sub = self._folder()
         vw = self.vid_worker
         ff = vw.get_ffopts()
         try:
             os.makedirs(sub, exist_ok=True)
-            self.path = self._temp_path(sub)
-            self.writer = AVWriter(
+            path = self._temp_path(sub)
+            writer = AVWriter(
                     self.accel,
-                    path=self.path, width=frame.width, height=frame.height, fps=vw.get_fps(),
+                    path=path, width=frame.width, height=frame.height, fps=vw.get_fps(),
                     encoder=self.encoder or ff.v_encoder,
                     source_codec=vw.get_stream_codec(),
                     enc_v_opts=ff.enc_v,
@@ -338,6 +388,11 @@ class AVRecorder(Player):
             raise
         except Exception as e:
             raise OutputOpenError(f"cannot start a segment: {e}") from e
+        # only now: a failure above must leave no half-set segment state behind
+        self.writer, self.path = writer, path
+        self.start_ts = int(now)
+        self.next_ts = next_boundary(now, self.interval_s)
+        self.last_now = now
 
     def _finish(self, writer, path, start, end_ts):
         try:
@@ -413,10 +468,6 @@ class AVRecorder(Player):
                 logging.warning(f"[AVRecorder] segment left by a crash kept: {dst} (last written {stamp})")
             except OSError as e:
                 logging.error(f"[AVRecorder] cannot recover {path}: {e}")
-
-    def _next_boundary(self, now):
-        i = self.interval_s
-        return (int(now) // i + 1) * i
 
     def _time_jump(self, now):
         if not self.last_now:
