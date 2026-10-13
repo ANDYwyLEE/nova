@@ -626,7 +626,7 @@ class AVWriter:
         self.a_time_base = Fraction(1, self.sample_rate)
         self._add_audio_stream()
 
-    def _audio_stream(self, container):
+    def _audio_stream(self, container, quiet=False):
         stream = container.add_stream(self.a_codec, rate=self.sample_rate)
         a_ctx = stream.codec_context
         a_ctx.sample_rate = self.sample_rate
@@ -635,7 +635,7 @@ class AVWriter:
         except Exception as e: logging.debug(f"[AVWriter] layout {layout} rejected: {e}")
         a_ctx.options.update({k: v for k, v in self.enc_a_opts.items() if k not in ('ar', 'ac')})
         if self.a_codec == "aac":
-            self._cap_aac_bitrate(a_ctx, layout)
+            self._cap_aac_bitrate(a_ctx, layout, quiet)
         return stream
 
     def _add_audio_stream(self):
@@ -646,7 +646,7 @@ class AVWriter:
         self.a_stream = None
         scratch = av.open(self.path, mode="w", format=self.fmt)    # never started: nothing is written
         try:
-            self._audio_stream(scratch).codec_context.open()
+            self._audio_stream(scratch, quiet=True).codec_context.open()
         except Exception as e:
             logging.warning(f"[AVWriter] ⚠️ audio encoder {self.a_codec} does not open at {self.sample_rate} Hz, "
                             f"{self.channels} ch ({_short_err(e)}); no audio track")
@@ -858,7 +858,7 @@ class AVWriter:
         g.configure()
         return g
 
-    def _cap_aac_bitrate(self, a_ctx, layout):
+    def _cap_aac_bitrate(self, a_ctx, layout, quiet=False):
         """FFmpeg's AAC encoder takes at most 6144 bits per frame and channel, i.e. 6 x sample rate x
         channels bit/s (48 kbit/s for an 8 kHz mono camera).  Above that it clamps and logs an ERROR at
         every start - for its own default (69 kbit/s mono, 128 stereo) too.  Pick the cap up front."""
@@ -869,6 +869,7 @@ class AVWriter:
             return
         a_ctx.options.pop('b', None)
         a_ctx.bit_rate = cap
+        if quiet: return
         logging.info(f"[AVWriter] aac {self.sample_rate} Hz {layout}: {want // 1000} kbit/s exceeds the "
                      f"encoder's limit, using {cap // 1000} kbit/s")
 

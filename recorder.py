@@ -282,6 +282,7 @@ class AVRecorder(Player):
         reconnect and its next frame."""
         self.writer = None
         self.last_now = 0
+        was_locked_out, self._locked_out = self._locked_out, False     # (another failure is not a lock-out)
         sub = self._folder()
         os.makedirs(sub, exist_ok=True)
         lock = DirLock(sub)
@@ -289,9 +290,9 @@ class AVRecorder(Player):
             self._locked_out = True
             pid = lock.holder()
             raise WorkerRefused(f"{sub} is being recorded by another Nova process{f' (pid {pid})' if pid else ''}")
-        if self._locked_out:
+        if was_locked_out:
             logging.info(f"[AVRecorder] {sub} is free again: recording")
-        self._locked_out = self._lock_reported = False
+        self._lock_reported = False
         self.lock = lock
         try:
             self._retry_unsaved()
