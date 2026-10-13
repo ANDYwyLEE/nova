@@ -243,8 +243,11 @@ class Nova(QOpenGLWindow):
 
     def set_hlp(self, text=None):
         if not self.is_running: return
-        if text is None:
+        if not text:
+            # Helper.off() emits None through a Signal(str), which arrives here as "": treat both as
+            # "help off", otherwise the dimming layer is rebuilt without text and the window stays dark.
             self.osd_hlp = QImage()
+            self.update()
             return
         w, h = self._widget_wh()
         dim = min(w, h)

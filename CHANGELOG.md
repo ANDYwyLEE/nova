@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-13 — help overlay left the window dark
+
+### Fixed
+- Pressing `H` / `F1` (or clicking the help icon) a second time removed the help text but left its dimming layer behind, so the window stayed at about a third of its brightness until restart. `Helper.off()` emits `None` through a `Signal(str)`, which PySide6 delivers as `""`; `set_hlp` now treats both as "help off" and repaints at once. Found on a camera wall where one window "looked darker than before"; the burnt-in camera timestamp measured 93/255 against 250/255 in a fresh window.
+
 ## 2026-10-13 — Wayland checked, XWayland by default
 
 ### Added
