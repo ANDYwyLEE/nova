@@ -336,6 +336,8 @@ class AVWriter:
         self.live = live
         self.run_flag = True
         self.first_packet_sent = False
+        self.first_packet_t = None      # time.monotonic() of the first muxed packet
+        self.open_failed = None         # why the first mux (connect + header) failed
         self.v_frames = 0
         self.a_frames = 0
         self.last_v_pts = -1
@@ -509,13 +511,20 @@ class AVWriter:
         if self.first_packet_sent:
             self.container.mux(packet)
             return
+        if self.open_failed:
+            # PyAV would run avformat_write_header() a second time on a context whose first header
+            # write failed (ENOSPC on a new segment, a publish refused after connect): a segfault
+            raise OutputOpenError(f"cannot open output: {self.open_failed}")
         try:
             self.container.mux(packet)     # the first packet opens the output: connect, handshake, header
         except av.error.ExitError as e:
-            raise OutputOpenError(f"cannot open output: no answer within {self.timeout[0]:g} s") from e
+            self.open_failed = f"no answer within {self.timeout[0]:g} s" if self.timeout else str(e)
+            raise OutputOpenError(f"cannot open output: {self.open_failed}") from e
         except Exception as e:
-            raise OutputOpenError(f"cannot open output: {e}") from e
+            self.open_failed = str(e) or type(e).__name__
+            raise OutputOpenError(f"cannot open output: {self.open_failed}") from e
         self.first_packet_sent = True
+        self.first_packet_t = time.monotonic()
         logging.debug("[AVWriter] first packet muxed")
 
     def write_video(self, frame):
@@ -660,17 +669,22 @@ class AVWriter:
             self._mux(self.a_stream.encode(f))
             self.a_frames += 1
 
+    def _flush(self):
+        if self.open_failed:
+            return                                    # flushing would mux again (see _write): only free it
+        if self.v_frames and self.v_stream:
+            self._mux(self.v_stream.encode())
+        if self.a_frames and self.a_stream:
+            self._mux(self.a_stream.encode())
+        if self._held_audio:                          # no video packet ever came out
+            for a in self._held_audio: self._write(a)
+            self._held_audio.clear()
+
     def close(self):
         if not self.run_flag: return
         self.run_flag = False
         try:
-            if self.v_frames and self.v_stream:
-                self._mux(self.v_stream.encode())
-            if self.a_frames and self.a_stream:
-                self._mux(self.a_stream.encode())
-            if self._held_audio:                      # no video packet ever came out
-                for a in self._held_audio: self._write(a)
-                self._held_audio.clear()
+            self._flush()
         except Exception as e:
             logging.debug(f"[AVWriter] flush: {e}")
         finally:
