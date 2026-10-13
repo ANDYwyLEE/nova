@@ -627,3 +627,24 @@ def test_intermittent_render_errors_are_reported_once_a_minute(gl_window, monkey
             w.paintGL()
     assert len(render_logs(caplog, logging.ERROR)) == 1 and not w._gl_dead
     assert len(caplog.records) == 1
+
+
+# ---------------------------------------------------------------- P key
+
+class Out:
+    def __init__(self, tty): self.tty, self.text = tty, ""
+    def isatty(self): return self.tty
+    def write(self, s): self.text += s
+    def flush(self): pass
+
+
+def test_p_prints_the_password_only_to_a_terminal(make, monkeypatch):
+    w, core = make("200,100,320,180", None)
+    log = Out(False)                             # nova start: stdout is logs/ID.log
+    monkeypatch.setattr(sys, "stdout", log)
+    key(w, Qt.Key_P)
+    assert "s3cret" not in log.text and "10.0.0.1:554/stream_0" in log.text
+    term = Out(True)                             # nova run: a terminal
+    monkeypatch.setattr(sys, "stdout", term)
+    key(w, Qt.Key_P)
+    assert term.text.strip() == core.get_url()

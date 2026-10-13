@@ -1,4 +1,5 @@
 import re
+import sys
 import traceback
 import queue
 import logging
@@ -30,6 +31,12 @@ OSD_LAYERS = ("txt", "hlp", "bt", "bg")
 
 # Qt 6.6+: the window moved to a screen with another device pixel ratio
 _DPR_CHANGE = getattr(QEvent, "DevicePixelRatioChange", None)
+
+def _is_tty(stream):
+    try:
+        return stream is not None and stream.isatty()
+    except Exception:
+        return False
 
 def _geom_str(g: QRect):
     return f"{g.x()},{g.y()},{g.width()},{g.height()}"
@@ -472,7 +479,10 @@ class Nova(QOpenGLWindow):
         self.core.snapshot(self.curr_df)
 
     def print_info(self):
-        print(self.core.get_url())   # explicit user action (P key): full URL on purpose
+        """P: print the camera URL. With the password only to a terminal: under the launcher stdout is
+        logs/ID.log, where it would sit in plain text (log records are masked, print() is not)."""
+        url = self.core.get_url()
+        print(url if _is_tty(sys.stdout) else mask_url(url), flush=True)
 
     def keyPressEvent(self, e): self.key_hdlr.press(e)
     def keyReleaseEvent(self, e): self.key_hdlr.release(e)
