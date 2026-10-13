@@ -43,7 +43,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 
 | Message | Meaning | What to do |
 |---|---|---|
-| `[AVRecorder] worker stopped: …` then `[AVRecorder] restarting in N s` | the encoder or the disk failed | the message says which (`No space left`, `Permission denied`, an encoder error); recording starts again by itself (5, 10, 20, 40 s, then every 60 s) once the cause is gone |
+| `[AVRecorder] recording failed: …` then `[AVRecorder] restarting in N s` | the encoder or the disk failed | the message says which (`No space left`, `Permission denied`, an encoder error); recording starts again by itself (5, 10, 20, 40 s, then every 60 s) once the cause is gone |
 | `[AVRecorder] not recording: … another Nova process (pid N) …` | a second Nova runs the same camera and its recorder holds the folder | stop one of them (`nova status`, `ps`); this one takes over within a minute after the other stops |
 | `segment left by a crash kept: …_recovered.mp4` | the previous run was killed (power loss, OOM, `kill -9`) mid-segment | nothing: the file plays up to its last fragment |
 | `cannot rename … it keeps its name, the next segment is written next to it` | the finished segment could not be renamed (permissions, a file locked by a player on Windows) | the rename is tried again later; the file is complete under its temporary name |
