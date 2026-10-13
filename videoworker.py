@@ -48,6 +48,8 @@ HWACCEL_UNSAFE_FOR_OPEN = {"qsv", "vulkan", "drm", "opencl"}
 _CONNECT_IN_PROGRESS = {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
                         getattr(errno, "WSAEWOULDBLOCK", 10035)}
 
+FPS_MAX = 120               # a larger "frame rate" is a clock rate (90000), not frames
+
 PATTERN = re.compile(r'^\[[^\]]+\]\s*([^:]+)')
 
 def _short_err(e: Exception) -> str:
@@ -177,8 +179,8 @@ class VideoWorker(QThread):
         self.enc_a_opts = self.ffopts.enc_a
 
         self.fps = 0
-        self.w_vid = 0
-        self.h_vid = 0
+        self._size = (0, 0)             # (w, h) of the last picture; one tuple, so readers never see half an update
+        self.last_frame_time = 0.0      # time.monotonic() of the last decoded video frame (0.0: none yet)
         self.sample_rate = 0
         self.channels = 0
         self.audio_q = queue.Queue(maxsize=10)
@@ -194,12 +196,17 @@ class VideoWorker(QThread):
         self._unreachable = None        # last probe failure, to log state changes once
         self._url_warned = False
         self._url_hint = ""             # appended to a failure overlay when the URL cannot be parsed
+        self._last_fail = None          # last connection failure logged (repeats are logged at DEBUG)
+        self._fps_warned = False
         self.codec_name = "h264"
         self._clone_warned = False
 
-    def width(self): return self.w_vid
-    def height(self): return self.h_vid
-    def ratio(self): return self.w_vid / self.h_vid if self.h_vid else 1.0
+    def width(self): return self._size[0]
+    def height(self): return self._size[1]
+    def size(self): return self._size
+    def ratio(self):
+        w, h = self._size
+        return w / h if w > 0 and h > 0 else 1.0
 
     def get_fps(self): return self.fps
     def get_sample_rate(self): return self.sample_rate
@@ -249,7 +256,7 @@ class VideoWorker(QThread):
             except Exception as e:
                 errstr = _short_err(e)
                 self.stat_sig.emit(f"Stream error:\n{errstr}")
-                logging.error(f"[VideoWorker] Stream exception: {_mask(str(e))}")
+                self._log_fail(errstr, f"[VideoWorker] Stream exception: {_mask(str(e))}", logging.ERROR)
                 logging.trace(f"[VideoWorker] Exception Traceback: {traceback.format_exc()}")
             finally:
                 try: container.close()
@@ -273,6 +280,14 @@ class VideoWorker(QThread):
             logging.debug("[VideoWorker] stopped.")
             return True
         return not self.isRunning()
+
+    def _log_fail(self, key, msg, level=logging.WARNING):
+        """Log a connection failure when it differs from the previous one; at DEBUG while it repeats."""
+        if key != self._last_fail:
+            self._last_fail = key
+            logging.log(level, msg)
+        else:
+            logging.debug(msg)
 
     # ------------------------------------------------------------------ connection
     def _resolve_source(self):
@@ -343,6 +358,7 @@ class VideoWorker(QThread):
                 if reason != self._unreachable:
                     logging.info(f"[VideoWorker] unreachable, retrying every 10 s: {reason} [{_mask(file)}]")
                     self._unreachable = reason
+                    self._last_fail = None
                 else:
                     logging.debug(f"[VideoWorker] still unreachable: {reason}")
                 self.clock.sleep(10000)
@@ -350,18 +366,16 @@ class VideoWorker(QThread):
             if self._unreachable is not None:
                 logging.info(f"[VideoWorker] host answers again [{_mask(file)}]")
                 self._unreachable = None
+                self._last_fail = None
 
         logging.debug(f"[VideoWorker] av.open({_mask(file)}, format={fmt}, options={open_opts})")
         try:
             return av.open(file, **kwargs)
-        except (av.error.TimeoutError, av.error.OSError) as e:
-            self.stat_sig.emit(f"Failed:\n{_short_err(e)}{self._url_hint}")
-            logging.debug(f"[VideoWorker] open failed: {_mask(str(e))}")
-            self.clock.sleep(10000)
         except Exception as e:
             errstr = _short_err(e)
             self.stat_sig.emit(f"Failed:\n{errstr}{self._url_hint}")
-            logging.error(f"[VideoWorker] open exception: {_mask(str(e))}")
+            level = logging.WARNING if isinstance(e, (av.error.TimeoutError, av.error.OSError)) else logging.ERROR
+            self._log_fail(errstr, f"[VideoWorker] open failed, retrying every 10 s: {_mask(str(e))}", level)
             logging.trace(f"[VideoWorker] Exception Traceback: {traceback.format_exc()}")
             self.clock.sleep(10000)
         return None
@@ -546,6 +560,26 @@ class VideoWorker(QThread):
             logging.debug(f"[VideoWorker] explicit open of {codec_name} failed, decoding lazily: {_short_err(e)}")
         return base, False
 
+    def _frame_rate(self, video_stream):
+        """The camera's frame rate, from the stream header; a value above FPS_MAX is a clock rate
+        (RTP's 90 kHz), not a frame rate."""
+        for rate in (video_stream.average_rate, video_stream.guessed_rate):
+            try:
+                r = float(rate) if rate else 0.0
+            except (TypeError, ValueError, ZeroDivisionError):
+                r = 0.0
+            if 0 < r <= FPS_MAX:
+                return max(1, int(round(r)))
+        fps = min(FPS_MAX, max(1, int(self.fps_disp or 30)))
+        msg = (f"[VideoWorker] cannot read the video frame rate (average {video_stream.average_rate}, "
+               f"guessed {video_stream.guessed_rate}); assuming {fps} fps")
+        if not self._fps_warned:
+            self._fps_warned = True
+            logging.warning(msg)
+        else:
+            logging.debug(msg)
+        return fps
+
     # ------------------------------------------------------------------ streaming
     def _stream_loop(self, container, u_disp):
         video_stream = next((s for s in container.streams if s.type == "video"), None)
@@ -559,22 +593,12 @@ class VideoWorker(QThread):
         context, is_hw = self._setup_video_decoder(video_stream)
         audio_context = audio_stream.codec_context if audio_stream else None
 
-        fps_cap = 0
-        try:
-            if video_stream.average_rate: fps_cap = int(round(float(video_stream.average_rate)))
-            elif video_stream.guessed_rate: fps_cap = int(round(float(video_stream.guessed_rate)))
-        except Exception:
-            fps_cap = 0
-        if fps_cap <= 0:
-            fps_cap = self.fps_disp
-            logging.warning(f"[VideoWorker] cannot read the video frame rate; assuming {fps_cap} fps")
+        fps_cap = self._frame_rate(video_stream)
         self.fps = fps_cap
 
         sk = Skipper(maxfps=self.fps_disp, o_fps=fps_cap)
         fr = FrameRator()
         logging.verbose(f"[VideoWorker] fps_disp:{self.fps_disp}, fps_cap:{fps_cap}")
-
-        self.w_vid, self.h_vid = 0, 0
 
         streams = [video_stream]
         if audio_stream is not None:
@@ -601,14 +625,16 @@ class VideoWorker(QThread):
                     w, h = frame.width, frame.height
                     if w <= 0 or h <= 0: continue
                     pix_fmt = frame.format.name
+                    self.last_frame_time = time.monotonic()
 
                     if not first_frame_logged:
                         first_frame_logged = True
+                        self._last_fail = None
                         logging.info(f"[VideoWorker] First frame ({context.codec.name}, {'HW' if is_hw else 'SW'}) "
                                      f"pix_fmt={pix_fmt} {w}x{h}")
 
-                    if w != self.w_vid or h != self.h_vid:
-                        self.w_vid, self.h_vid = w, h
+                    if (w, h) != self._size:
+                        self._size = (w, h)
                         self.sz_sig.emit(w, h)
                         logging.verbose(f"[VideoWorker] emit video width:{w}, height:{h}")
 
