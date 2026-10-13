@@ -549,7 +549,8 @@ class VideoWorker(QThread):
     def _dispatch_av(self, typ, frame):
         """Hand decoded frames to the recorder/streamer queues without copying.
         PyAV frames are independent refcounted buffers, so the first consumer gets the original;
-        only when both are active is one clone made for the second."""
+        only when both are active is one copy made for the second (each writer sets pts and
+        picture type on the frame it gets)."""
         rec, strm = self.rec_on, self.stream_on
         if not (rec or strm): return
         if rec and strm:
@@ -564,20 +565,45 @@ class VideoWorker(QThread):
 
     def _clone_frame(self, frame):
         try:
-            if isinstance(frame, av.VideoFrame):
-                c = av.VideoFrame.from_ndarray(frame.to_ndarray(), format=frame.format.name)
-            else:
-                c = av.AudioFrame.from_ndarray(frame.to_ndarray(), format=frame.format.name, layout=frame.layout.name)
-                c.sample_rate = frame.sample_rate
-            c.pts = frame.pts
-            c.time_base = frame.time_base
-            return c
+            return _copy_frame(frame)
         except Exception as e:
             if not self._clone_warned:
                 self._clone_warned = True
-                logging.error(f"[VideoWorker] frame clone failed ({frame.format.name}): {e}. "
+                logging.error(f"[VideoWorker] frame copy failed ({frame.format.name}): {e}. "
                               f"Streaming copy skipped while recording is on.")
             return None
+
+
+def _copy_plane(src, dst, rows):
+    """Copy `rows` rows of a plane; line sizes may differ (alignment), the visible bytes fit both."""
+    ls, ld = src.line_size, dst.line_size
+    if ls <= 0 or ld <= 0:
+        raise ValueError(f"unsupported line size {ls}/{ld}")
+    n = min(ls, ld)
+    s = np.frombuffer(memoryview(src), dtype=np.uint8, count=ls * rows)
+    d = np.frombuffer(memoryview(dst), dtype=np.uint8, count=ld * rows)
+    d.reshape(rows, ld)[:, :n] = s.reshape(rows, ls)[:, :n]
+
+def _copy_frame(frame):
+    """An independent copy of a decoded frame (own buffers, own pts), for any pixel / sample format
+    and any size: yuvj422p from MJPEG, p010le from 10-bit HEVC, odd widths ...  frame.reformat() to the
+    same format returns the frame itself, and to_ndarray() supports only some formats."""
+    if isinstance(frame, av.VideoFrame):
+        c = av.VideoFrame(frame.width, frame.height, frame.format.name)
+        for s, d in zip(frame.planes, c.planes):
+            _copy_plane(s, d, min(s.height, d.height))
+        for attr in ("colorspace", "color_range", "color_primaries", "color_trc", "chroma_location"):
+            try: setattr(c, attr, getattr(frame, attr))
+            except Exception: pass
+    else:
+        c = av.AudioFrame(format=frame.format.name, layout=frame.layout, samples=frame.samples)
+        c.sample_rate = frame.sample_rate
+        for s, d in zip(frame.planes, c.planes):
+            n = min(s.buffer_size, d.buffer_size)
+            np.frombuffer(memoryview(d), dtype=np.uint8, count=n)[:] = np.frombuffer(memoryview(s), dtype=np.uint8, count=n)
+    c.pts = frame.pts
+    c.time_base = frame.time_base
+    return c
 
 
 def _report_unused_dec(ctx, user_opts):
