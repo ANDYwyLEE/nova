@@ -106,6 +106,11 @@ class NovaGL(Nova):
 
     def initializeGL(self):
         try:
+            # On Wayland Qt first makes the context current without a surface; NVIDIA's EGL then
+            # leaves the window's draw buffer at GL_NONE, so everything drawn was discarded and a
+            # native Wayland window stayed empty. Mesa and GLX start at GL_BACK.
+            if self.defaultFramebufferObject() == 0 and glGetIntegerv(GL_DRAW_BUFFER) == GL_NONE:
+                glDrawBuffer(GL_BACK)
             glEnable(GL_BLEND)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             glClearColor(0.0, 0.0, 0.0, 0.8)

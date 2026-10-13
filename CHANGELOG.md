@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-13 — native Wayland windows on NVIDIA show the picture
+
+### Fixed
+- `--opengl` in a native Wayland window (`QT_QPA_PLATFORM=wayland`) stayed empty with the NVIDIA driver. Cause: Qt's Wayland platform first makes a new desktop-OpenGL context current without a surface (to read back its format), and NVIDIA's EGL then keeps the window's draw buffer at `GL_NONE` once the window surface is bound, so every draw call was discarded and the compositor showed the transparent, never-drawn buffer. Mesa, OpenGL ES contexts and GLX all start at `GL_BACK`, and windows with client-side decorations render into an FBO first, which is why only Nova's frameless window was hit. `initializeGL` now resets the draw buffer to `GL_BACK` when it finds `GL_NONE`. Reproduced without Qt in a 100-line EGL program (surfaceless-first `eglMakeCurrent` → `GL_DRAW_BUFFER` 0 on NVIDIA 595.99, `GL_BACK` on Mesa 26.0), and verified with Nova in a nested sway on an RTX 4090: empty before, the picture after; X11 unchanged.
+
 ## 2026-10-13 — live streams reconnect
 
 ### Added

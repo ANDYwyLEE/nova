@@ -32,7 +32,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 |---|---|---|
 | black window, log says `Shader Error` or `initializeGL Error` | no OpenGL 3.3 core context (remote desktop, old GPU, some VMs) | drop `--opengl` (QPainter renderer) or install a Mesa with llvmpipe |
 | windows open centred or tiled, keyboard moves do nothing | native Wayland window (`QT_QPA_PLATFORM=wayland`): the compositor ignores client-side positioning | drop that setting (Nova then uses XWayland, where GNOME and KDE honour positions), or on sway / Hyprland / KDE import rules from `nova layout export NAME …` (user guide, Layouts) |
-| window exists but shows nothing (Wayland, NVIDIA) | NVIDIA's EGL does not display frameless OpenGL windows on Wayland | run under XWayland: unset `QT_QPA_PLATFORM` (the default) |
+| window exists but shows nothing (native Wayland, NVIDIA, `--opengl`) | an older Nova: the OpenGL draw buffer was left at `GL_NONE` (fixed 2026-10-13) | update, or run under XWayland: unset `QT_QPA_PLATFORM` (the default) |
 | colours slightly off (greenish skin tones) | camera signals no colour space | Nova assumes BT.709 above 576 lines, BT.601 below; cameras that lie cannot be helped without `-vf colorspace=…` |
 | high CPU with `--opengl` and `--accel cuda` | the stream is not H.264/HEVC (MJPEG cameras decode in software) | `--ffmpeg "-skip_frame nokey"` for a cheap preview, or `-f 10` |
 | the window is huge on a 4K camera | windows default to the saved geometry, first run uses 320×180 | **Home** gives 1:1, right-click fits, **PgDown** shrinks |
