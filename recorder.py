@@ -209,6 +209,7 @@ class AVRecorder(Player):
             return
         self.flag = True
         self._retries = 0
+        self._lock_reported = False
         self._start_worker()
         self.stat_sig.emit(True)
         logging.info(f"[AVRecorder] starting: {self.url_name}, interval={self.interval_s}s")

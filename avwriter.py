@@ -537,8 +537,8 @@ class AVWriter:
         self._v_opts_checked = self._a_opts_checked = False
         self.a_frames = 0
         self._a_conv_key = None
-        self.container = self._open_container()
         try:
+            self.container = self._open_container()
             self._setup_video(self._v_tag)
             if self.a_stream is not None:
                 self._add_audio_stream()
