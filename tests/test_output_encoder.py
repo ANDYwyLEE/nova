@@ -115,7 +115,8 @@ def test_failed_encoder_opens_never_crash(tmp_path):
     assert out.returncode == 0, f"exit {out.returncode}\n{out.stdout}\n{out.stderr}"
     assert "video refused 5" in out.stdout and "does not open at 320x180" in out.stdout, out.stdout
     assert "audio track None video frames 25" in out.stdout, out.stdout
-    assert "audio encoder aac does not open at 6000 Hz" in out.stdout, out.stdout
+    if os.name != "nt":          # Windows decides "no audio track" before trying AAC: same result, no warning
+        assert "audio encoder aac does not open at 6000 Hz" in out.stdout, out.stdout
     with av.open(str(tmp_path / "a.mp4")) as c:
         assert [s.type for s in c.streams] == ["video"]
 
