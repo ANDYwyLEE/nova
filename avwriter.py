@@ -2,6 +2,7 @@
 import re
 import os
 import sys
+import stat
 import time
 import threading
 import tempfile
@@ -11,7 +12,7 @@ from fractions import Fraction
 import av
 from util import LINUX, WINDOWS, MAC, WSL, IS_PI, MSYS, get_os_type
 
-try: from filelock import FileLock
+try: from filelock import FileLock, Timeout
 except ImportError:
     print("Error: filelock is required. Run 'pip install filelock'")
     sys.exit(1)
@@ -80,6 +81,29 @@ def parse_bitrate(v):
         return None
 
 
+def _encoder_lock_path():
+    """Per-user path of the probe lock. A fixed name in the shared temp dir can be created first by
+    another local user, and every probe then waited the lock's 15 s and ended at libx264.
+    None: no private place for it (probe without the lock)."""
+    rt = os.environ.get("XDG_RUNTIME_DIR")
+    if rt and os.path.isdir(rt):
+        return os.path.join(rt, "nova_encoder_init.lock")      # 0700, the user's own (systemd)
+    base = tempfile.gettempdir()
+    if not hasattr(os, "getuid"):
+        return os.path.join(base, "nova_encoder_init.lock")    # Windows: the temp dir is per user
+    uid = os.getuid()
+    d = os.path.join(base, f"nova-{uid}")
+    try:
+        try: os.mkdir(d, 0o700)
+        except FileExistsError: pass
+        st = os.lstat(d)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != uid or st.st_mode & 0o077:
+        return None                                            # not ours, or open to others
+    return os.path.join(d, "encoder_init.lock")
+
+
 class EncoderManager:
     """Picks a working encoder once per (accel, user encoder, format) and caches it.
     A cross-process file lock keeps 15 simultaneously starting cameras from probing the GPU at once."""
@@ -91,6 +115,7 @@ class EncoderManager:
             if cls._instance is None:
                 cls._instance = super(EncoderManager, cls).__new__(cls)
                 cls._instance._cache = {}
+                cls._instance._lock_broken = False
             return cls._instance
 
     def get_encoder(self, accel, user_encoder, source_codec, enc_opts, allowed=None):
@@ -100,24 +125,40 @@ class EncoderManager:
         if hit:
             logging.debug(f"[EncoderManager] ⚡ cached encoder: {hit}")
             return hit
-        lock_path = os.path.join(tempfile.gettempdir(), "nova_encoder_init.lock")
-        file_lock = FileLock(lock_path, timeout=15)
         with self._lock:
             hit = self._cache.get(key)
             if hit: return hit
             try:
-                with file_lock:
-                    old_level = av.logging.get_level()
-                    av.logging.set_level(av.logging.PANIC)
-                    try:
-                        enc = self._perform_hw_test(accel, user_encoder, source_codec, enc_opts, allowed)
-                    finally:
-                        av.logging.set_level(old_level)
-                    self._cache[key] = enc
-                    return enc
+                enc = self._probe_serialised(accel, user_encoder, source_codec, enc_opts, allowed)
             except Exception as e:
                 logging.error(f"[EncoderManager] encoder probe failed: {e}")
                 return "libx264"
+            self._cache[key] = enc
+            return enc
+
+    def _probe_serialised(self, *args):
+        """One process probes at a time. A lock that cannot be had (held for 15 s, unusable path)
+        only costs that serialisation, never the hardware encoder: probe without it from then on."""
+        path = None if self._lock_broken else _encoder_lock_path()
+        lock = None
+        if path:
+            lock = FileLock(path, timeout=15)
+            try:
+                lock.acquire()
+            except (Timeout, OSError) as e:
+                lock = None
+                self._lock_broken = True
+                logging.warning(f"[EncoderManager] ⚠️ probe lock {path} unusable ({e or 'busy for 15 s'}); probing without it")
+        try:
+            old_level = av.logging.get_level()
+            av.logging.set_level(av.logging.PANIC)
+            try:
+                return self._perform_hw_test(*args)
+            finally:
+                av.logging.set_level(old_level)
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _candidates(self, accel, user_encoder, source_codec, allowed):
         src_fam = _family(source_codec)
@@ -180,8 +221,26 @@ class EncoderManager:
 NET_SCHEMES = ('rtmp', 'srt', 'http', 'tcp', 'udp', 'rtp')
 LIVE_OPEN_TIMEOUT = 30.0 # s; YouTube took 9 s to accept a publish
 
+NET_TIMEOUT_US = 10_000_000
+_bad_timeout_warned = False
+
 def _net_timeout_us():
-    return int(os.getenv("NOVA_TIMEOUT", "10000000"))
+    """NOVA_TIMEOUT in microseconds. A value that is not a positive number used to raise here, and
+    the stream never started; it now falls back to the default with one warning."""
+    global _bad_timeout_warned
+    v = os.getenv("NOVA_TIMEOUT")
+    if v is None or not v.strip():
+        return NET_TIMEOUT_US
+    try:
+        us = int(float(v))
+        if us > 0: return us
+    except (ValueError, OverflowError):
+        pass
+    if not _bad_timeout_warned:
+        _bad_timeout_warned = True
+        logging.warning(f"[AVWriter] NOVA_TIMEOUT={v!r} is not a positive number of microseconds; "
+                        f"using {NET_TIMEOUT_US} ({NET_TIMEOUT_US // 1_000_000} s)")
+    return NET_TIMEOUT_US
 
 def is_network_target(path):
     return bool(path) and path.lower().startswith(NET_SCHEMES)
