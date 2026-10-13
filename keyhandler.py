@@ -8,6 +8,14 @@ class Modifier:
         self.shift = False
         self.space = False
 
+# Keys that act again while held down (auto-repeat): moving, resizing and zooming. Everything else acts once
+# per press: a held R toggled recording on and off (each off() blocks while the file is closed), S wrote a
+# snapshot per repeat, F made the window flicker between fullscreen and normal.
+REPEATING = {
+    Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right, Qt.Key_PageUp, Qt.Key_PageDown,
+    Qt.Key_Plus, Qt.Key_Equal, Qt.Key_I, Qt.Key_Minus, Qt.Key_Underscore, Qt.Key_O,
+}
+
 class KeyHdlr:
     def __init__(self, parent):
         self.p = parent # parent is Nova class
@@ -34,14 +42,15 @@ class KeyHdlr:
         if k == Qt.Key_Shift: self.m.shift = True
         if k == Qt.Key_Space: self.m.space = True
 
+        if event.isAutoRepeat() and k not in REPEATING: return
+
         # Actions
         if k ==  Qt.Key_C and self.m.ctrl:
             self.p.close()
 
         elif k == Qt.Key_Escape:
             if self.p.is_fullscreen(): self.p.show_normal()
-            self.p.zoomer.reset()
-            self.p.set_bt(); self.p.update()
+            self.p.reset_zoom()
 
         elif k == Qt.Key_F or k == Qt.Key_F11:
             if self.p.is_fullscreen(): self.p.show_normal()
@@ -101,7 +110,7 @@ class KeyHdlr:
 
         elif k == Qt.Key_B:
             self.p.border = not self.p.border
-            self.p.set_bg(border='orange' if self.p.border else 'none')
+            self.p.set_bg(self.p._border_color())
 
     def release(self, event):
         k = event.key()

@@ -1,17 +1,24 @@
-import traceback, logging, sys, ctypes
+import traceback, logging, sys, ctypes, time
 import numpy as np
 from util import WINDOWS
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QImage, QSurfaceFormat
+from PySide6.QtGui import QImage, QSurfaceFormat, QPainter, QColor
 
 try: from OpenGL.GL import *
 except ImportError:
     print("Error: PyOpenGL is required. Run 'pip install PyOpenGL PyOpenGL_accelerate'")
     sys.exit(1)
 
-from view import Nova
+from view import Nova, OSD_LAYERS
 
 GL_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FE
+
+# A paintGL that keeps failing (a lost context after a driver reset, a call the driver rejects) used to log a
+# full traceback for every frame, about 30 a second, and leave the window black.
+GL_REBUILD_AFTER = 30      # consecutive failed frames (about a second) before the GL objects are rebuilt, once
+GL_GIVE_UP_AFTER = 60      # consecutive failed frames before OpenGL rendering is given up for this window
+GL_LOG_INTERVAL = 60.0     # seconds between render error reports
+RENDER_FAILED = "Rendering failed (OpenGL)\nsee the log"
 GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FF
 
 VERTEX_SHADER = """
@@ -82,13 +89,18 @@ def _enum_int(v, default):
 class NovaGL(Nova):
     def __init__(self, core, grid=20, border=False, geometry=None, zoom=None):
         self.shader_program = None
-        self.VAO = self.VBO = self.EBO = self.VAO_static = None
+        self.VAO = self.VBO = self.EBO = self.VAO_static = self.VBO_static = None
         self.video_texture = None
         self.plane_tex = []
         self.osd_texture_ids = {}
         self.texture_cache = {}
         self.loc = {}
         self.max_anisotropy = 0.0
+        self._gl_failures = 0          # consecutive frames that failed to render
+        self._gl_unreported = 0        # failures since the last error report
+        self._gl_reported_at = None    # time.monotonic() of the last error report
+        self._gl_rebuilt_at = None
+        self._gl_dead = False          # given up: only the OSD is drawn, with the error message
         super().__init__(core, grid, border, geometry=geometry, zoom=zoom)
 
     def _surface_format(self):
@@ -105,6 +117,11 @@ class NovaGL(Nova):
         return fmt
 
     def initializeGL(self):
+        if not self._init_gl():
+            QTimer.singleShot(0, self.close)
+
+    def _init_gl(self):
+        """Create the shader program, buffers and textures in the current context. False on failure (logged)."""
         try:
             # On Wayland Qt first makes the context current without a surface; NVIDIA's EGL then
             # leaves the window's draw buffer at GL_NONE, so everything drawn was discarded and a
@@ -165,7 +182,7 @@ class NovaGL(Nova):
 
             # Setup Static VAO for OSD
             self.VAO_static = glGenVertexArrays(1)
-            vbo_s = glGenBuffers(1)
+            self.VBO_static = vbo_s = glGenBuffers(1)
             glBindVertexArray(self.VAO_static)
             glBindBuffer(GL_ARRAY_BUFFER, vbo_s)
             glBufferData(GL_ARRAY_BUFFER, v_dyn.nbytes, v_dyn, GL_STATIC_DRAW)
@@ -189,9 +206,10 @@ class NovaGL(Nova):
             glViewport(0, 0, self.width(), self.height())
             ver = glGetString(GL_VERSION)
             logging.debug(f"[NovaGL] initializeGL done. GL {ver.decode() if ver else '?'}")
+            return True
         except Exception:
             logging.error(f"[NovaGL] initializeGL Error: {traceback.format_exc()}")
-            QTimer.singleShot(0, self.close)
+            return False
 
     def _set_attribs(self):
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 20, ctypes.c_void_p(0))
@@ -200,38 +218,108 @@ class NovaGL(Nova):
         glEnableVertexAttribArray(1)
 
     def paintGL(self):
-        if not self.is_running or not self.shader_program: return
+        if not self.is_running: return
+        if self._gl_dead:
+            self._paint_failed()
+            return
+        if not self.shader_program: return
+        try:
+            self._paint_frame()
+        except Exception as e:
+            self._frame_failed(e)
+            return
+        if self._gl_failures:
+            if self._gl_failures >= GL_REBUILD_AFTER:         # the counterpart of the rebuild warning
+                logging.info(f"[NovaGL] rendering works again after {self._gl_failures} failed frames")
+            self._gl_failures = 0
+
+    def _paint_frame(self):
         glClear(GL_COLOR_BUFFER_BIT)
         glUseProgram(self.shader_program)
-        try:
-            df = self.curr_df
-            if df is not None:
-                glDisable(GL_BLEND)
-                if df.kind == "yuv":
-                    mode = 1 if df.pix_fmt == "nv12" else 2
-                    self._upload_planes(df)
-                    self._draw_video(mode, df)
-                else:
-                    self._upload_rgba(self.video_texture, df.qimg, downscaled=self.zoomer.scale() < 1)
-                    glActiveTexture(GL_TEXTURE0)
-                    glBindTexture(GL_TEXTURE_2D, self.video_texture)
-                    self._draw_video(0, df)
-                glEnable(GL_BLEND)
+        df = self.curr_df
+        if df is not None:
+            glDisable(GL_BLEND)
+            if df.kind == "yuv":
+                mode = 1 if df.pix_fmt == "nv12" else 2
+                self._upload_planes(df)
+                self._draw_video(mode, df)
+            else:
+                self._upload_rgba(self.video_texture, df.qimg, downscaled=self.zoomer.scale() < 1)
+                glActiveTexture(GL_TEXTURE0)
+                glBindTexture(GL_TEXTURE_2D, self.video_texture)
+                self._draw_video(0, df)
+            glEnable(GL_BLEND)
 
-            # OSD layers are premultiplied RGBA
-            glUniform1i(self.loc["mode"], 0)
-            glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE)
-            glActiveTexture(GL_TEXTURE0)
-            for k in ['bg', 'hlp', 'bt', 'txt']:
-                qimg = getattr(self, f"osd_{k}")
-                if not qimg.isNull():
-                    tid = self.osd_texture_ids[k]
-                    self._upload_osd(tid, qimg, nearest=(k == 'bg'))
-                    self._draw_quad_fill(tid)
+        # OSD layers are premultiplied RGBA
+        glUniform1i(self.loc["mode"], 0)
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE)
+        glActiveTexture(GL_TEXTURE0)
+        for k in OSD_LAYERS:
+            qimg = getattr(self, f"osd_{k}")
+            if not qimg.isNull():
+                tid = self.osd_texture_ids[k]
+                self._upload_osd(tid, qimg, nearest=(k == 'bg'))
+                self._draw_quad_fill(tid)
+        glBindVertexArray(0)
+        glUseProgram(0)
+
+    def _frame_failed(self, e):
+        """Count a failed frame: report it at most every GL_LOG_INTERVAL, rebuild the GL objects once after
+        GL_REBUILD_AFTER failures in a row, give up after GL_GIVE_UP_AFTER."""
+        self._gl_failures += 1
+        self._gl_unreported += 1
+        now = time.monotonic()
+        if self._gl_reported_at is None or now - self._gl_reported_at >= GL_LOG_INTERVAL:
+            more = f" ({self._gl_unreported - 1} more failed frames since the last report)" if self._gl_unreported > 1 else ""
+            logging.error(f"[NovaGL] Render Error{more}: {traceback.format_exc()}")
+            self._gl_reported_at = now
+            self._gl_unreported = 0
+        try:                                     # leave a clean state for the next attempt
             glBindVertexArray(0)
             glUseProgram(0)
         except Exception:
-            logging.error(f"[NovaGL] Render Error: {traceback.format_exc()}")
+            pass
+        n = self._gl_failures
+        if n == GL_REBUILD_AFTER and (self._gl_rebuilt_at is None or now - self._gl_rebuilt_at >= GL_LOG_INTERVAL):
+            logging.warning(f"[NovaGL] {n} frames in a row failed to render; rebuilding the OpenGL state")
+            self._gl_rebuilt_at = now
+            if not self._rebuild_gl():
+                self._give_up(e)
+        elif n >= GL_GIVE_UP_AFTER:
+            self._give_up(e)
+
+    def _rebuild_gl(self):
+        self._delete_gl_objects()
+        self.shader_program = None
+        self.texture_cache.clear()
+        return self._init_gl()
+
+    def _give_up(self, e):
+        self._gl_dead = True
+        ctx = self.context()
+        lost = " (the OpenGL context is lost)" if ctx is not None and not ctx.isValid() else ""
+        logging.error(f"[NovaGL] rendering keeps failing{lost}, {self._gl_failures} frames in a row, last error: "
+                      f"{e!r}. OpenGL rendering stopped for this window; restart the camera (nova restart ID) "
+                      f"or run it without --opengl.")
+        self.show_render_error(RENDER_FAILED)
+
+    def _paint_failed(self):
+        """After giving up: no video, only the OSD (with the error message) through QPainter, if the context
+        can still draw at all. Errors here are not reported again."""
+        try:
+            glBindVertexArray(0)
+            glUseProgram(0)
+        except Exception:
+            pass
+        try:
+            p = QPainter(self)
+            p.setCompositionMode(QPainter.CompositionMode_Source)
+            p.fillRect(0, 0, self.width(), self.height(), QColor(0, 0, 0, 204))
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            self._draw_osd(p)
+            p.end()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ texture uploads
     def _upload_osd(self, tid, qimg, nearest=False):
@@ -329,7 +417,7 @@ class NovaGL(Nova):
 
     def _get_fit_model(self):
         ww, wh = self.width(), self.height()
-        tr = self.zoomer.ratio() if self.zoomer.is_zoom() else self.core.ratio()
+        tr = self._pic_ratio()
         if not tr: tr = 1.0
         vw, vh = (wh * tr, float(wh)) if (ww/wh > tr) else (float(ww), ww/tr)
         model = np.identity(4, dtype=np.float32)
@@ -373,17 +461,28 @@ class NovaGL(Nova):
         glBindBuffer(GL_ARRAY_BUFFER, self.VBO)
         glBufferSubData(GL_ARRAY_BUFFER, 0, data.nbytes, data)
 
+    def _delete_gl_objects(self):
+        """Delete what _init_gl created, in the current context. Errors (a lost context) are ignored."""
+        objs = [(glDeleteVertexArrays, v) for v in (self.VAO, self.VAO_static)]
+        objs += [(glDeleteBuffers, b) for b in (self.VBO, self.EBO, self.VBO_static)]
+        objs += [(glDeleteTextures, t) for t in [self.video_texture] + list(self.plane_tex) + list(self.osd_texture_ids.values())]
+        for fn, obj in objs:
+            if obj:
+                try: fn(1, [obj])
+                except Exception as e: logging.debug(f"[NovaGL] delete: {e}")
+        if self.shader_program:
+            try: glDeleteProgram(self.shader_program)
+            except Exception as e: logging.debug(f"[NovaGL] delete: {e}")
+        self.VAO = self.VBO = self.EBO = self.VAO_static = self.VBO_static = None
+        self.video_texture = None
+        self.plane_tex = []
+        self.osd_texture_ids = {}
+
     def cleanup(self):
         if not self.is_running: return
         try:
             self.makeCurrent()
-            for v in [self.VAO, self.VAO_static]:
-                if v: glDeleteVertexArrays(1, [v])
-            for b in [self.VBO, self.EBO]:
-                if b: glDeleteBuffers(1, [b])
-            for t in [self.video_texture] + list(self.plane_tex) + list(self.osd_texture_ids.values()):
-                if t: glDeleteTextures(1, [t])
-            if self.shader_program: glDeleteProgram(self.shader_program)
+            self._delete_gl_objects()
             self.doneCurrent()
         except Exception as e:
             logging.debug(f"[NovaGL] cleanup: {e}")

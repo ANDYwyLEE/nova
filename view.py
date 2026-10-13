@@ -1,4 +1,5 @@
 import re
+import sys
 import traceback
 import queue
 import logging
@@ -18,10 +19,34 @@ from fonts import MONO
 from util import WSL, MAC, WINDOWS, mask_url, window_title
 
 GS = 20 # default grid size
+MIN_VISIBLE = 40          # px of a window that must be on some screen for it to count as reachable
+SCREEN_SETTLE_MS = 5000   # after a monitor change, wait this long for the window manager to finish moving windows
 
 # OSD layers are painted premultiplied: QPainter composes them natively and the OpenGL path
 # uploads them without a per-frame format conversion.
 OSD_FORMAT = QImage.Format_RGBA8888_Premultiplied
+# Drawing order of the OSD layers, bottom to top, in both renderers: the status text ("Connecting...",
+# "Unreachable...") with its dimming under the help overlay and the control strip, the border on top.
+OSD_LAYERS = ("txt", "hlp", "bt", "bg")
+
+# Qt 6.6+: the window moved to a screen with another device pixel ratio
+_DPR_CHANGE = getattr(QEvent, "DevicePixelRatioChange", None)
+
+def _is_tty(stream):
+    try:
+        return stream is not None and stream.isatty()
+    except Exception:
+        return False
+
+def _geom_str(g: QRect):
+    return f"{g.x()},{g.y()},{g.width()},{g.height()}"
+
+def _parse_geom(text):
+    try:
+        x, y, w, h = map(int, text.split(","))
+        return QRect(x, y, w, h)
+    except Exception:
+        return None
 
 def snap_to_grid(x, grid=GS):
     if grid <= 0: return x
@@ -49,7 +74,8 @@ class Nova(QOpenGLWindow):
         self.is_running = True
         self.curr_df = None      # DisplayFrame currently shown
         self.curr_txt = None
-        self._focused = True
+        self.render_error = None # set when the window can no longer draw the video; stays on screen
+        self._focused = self.isActive()     # the border colour follows it (orange focused, green not)
         app = QGuiApplication.instance()
         app.applicationStateChanged.connect(self._on_app_state)
         app.focusWindowChanged.connect(self._on_focus_window)
@@ -78,26 +104,40 @@ class Nova(QOpenGLWindow):
         self.setFlags(self.flags() | Qt.FramelessWindowHint)
         #self.setFlags(self.flags() | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
 
+        # The window's place on record. While a monitor is missing (unplugged, or a DisplayPort monitor
+        # asleep) the window manager moves windows around; then the place the user chose stays on record
+        # (_held_place) until its monitor is back or the user moves the window.
+        self._geom_hold = False
+        self._held_place = None
         self.qset = QSettings()
         gk = f"geom_{self.url_hash}"
         g = geometry or self.qset.value(gk)        # --geometry (a layout) wins over the remembered place
         if g:
             try:
                 x, y, w, h = map(int, g.split(","))
-                self._geom(x, y, w, h)
+                fit = self._fit_on_screen(x, y, w, h)
+                self._geom(*fit)
+                if fit != (x, y, w, h):
+                    logging.info(f"[Nova] remembered place {x},{y},{w},{h} is on no screen; "
+                                 f"opened at {','.join(map(str, fit))} until its monitor is back")
+                    self._geom_hold = True
+                    self._held_place = f"{x},{y},{w},{h}"
             except Exception:
                 self.resize(320, 180)
         else: self.resize(320, 180)
+        # Geometry of the window when neither fullscreen nor maximized: what is persisted in those states.
+        self._normal_geom = self.geometry()
 
-        self.pending_zoom_coord = False
+        # The zoom is kept as ratios of the picture until the decoder reports the frame size (vid_sz);
+        # from then on the zoomer holds it in frame pixels and keeps it across reconnects.
+        self.vid_sz = None
         zk = f"zoom_{self.url_hash}"
         z = zoom or self.qset.value(zk)
-        self.z_ratio = (0,0,1,1)
+        self.z_ratio = (0.0, 0.0, 1.0, 1.0)
         if z:
             try:
                 rx, ry, rw, rh = map(float, z.split(","))
                 self.z_ratio = (rx, ry, rw, rh)
-                self.pending_zoom_coord = True
             except Exception:
                 pass
 
@@ -108,6 +148,16 @@ class Nova(QOpenGLWindow):
         self._persist_timer.setInterval(2000)
         self._persist_timer.timeout.connect(self._persist_if_changed)
         self._persist_timer.start()
+
+        self._screen_timer = QTimer(self)
+        self._screen_timer.setSingleShot(True)
+        self._screen_timer.setInterval(SCREEN_SETTLE_MS)
+        self._screen_timer.timeout.connect(self._screens_settled)
+        app.screenAdded.connect(self._on_screen_added)
+        app.screenRemoved.connect(self._on_screens_changed)
+        app.primaryScreenChanged.connect(self._on_screens_changed)
+        for scr in app.screens():
+            scr.geometryChanged.connect(self._on_screens_changed)
 
         self.core.img_sig.connect(self.update_img)
         self.core.stat_sig.connect(self.update_stat)
@@ -136,21 +186,49 @@ class Nova(QOpenGLWindow):
 
     @Slot(int, int)
     def set_vid_sz(self, w, h):
-        if not self.is_running: return
+        """The decoder reports the frame size with the first frame of every connection, so after each
+        reconnect too. The same size keeps the zoom as it is; a new size (the camera's stream settings were
+        changed) keeps the zoomed region as fractions of the picture; the first size applies the remembered
+        (or --zoom) region."""
+        if not self.is_running or w <= 0 or h <= 0: return
+        if self.vid_sz == (w, h):
+            self.set_bt(); self.update()
+            return
+        if self.vid_sz is not None:
+            self.z_ratio = self._zoom_ratio()
+        self.vid_sz = (w, h)
         ww, wh = self._widget_wh()
         self.zoomer = Zoomer(w, h, ww, wh)
-        if self.pending_zoom_coord:
-            self.pending_zoom_coord = False
-            rx, ry, rw, rh = self.z_ratio
-            real_z = QRect(int(rx * w), int(ry * h), int(rw * w), int(rh * h))
-            self.zoomer.set_rect(real_z)
-        if w > 0:
-            self.setMinimumHeight(max(1, int(self.minimumWidth() / w * h)))
+        rx, ry, rw, rh = self.z_ratio
+        if (rx, ry, rw, rh) != (0.0, 0.0, 1.0, 1.0):
+            # round(), not int(): the ratios were written from whole pixels, int() lost one now and then
+            self.zoomer.set_rect(QRect(round(rx * w), round(ry * h), round(rw * w), round(rh * h)))
+        self.setMinimumHeight(max(1, int(self.minimumWidth() / w * h)))
         self.set_bt()
+        self.update()
+
+    def _zoom_ratio(self):
+        """The zoomed region as (rx, ry, rw, rh) fractions of the picture. Computed from the zoomer's own
+        frame size: the decoder's is 0 while it reconnects."""
+        if self.vid_sz is None:
+            return self.z_ratio
+        vw, vh = self.vid_sz
+        zx, zy, zw, zh = self.zoomer.getRect()
+        return (zx / vw, zy / vh, zw / vw, zh / vh)
+
+    def _vid_wh(self):
+        """Frame size: known since the first frame and kept while the decoder reconnects."""
+        return self.vid_sz or (self.core.width(), self.core.height())
+
+    def _pic_ratio(self):
+        """Aspect ratio of what is shown: the zoomed region, else the whole frame."""
+        if self.zoomer.is_zoom() or self.vid_sz is not None:
+            return self.zoomer.ratio()
+        return self.core.ratio()
 
     @Slot(str)
     def update_stat(self, text):
-        if not self.is_running: return
+        if not self.is_running or self.render_error: return
         self.curr_txt = text
         self.set_txt(text)
         self.update()
@@ -162,10 +240,18 @@ class Nova(QOpenGLWindow):
             df = self.frame_q.pop()
         except IndexError: return
         if df is None: return
-        self.curr_df = df
+        self.curr_df = df                   # kept for snapshots also when it cannot be shown
+        if self.render_error: return
         if not self.osd_txt.isNull():
             self.curr_txt = None
             self.osd_txt = QImage()
+        self.update()
+
+    def show_render_error(self, text):
+        """The renderer gave up: show text instead of the video until the window is closed."""
+        self.render_error = text
+        self.curr_txt = text
+        self.set_txt(text)
         self.update()
 
 
@@ -187,17 +273,33 @@ class Nova(QOpenGLWindow):
             img = df.to_qimage()
             if img is not None and not img.isNull():
                 src = self.zoomer.toRect() if self.zoomer.is_zoom() else img.rect()
-                r = self.zoomer.ratio() if self.zoomer.is_zoom() else self.core.ratio()
+                r = self._pic_ratio()
                 if wh < ww / r: h = wh; w = round(h * r)
                 else: w = ww; h = round(w / r)
                 x, y = (ww - w) // 2, (wh - h) // 2
                 # scaling is done by the GL paint engine; no per-frame CPU copy/scaled()
                 p.drawImage(QRect(x, y, w, h), img, src)
 
-        if not self.osd_txt.isNull(): p.drawImage(0, 0, self.osd_txt)
-        if not self.osd_bt.isNull(): p.drawImage(0, 0, self.osd_bt)
-        if not self.osd_hlp.isNull(): p.drawImage(0, 0, self.osd_hlp)
-        if not self.osd_bg.isNull(): p.drawImage(0, 0, self.osd_bg)
+        self._draw_osd(p)
+
+    def _draw_osd(self, p: QPainter):
+        for k in OSD_LAYERS:
+            img = getattr(self, f"osd_{k}")
+            if not img.isNull(): p.drawImage(0, 0, img)
+
+    def _osd_image(self):
+        """A transparent OSD layer covering the window, in device pixels so text and icons stay sharp on
+        HiDPI screens; QPainter draws on it in window coordinates."""
+        dpr = self.devicePixelRatio()
+        w, h = self._widget_wh()
+        img = QImage(max(1, round(w * dpr)), max(1, round(h * dpr)), OSD_FORMAT)
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.transparent)
+        return img
+
+    def _border_color(self):
+        if not self.border: return "none"
+        return "orange" if self._focused else "green"
 
 
     def set_bg(self, border="no-change"):
@@ -213,8 +315,7 @@ class Nova(QOpenGLWindow):
         if self.is_fullscreen(): return
 
         w, h = self._widget_wh()
-        img = QImage(w, h, OSD_FORMAT)
-        img.fill(Qt.transparent)
+        img = self._osd_image()
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(QPen(c, 1))
@@ -226,8 +327,7 @@ class Nova(QOpenGLWindow):
     def set_txt(self, text="", font=MONO, size=14, align=Qt.AlignCenter):
         if not self.is_running: return
         w, h = self._widget_wh()
-        img = QImage(w, h, OSD_FORMAT)
-        img.fill(Qt.transparent)
+        img = self._osd_image()
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
@@ -237,7 +337,7 @@ class Nova(QOpenGLWindow):
         f.setPointSize(size)
         p.setFont(f)
         p.setPen(QColor(255, 255, 255))
-        p.drawText(img.rect(), align, text)
+        p.drawText(QRect(0, 0, w, h), align, text)
         p.end()
         self.osd_txt = img
 
@@ -255,8 +355,7 @@ class Nova(QOpenGLWindow):
         if MAC: _min, _max, _base = 5, 14, 50
         if WINDOWS: _min, _max, _base = 5, 14, 70
         fsize = min(_max, max(_min, int(dim / _base)))
-        img = QImage(w, h, OSD_FORMAT)
-        img.fill(Qt.transparent)
+        img = self._osd_image()
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
@@ -281,7 +380,7 @@ class Nova(QOpenGLWindow):
     def set_bt(self):
         if not self.is_running: return
         ww, wh = self._widget_wh()
-        r = self.zoomer.ratio() if self.zoomer.is_zoom() else self.core.ratio()
+        r = self._pic_ratio()
         if wh < ww / r: h = wh; w = round(h * r)
         else: w = ww; h = round(w / r)
         x, y = (ww - w) // 2, (wh - h) // 2
@@ -303,8 +402,7 @@ class Nova(QOpenGLWindow):
         self._m_y = _y
         self._m_sz = sz
 
-        img = QImage(ww, wh, OSD_FORMAT)
-        img.fill(Qt.transparent)
+        img = self._osd_image()
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -351,6 +449,12 @@ class Nova(QOpenGLWindow):
             self.update()
         return flag
 
+    def reset_zoom(self):
+        self.z_ratio = (0.0, 0.0, 1.0, 1.0)     # also before the first frame, while the zoomer is a placeholder
+        self.zoomer.reset()
+        self.set_bt()
+        self.update()
+
     def toggle_streamer(self):
         self.core.toggle_streamer()
         self.set_bt()
@@ -375,7 +479,10 @@ class Nova(QOpenGLWindow):
         self.core.snapshot(self.curr_df)
 
     def print_info(self):
-        print(self.core.get_url())   # explicit user action (P key): full URL on purpose
+        """P: print the camera URL. With the password only to a terminal: under the launcher stdout is
+        logs/ID.log, where it would sit in plain text (log records are masked, print() is not)."""
+        url = self.core.get_url()
+        print(url if _is_tty(sys.stdout) else mask_url(url), flush=True)
 
     def keyPressEvent(self, e): self.key_hdlr.press(e)
     def keyReleaseEvent(self, e): self.key_hdlr.release(e)
@@ -389,14 +496,21 @@ class Nova(QOpenGLWindow):
 
     def resizeEvent(self, e):
         if not self.is_running: return
+        if self._is_normal_state():
+            self._normal_geom = self.geometry()
         x, y = e.size().width(), e.size().height()
         self.zoomer.resize(x, y)
+        self._rebuild_osd()
+
+    def _rebuild_osd(self):
+        """Repaint the OSD layers for the window's size and device pixel ratio."""
         txt = self.curr_txt
         if txt is not None: self.set_txt(txt)
         self.set_bt()
         if self.helper.is_on(): self.helper._on() # refresh
         if not self.is_fullscreen():
-            self.set_bg("orange" if self.border else "none")
+            self.set_bg(self._border_color())
+        self.update()
 
 
     def event(self, e):
@@ -404,6 +518,8 @@ class Nova(QOpenGLWindow):
             self._set_focus(False)
         elif e.type() == QEvent.WindowActivate:
             self._set_focus(True)
+        elif e.type() == _DPR_CHANGE and self.is_running:
+            self._rebuild_osd()          # moved to a screen with another scale factor
         return super().event(e)
 
     def focusInEvent(self, e):
@@ -423,9 +539,7 @@ class Nova(QOpenGLWindow):
         if not self.is_running: return
         if self._focused == on: return
         self._focused = on
-        if on: self.set_bg("orange" if self.border else "none")
-        else:
-            self.set_bg("green" if self.border else "none")
+        self.set_bg(self._border_color())
 
     def closeEvent(self, e):
         super().closeEvent(e)
@@ -438,41 +552,115 @@ class Nova(QOpenGLWindow):
             if self.helper.is_on(): self.helper.off()
             #self.core.stop() # check nova.py
             self._persist_timer.stop()
+            self._screen_timer.stop()
             self._persist(force=True)
 
     def _state_strings(self):
-        """('x,y,w,h', 'rx,ry,rw,rh') for the window as it is now; zoom is None while the video size is
-        still unknown (a restored zoom must not be overwritten with a guess)."""
-        g = self.geometry()
-        geom = f"{g.x()},{g.y()},{g.width()},{g.height()}"
-        if self.pending_zoom_coord:
-            return geom, None
-        zx, zy, zw, zh = self.zoomer.getRect()
-        vw, vh = self.core.width(), self.core.height()
-        rx = zx / vw if vw > 0 else 0.0
-        ry = zy / vh if vh > 0 else 0.0
-        rw = zw / vw if vw > 0 else 1.0
-        rh = zh / vh if vh > 0 else 1.0
+        """('x,y,w,h', 'rx,ry,rw,rh') to keep on record. The geometry is the normal one also while the
+        window is fullscreen or maximized, and the place the user chose while a monitor change holds it.
+        Until the first frame the zoom is the remembered (or --zoom) one, never a guess: the decoder's
+        frame size is 0 then, and again during every reconnect, which used to write 0,0,1,1 over the zoom."""
+        if self._geom_hold and self._held_place:
+            geom = self._held_place
+        else:
+            geom = _geom_str(self._normal_geometry())
+        rx, ry, rw, rh = self._zoom_ratio()
         return geom, f'{rx},{ry},{rw},{rh}'
 
     def _persist(self, force=False):
-        """Write geometry/zoom to QSettings when they changed since the last write (always with force).
-        A fullscreen window keeps its last normal geometry on record until it exits."""
-        if self.is_fullscreen() and not force:
-            return
+        """Write geometry/zoom to QSettings when they changed since the last write (always with force)."""
         state = self._state_strings()
         if state == self._persisted and not force:
             return
         geom, zoom = state
         self.qset.setValue(f"geom_{self.url_hash}", geom)
-        if zoom is not None:
-            self.qset.setValue(f"zoom_{self.url_hash}", zoom)
+        self.qset.setValue(f"zoom_{self.url_hash}", zoom)
         self.qset.sync()
         self._persisted = state
 
     def _persist_if_changed(self):
         if self.is_running:
             self._persist()
+
+    def _is_normal_state(self):
+        return not self.is_fullscreen() and not self._isMaximized()
+
+    def _normal_geometry(self) -> QRect:
+        """Geometry outside fullscreen / maximized: exiting in those states (nova stop, Ctrl-C, closing the
+        window) used to write the screen-sized rectangle over the window's place."""
+        if self._is_normal_state():
+            return self.geometry()
+        return QRect(self._normal_geom)
+
+    def moveEvent(self, e):
+        if self._is_normal_state():
+            self._normal_geom = self.geometry()
+        super().moveEvent(e)
+
+    # ------------------------------------------------------------------ screens
+    def _screen_rects(self):
+        return [s.geometry() for s in QGuiApplication.screens()]
+
+    def _primary_rect(self) -> QRect:
+        return QGuiApplication.primaryScreen().availableGeometry()
+
+    def _on_screen(self, r: QRect):
+        """True when enough of r is on one screen to be seen and dragged."""
+        need_w, need_h = min(r.width(), MIN_VISIBLE), min(r.height(), MIN_VISIBLE)
+        for s in self._screen_rects():
+            i = r.intersected(s)
+            if i.width() >= need_w and i.height() >= need_h:
+                return True
+        return False
+
+    def _fit_on_screen(self, x, y, w, h):
+        """(x, y, w, h) unchanged when the window would be visible, else moved onto the primary screen
+        (shrunk with its aspect ratio kept if it is larger). A remembered place on a monitor that is gone
+        used to open the window where nobody can see or reach it."""
+        if self._on_screen(QRect(x, y, w, h)):
+            return x, y, w, h
+        p = self._primary_rect()
+        f = min(1.0, p.width() / w if w > 0 else 1.0, p.height() / h if h > 0 else 1.0)
+        w, h = max(1, int(w * f)), max(1, int(h * f))
+        x = max(p.left(), min(x, p.left() + p.width() - w))
+        y = max(p.top(), min(y, p.top() + p.height() - h))
+        return x, y, w, h
+
+    def _on_screen_added(self, screen):
+        screen.geometryChanged.connect(self._on_screens_changed)
+        self._on_screens_changed()
+
+    def _on_screens_changed(self, *_):
+        """A monitor was added, removed or changed (also a DisplayPort monitor that drops out while it
+        sleeps). The window manager may now move windows; keep the place the user chose on record."""
+        if not self.is_running: return
+        if not self._geom_hold:
+            self._geom_hold = True
+            self._held_place = _geom_str(self._normal_geometry())
+            logging.debug(f"[Nova] screens changed: keeping the place {self._held_place} on record")
+        self._screen_timer.start()          # settle SCREEN_SETTLE_MS after the last change
+
+    def _screens_settled(self):
+        """The monitors have been quiet for a while. If the remembered place is on a screen again, put the
+        window back there (the window manager moved it away) and end the hold. If its monitor is still
+        gone, keep the place on record and only make sure the window itself can be reached."""
+        if not self.is_running or not self._geom_hold: return
+        place = _parse_geom(self._held_place)
+        normal = self._is_normal_state()
+        if place is None or self._on_screen(place):
+            if place is not None and normal and self.geometry() != place:
+                logging.info(f"[Nova] screens changed: back to {self._held_place}")
+                self.setGeometry(place)
+            self._geom_hold = False
+            self._held_place = None
+        elif normal and not self._on_screen(self.geometry()):
+            g = self.geometry()
+            self.setGeometry(*self._fit_on_screen(g.x(), g.y(), g.width(), g.height()))
+
+    def _placed_by_user(self):
+        """The user moves or resizes the window: from now on its place is where it is."""
+        self._geom_hold = False
+        self._held_place = None
 
 
 
@@ -511,6 +699,8 @@ class Nova(QOpenGLWindow):
 
     def fullscreen(self):
         if self.is_fullscreen(): return
+        if not self._isMaximized():
+            self._normal_geom = self.geometry()
         self._fullscrn_flag = True
         self.set_bg("none")
         self.showFullScreen()
@@ -519,11 +709,12 @@ class Nova(QOpenGLWindow):
         if not self.is_fullscreen(): return
         if self._isFullScreen(): self.showNormal()
         self._fullscrn_flag = False
-        self.set_bg("orange" if self.border else "none")
+        self.set_bg(self._border_color())
 
     def max_screen(self):
-        vw, vh = self.core.width(), self.core.height()
+        vw, vh = self._vid_wh()
         if vw <= 0 or vh <= 0: return
+        self._placed_by_user()
         if self.is_fullscreen(): self.show_normal()
 
         screen = self.screen()
@@ -543,8 +734,9 @@ class Nova(QOpenGLWindow):
         else: self.fullscreen()
 
     def cut_widget(self):
-        vw, vh = self.core.width(), self.core.height()
+        vw, vh = self._vid_wh()
         if vw <= 0 or vh <= 0: return
+        self._placed_by_user()
         if self.is_fullscreen(): self.max_screen(); return
 
         r = self.zoomer.ratio()
@@ -556,8 +748,9 @@ class Nova(QOpenGLWindow):
         self._geom(nx, ny, nw, nh)
 
     def center_orig(self):
-        vw, vh = self.core.width(), self.core.height()
+        vw, vh = self._vid_wh()
         if vw <= 0 or vh <= 0: return
+        self._placed_by_user()
         if self.is_fullscreen(): self.show_normal()
 
         screen = self.screen()
@@ -623,11 +816,13 @@ class Nova(QOpenGLWindow):
         self.setGeometry(int(x), int(y), int(w), int(h))
 
     def _geom_d(self, dx, dy, dw, dh): # +delta
+        self._placed_by_user()
         x, y = self._curr_pos()
         w, h = self.width(), self.height()
         self._geom(x + dx, y + dy, w + dw, h + dh)
 
     def _move(self, x, y):
+        self._placed_by_user()
         vg = self._virtual_rect()
         w, h = self._widget_wh()
         x = max(vg.left(), min(x, vg.left() + vg.width() - w))
@@ -639,6 +834,7 @@ class Nova(QOpenGLWindow):
         self._move(x + dx, y + dy)
 
     def _resize(self, w, h):
+        self._placed_by_user()
         self.resize(int(w), int(h))
 
     def _resize_d(self, dw, dh):

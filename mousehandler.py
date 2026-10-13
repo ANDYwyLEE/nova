@@ -24,12 +24,16 @@ ZONE_CURSOR = {
     'E':  Qt.SizeHorCursor,
 }
 
+WHEEL_NOTCH = 120   # QWheelEvent.angleDelta() of one wheel notch; hi-res wheels and touchpads send fractions
+
 class MouseHdlr:
     def __init__(self, parent, key_modifier):
         self.p = parent
         self.km = key_modifier
         self.moving = False
         self.resizing = False
+        self._dblclk = False    # the release that ends a double-click is next
+        self._drag = None       # (zone, global press position, geometry) while moving/resizing by hand
         #self.zone = 'NONE'
 
     def _zone(self, pos: QPoint):
@@ -59,8 +63,16 @@ class MouseHdlr:
 
     def press(self, e):
         if e.button() == Qt.RightButton: self.p.cut_widget(); return
-        if e.button() == Qt.MiddleButton: self.p.zoomer.fit_widget(); return
+        if e.button() == Qt.MiddleButton:
+            self.p.zoomer.fit_widget(); self.p.set_bt(); self.p.update()
+            return
         if e.button() != Qt.LeftButton: return
+        # Qt delivers a double-click as press, release, press, double-click, release. The second press is
+        # left to dblclk(): toggling an icon again would undo the first click, and a window move started here
+        # keeps the window manager's pointer grab across the switch to fullscreen (the next click is lost).
+        if e.flags() & Qt.MouseEventCreatedDoubleClick: return
+        self._dblclk = False
+        self._drag = None
         pos = e.position().toPoint()
         if self.p.in_bt_zone(pos):
             if self.p.in_bt(pos, 0):
@@ -77,10 +89,37 @@ class MouseHdlr:
         edge = self._edge(z)
         self.resizing = edge is not None
         self.moving = edge is None
-        if edge: self.p.startSystemResize(edge)
-        else: self.p.startSystemMove()
+        self.p._placed_by_user()
+        started = self.p.startSystemResize(edge) if edge else self.p.startSystemMove()
+        if not started:
+            # The platform cannot do it (no startSystemResize on macOS, X11 window managers without
+            # _NET_WM_MOVERESIZE): move / resize from the mouse moves until the button is released.
+            self._drag = (z, e.globalPosition().toPoint(), self.p.geometry())
+
+    def _drag_to(self, gpos):
+        zone, start, g = self._drag
+        dx, dy = gpos.x() - start.x(), gpos.y() - start.y()
+        if zone == 'MOVE':
+            self.p.setPosition(g.x() + dx, g.y() + dy)
+            return
+        x, y, w, h = g.x(), g.y(), g.width(), g.height()
+        mw, mh = self.p.minimumWidth(), self.p.minimumHeight()
+        if 'W' in zone:
+            nw = max(mw, w - dx); x += w - nw; w = nw
+        elif 'E' in zone:
+            w = max(mw, w + dx)
+        if 'N' in zone:
+            nh = max(mh, h - dy); y += h - nh; h = nh
+        elif 'S' in zone:
+            h = max(mh, h + dy)
+        self.p.setGeometry(x, y, w, h)
 
     def move(self, e):
+        if self._drag is not None:
+            if e.buttons() & Qt.LeftButton:
+                self._drag_to(e.globalPosition().toPoint())
+                return
+            self._drag = None
         pos = e.position().toPoint()
         if self.p.in_bt_zone(pos):
             self.p.setCursor(Qt.PointingHandCursor)
@@ -93,18 +132,31 @@ class MouseHdlr:
 
     def release(self, e):
         if e.button() == Qt.LeftButton:
-            self.p.align_grid()
+            self._drag = None
+            if self._dblclk:
+                # After a double-click that left fullscreen, geometry() can still be the fullscreen rectangle
+                # (the window manager restores the normal one when it gets to it): snapping that would make
+                # the window screen-sized.
+                self._dblclk = False
+            else:
+                self.p.align_grid()
         self.moving = self.resizing = False
         self.p.setCursor(Qt.ArrowCursor)
 
     def dblclk(self, e):
-        if e.button() == Qt.LeftButton:
-            self.p.toggle_fullscreen()
-            self.moving = self.resizing = False
+        if e.button() != Qt.LeftButton: return
+        self._dblclk = True
+        self._drag = None
+        self.moving = self.resizing = False
+        if self.p.in_bt_zone(e.position().toPoint()):
+            return          # on the control strip: the first click has toggled the icon, nothing more
+        self.p.toggle_fullscreen()
 
     def wheel(self, e):
+        steps = e.angleDelta().y() / WHEEL_NOTCH
+        if not steps: return
         pos = self.p.mapFromGlobal(e.globalPosition().toPoint())
-        ALPHA = 0.0083
-        self.p.zoomer.zoom(pos, -e.angleDelta().y() * ALPHA)
+        self.p.zoomer.zoom(pos, -steps)
         self.p.set_bt()
+        self.p.update()
 
