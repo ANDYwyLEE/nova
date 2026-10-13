@@ -38,7 +38,7 @@ Press **H** in the window for the key map, **R** to record, **A** for audio, **S
 More than one camera: put them in `cameras.ini` (git-ignored, so passwords stay on your machine) and use the launcher.
 
 ```bash
-cp cameras.example.ini cameras.ini      # one [section] per camera; presets per OS/GPU in [defaults]
+cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # one [section] per camera (it holds passwords)
 ./nova start                            # a window per enabled camera (Windows: nova start)
 ./nova record                           # the same without windows, recording from the first frame
 ./nova run frontdoor -r                 # one camera in this terminal; extra args go to nova.py

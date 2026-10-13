@@ -101,7 +101,8 @@ def load(path, quiet=False):
     if not os.path.exists(path):
         copy = "copy" if WINDOWS else "cp"
         sys.exit(f"{os.path.basename(path)} not found.\n"
-                 f"  {copy} {os.path.basename(EXAMPLE)} {os.path.basename(path)}   and put your cameras in it (it is git-ignored).")
+                 f"  {copy} {os.path.basename(EXAMPLE)} {os.path.basename(path)}   and put your cameras in it (it is git-ignored)"
+                 + ("." if WINDOWS else f";\n  chmod 600 {os.path.basename(path)}   since it holds their passwords."))
     if not WINDOWS and not quiet and os.stat(path).st_mode & 0o077:
         print(f"warning: {os.path.basename(path)} holds passwords but other users can read it: "
               f"chmod 600 {os.path.basename(path)}", file=sys.stderr)

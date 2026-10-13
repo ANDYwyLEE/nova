@@ -43,7 +43,7 @@ python3 -m venv venv && . venv/bin/activate         # 24.04: Python 3.12, 26.04:
 pip install -U pip && pip install -r requirements.txt
 
 python nova.py --help
-cp cameras.example.ini cameras.ini          # then edit it: see the user guide
+cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # then edit it: see the user guide
 ./nova start                                # a window per enabled camera; ./nova -h lists the commands
 ```
 
@@ -101,7 +101,7 @@ python3.12 -m venv venv && . venv/bin/activate
 pip install -U pip
 CFLAGS="-I/opt/local/include" LDFLAGS="-L/opt/local/lib" pip install -r requirements.txt   # PyAudio builds against MacPorts' PortAudio
 python nova.py --opengl --accel videotoolbox -i rtsp://...
-cp cameras.example.ini cameras.ini && ./nova start      # several cameras; ./nova -h lists the commands
+cp cameras.example.ini cameras.ini && chmod 600 cameras.ini && ./nova start   # ./nova -h lists the commands
 ```
 
 What VideoToolbox accelerates is decided by the Mac, not by the wheel: H.264 on every supported Mac, HEVC decode/encode on Apple Silicon and on Intel Macs from 2016 (6th-generation Core) on. On an older Intel Mac one direction may fall back to software while the other is accelerated; the log lines `HW decoder:` / `software decoder` and `[AVWriter]` show which.
