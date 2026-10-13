@@ -22,3 +22,9 @@ logs/
 *.swo
 *~
 layouts/
+
+# Claude Code: local settings, hooks, notes and memory never go to GitHub
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.mcp.json

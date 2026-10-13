@@ -2,6 +2,14 @@
 # Refuse to commit camera credentials or stream keys.
 # Allowed placeholder passwords: password pass secret xxxx *** PASSWORD KEY YOUR-KEY $VAR
 # Enable once per clone:  git config core.hooksPath .githooks
+# Claude Code files stay local even when added with `git add -f`.
+claude=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)(\.claude/|CLAUDE(\.local)?\.md$|\.mcp\.json$)')
+if [ -n "$claude" ]; then
+    echo "pre-commit: Claude Code files are kept out of the repo:" >&2
+    printf '%s\n' "$claude" | sed 's/^/  /' >&2
+    echo "Unstage them with: git restore --staged <file>" >&2
+    exit 1
+fi
 files=$(git diff --cached --name-only --diff-filter=AM | grep -v "^\.githooks/" | grep -v "^tests/")   # tests use synthetic credentials on purpose
 [ -z "$files" ] && exit 0
 added=$(git diff --cached -U0 -- $files | grep -E '^\+' | grep -vE '^\+\+\+')
