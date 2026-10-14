@@ -122,7 +122,7 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 
 ## Built with Claude
 
-Nova's design and its original code are ANDYwyLEE's. Since 2026-10-11 the work on this repository has been done together with Claude, Anthropic's AI model (Claude Opus 5.5, then Claude Fable 5.1), in Claude Code sessions on the author's machine: as of 2026-10-14, 93 of the 97 commits carry a `Co-Authored-By: Claude` line. The author set the goals and made the design decisions; Claude read the code, proposed, measured and implemented; everything went through the test suite, CI on three platforms and, where it mattered, the author's own camera wall.
+Nova's design and its original code are ANDYwyLEE's: it began in June 2023 as an OpenCV + PySide2 viewer (the first `nova.py` is dated 2023-07-10), moved to PySide6 in 2024, and the PyAV-based sources of 2026-01-30 are what this repository started from. Since 2026-10-11 the work on this repository has been done together with Claude, Anthropic's AI model (Claude Opus 5.5, then Claude Fable 5.1), in Claude Code sessions on the author's machine: as of 2026-10-14, 93 of the 97 commits carry a `Co-Authored-By: Claude` line. The author set the goals and made the design decisions; Claude read the code, proposed, measured and implemented; everything went through the test suite, CI on three platforms and, where it mattered, the author's own camera wall.
 
 What Claude did in that time:
 
