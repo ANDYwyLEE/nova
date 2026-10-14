@@ -71,16 +71,21 @@ restart remembers each camera's mode and layout, not options typed after start: 
 
 sys.path.insert(0, HERE)
 try:
-    from util import mask_url, window_title
+    from util import mask_url, window_title, printable, parse_geom, parse_zoom
 except Exception:  # pragma: no cover - util.py missing only in a broken checkout
     def mask_url(u): return u
     def window_title(n): return f"Nova - {n}" if n else "Nova"
+    def printable(t, limit=200): return str(t or "")[:limit].strip()
+    def parse_geom(t): return t
+    def parse_zoom(t): return t
+
+MAX_ID_LEN = 64        # a camera id names a log file and a socket; longer ids are refused
 
 
 class Camera:
     def __init__(self, cid, sec):
         self.id = cid
-        self.name = sec.get("name", cid).strip()
+        self.name = printable(sec.get("name", cid)) or cid      # shown in terminals and window titles
         self.url = (sec.get("url") or "").strip()
         self.opts = sec.get("opts", "").strip()
         v = str(sec.get("enabled", "yes")).strip().lower()
@@ -122,10 +127,11 @@ def load(path, quiet=False):
     for sec in cp.sections():
         if sec in RESERVED:
             continue
-        if re.search(r"[/\\]", sec) or sec.startswith("."):
+        if re.search(r"[/\\\x00-\x1f\x7f]", sec) or sec.startswith(".") or len(sec.encode("utf-8")) > MAX_ID_LEN:
             if not quiet:
-                print(f"warning: [{sec}] skipped: a camera id names its log file, so it cannot contain "
-                      f"'/' or '\\' or start with '.'; put the display name in `name =`", file=sys.stderr)
+                print(f"warning: [{printable(sec, 40)}] skipped: a camera id names its log file, so it cannot contain "
+                      f"'/' or '\\' or control characters, start with '.' or exceed {MAX_ID_LEN} bytes; "
+                      f"put the display name in `name =`", file=sys.stderr)
             continue
         cam = Camera(sec, keys_of(cp, sec, CAMERA_KEYS, quiet))
         if not cam.url:
@@ -211,11 +217,18 @@ def load_layout(name):
 def layout_flags(layout, cam):
     """--geometry / --zoom for a camera from a loaded layout; [] when the layout has no entry for it."""
     e = (layout or {}).get("cameras", {}).get(cam.id) or {}
+    if not isinstance(e, dict):
+        print(f"warning: layout entry for {cam.id} is not an object; ignored", file=sys.stderr)
+        return []
     flags = []
-    if e.get("geometry"):
-        flags += ["--geometry", str(e["geometry"])]
-    if e.get("zoom"):
-        flags += ["--zoom", str(e["zoom"])]
+    for key, check in (("geometry", parse_geom), ("zoom", parse_zoom)):
+        v = e.get(key)
+        if not v:
+            continue
+        if check(v) is None:
+            print(f"warning: layout entry for {cam.id}: {key} {printable(v, 60)!r} is not valid; ignored", file=sys.stderr)
+            continue
+        flags += [f"--{key}", str(v)]
     return flags
 
 

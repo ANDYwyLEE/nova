@@ -50,6 +50,8 @@ enabled = no
 | `opts` | any `nova.py` options; appended to `[defaults] opts` |
 | `enabled` | `no` keeps the camera out of `start` (it can still be started by id) |
 
+A section name is the camera id: it names the log file and the control socket, so it may not contain `/`, `\` or control characters, start with `.`, or exceed 64 bytes (such a section is skipped with a warning; the display name goes in `name =`). Terminal escape sequences and control characters in a `name` are dropped before it reaches a window title or a terminal.
+
 Comments are whole lines starting with `;` or `#`. A `;` after a value is part of the value.
 
 ## Camera brands
@@ -121,7 +123,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 
 - Arrange the windows, then `nova layout save work`. The cameras can stay open: every window writes its geometry and zoom to Nova's settings within 2 s of a change, and `save` reads them from there. With no camera open, the enabled cameras' last positions are used.
 - `nova start --layout away` opens the cameras listed in the layout (`enabled` does not apply) and gives each its saved `--geometry` / `--zoom`. From then on the windows remember their places as usual, so a plain `nova start` afterwards brings the `away` arrangement back; `nova start --layout work` switches again.
-- The file is plain JSON, camera id → `"geometry": "x,y,w,h"` and `"zoom": "rx,ry,rw,rh"` (fractions of the picture; `0,0,1,1` is the whole picture). Edit it by hand if you like. `layouts/` is git-ignored, like `cameras.ini`.
+- The file is plain JSON, camera id → `"geometry": "x,y,w,h"` and `"zoom": "rx,ry,rw,rh"` (fractions of the picture; `0,0,1,1` is the whole picture). Edit it by hand if you like: an entry that is not `x,y,w,h` with a positive size, or a zoom that is not inside the picture, is ignored with a warning. `layouts/` is git-ignored, like `cameras.ini`.
 - `--geometry x,y,w,h` and `--zoom rx,ry,rw,rh` also work directly on `nova.py`.
 - **Wayland**: a compositor does not let a window place itself, so on a Wayland session Nova runs under XWayland by default (it sets `QT_QPA_PLATFORM=xcb` when both `WAYLAND_DISPLAY` and `DISPLAY` are set). GNOME and KDE honour X11 positions, so there everything works as on X11 without further setup. `QT_QPA_PLATFORM = wayland` in `[env]` gives native Wayland windows; then `--geometry` sets only the size and the compositor decides the place (GNOME and KDE centre the window, sway and Hyprland tile it). Checked with nested compositors on Ubuntu 26.04:
   - **GNOME** (Mutter 50): no window rules; XWayland, the default, places and moves windows exactly as on X11.

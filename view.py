@@ -16,7 +16,7 @@ from mousehandler import MouseHdlr
 from keyhandler import KeyHdlr
 from helper import Helper
 from fonts import MONO
-from util import WSL, MAC, WINDOWS, mask_url, window_title
+from util import WSL, MAC, WINDOWS, mask_url, window_title, parse_geom, parse_zoom
 
 GS = 20 # default grid size
 MIN_VISIBLE = 40          # px of a window that must be on some screen for it to count as reachable
@@ -42,11 +42,9 @@ def _geom_str(g: QRect):
     return f"{g.x()},{g.y()},{g.width()},{g.height()}"
 
 def _parse_geom(text):
-    try:
-        x, y, w, h = map(int, text.split(","))
-        return QRect(x, y, w, h)
-    except Exception:
-        return None
+    """QRect from 'x,y,w,h' (util.parse_geom: sizes positive, values within a window's range), or None."""
+    g = parse_geom(text)
+    return QRect(*g) if g else None
 
 def snap_to_grid(x, grid=GS):
     if grid <= 0: return x
@@ -112,9 +110,10 @@ class Nova(QOpenGLWindow):
         self.qset = QSettings()
         gk = f"geom_{self.url_hash}"
         g = geometry or self.qset.value(gk)        # --geometry (a layout) wins over the remembered place
-        if g:
+        pg = parse_geom(g) if g else None
+        if pg:
             try:
-                x, y, w, h = map(int, g.split(","))
+                x, y, w, h = pg
                 fit = self._fit_on_screen(x, y, w, h)
                 self._geom(*fit)
                 if fit != (x, y, w, h):
@@ -124,7 +123,10 @@ class Nova(QOpenGLWindow):
                     self._held_place = f"{x},{y},{w},{h}"
             except Exception:
                 self.resize(320, 180)
-        else: self.resize(320, 180)
+        else:
+            if g:
+                logging.warning(f"[Nova] ⚠️ ignoring geometry {str(g)[:60]!r}: not x,y,w,h with a positive size")
+            self.resize(320, 180)
         # Geometry of the window when neither fullscreen nor maximized: what is persisted in those states.
         self._normal_geom = self.geometry()
 
@@ -133,13 +135,10 @@ class Nova(QOpenGLWindow):
         self.vid_sz = None
         zk = f"zoom_{self.url_hash}"
         z = zoom or self.qset.value(zk)
-        self.z_ratio = (0.0, 0.0, 1.0, 1.0)
-        if z:
-            try:
-                rx, ry, rw, rh = map(float, z.split(","))
-                self.z_ratio = (rx, ry, rw, rh)
-            except Exception:
-                pass
+        self.z_ratio = parse_zoom(z) if z else None
+        if z and self.z_ratio is None:
+            logging.warning(f"[Nova] ⚠️ ignoring zoom {str(z)[:60]!r}: not rx,ry,rw,rh inside the picture")
+        self.z_ratio = self.z_ratio or (0.0, 0.0, 1.0, 1.0)
 
         # Persist geometry/zoom within 2 s of a change, not only at exit: a crash loses nothing and
         # `nova layout save` sees the windows where they are now.
@@ -473,11 +472,11 @@ class Nova(QOpenGLWindow):
         if g is not None:
             self._geom(*self._fit_on_screen(g.x(), g.y(), g.width(), g.height()))
         if zoom:
-            try:
-                rx, ry, rw, rh = map(float, str(zoom).split(","))
-            except ValueError:
-                return
-            self.z_ratio = (rx, ry, rw, rh)
+            zr = parse_zoom(zoom)
+            if zr is None:
+                raise ValueError(f"zoom {str(zoom)[:60]!r} is not rx,ry,rw,rh inside the picture")
+            rx, ry, rw, rh = zr
+            self.z_ratio = zr
             if self.vid_sz is not None:              # else set_vid_sz applies it with the first frame
                 w, h = self.vid_sz
                 self.zoomer.reset()

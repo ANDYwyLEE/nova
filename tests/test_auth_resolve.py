@@ -242,6 +242,18 @@ def test_dahua_hostile_port_and_encoding(device, cache_file):
     assert not cache_file.exists()
 
 
+def test_device_answers_are_read_in_bounded_form(device, caplog):
+    """A device that sends megabytes must not fill memory: the answer is refused beyond BODY_LIMIT."""
+    big = "table.RTSP.Port=554\r\n" + "x" * (auth.BODY_LIMIT + 1000)
+    d = device(digest_only(big))
+    t0 = time.monotonic()
+    with caplog.at_level(logging.ERROR):
+        assert auth.resolve_input_uri(f"dahua://admin:pw@127.0.0.1:{d.port}") is None
+    assert "exceeds 4 MB" in caplog.text and time.monotonic() - t0 < 10
+    d = device(digest_only("<a>" + "x" * 10 + "</a>"))              # small answers: as before
+    assert auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}") is not None
+
+
 def test_dahua_port_and_channels(device):
     d = device(digest_only("table.RTSP.Port=10554\r\n"))
     assert auth.resolve_input_uri(f"dahua://admin:pw@127.0.0.1:{d.port}") == \

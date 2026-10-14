@@ -341,7 +341,11 @@ class FFmpegParser:
         if not opt_str or not opt_str.strip():
             return o
 
-        tokens = shlex.split(opt_str.strip())
+        try:
+            tokens = shlex.split(opt_str.strip())
+        except ValueError as e:                               # unbalanced quotes
+            o.warnings.append(f"cannot read {opt_str!r} ({e}); the options are ignored")
+            return o
         parsed = []                   # (key, value, side): side None until an -i is seen
         saw_i = False
         i = 0

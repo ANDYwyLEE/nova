@@ -176,10 +176,42 @@ class Util():
             print(f"{name}: {value}")
 
 
+_ANSI_SEQ = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[ -/]*[0-~]")   # CSI, OSC, other ESC
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+def printable(text, limit=200):
+    """A name as it may appear in a window title, a terminal or a log: terminal escape sequences and
+    control characters (newlines included) removed, at most `limit` characters."""
+    return _CONTROL_CHARS.sub("", _ANSI_SEQ.sub("", str(text or "")))[:limit].strip()
+
+def parse_geom(text):
+    """'x,y,w,h' (a --geometry value, a layout entry, a control message) -> (x, y, w, h), w and h
+    positive and every value within what a window can have; None for anything else."""
+    try:
+        x, y, w, h = (int(v) for v in str(text).split(","))
+    except (TypeError, ValueError):
+        return None
+    if not (0 < w <= 100_000 and 0 < h <= 100_000 and -1_000_000 <= x <= 1_000_000 and -1_000_000 <= y <= 1_000_000):
+        return None
+    return x, y, w, h
+
+def parse_zoom(text):
+    """'rx,ry,rw,rh' (a --zoom value, a layout entry, a control message) -> ratios of the picture, each
+    finite, the origin inside the picture, the size positive and at most the picture; None otherwise."""
+    try:
+        rx, ry, rw, rh = (float(v) for v in str(text).split(","))
+    except (TypeError, ValueError):
+        return None
+    if any(v != v or abs(v) == float("inf") for v in (rx, ry, rw, rh)):       # NaN / inf
+        return None
+    if not (0.0 <= rx < 1.0 and 0.0 <= ry < 1.0 and 0.0 < rw <= 1.0 and 0.0 < rh <= 1.0):
+        return None
+    return rx, ry, rw, rh
+
 def window_title(name):
     """Title of a camera window: 'Nova - NAME' (NAME as given with -n).  Unique per camera, so the
     taskbar tells the windows apart and compositor rules (nova layout export) can match them."""
-    name = (name or "").strip()
+    name = printable(name)
     return f"Nova - {name}" if name else "Nova"
 
 

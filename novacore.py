@@ -13,7 +13,7 @@ from videoworker import VideoWorker
 from recorder import AVRecorder
 from audioplayer import AudioPlayer
 from streamer import AVStreamer
-from util import mask_url
+from util import mask_url, printable
 
 
 def settings_key(url):
@@ -53,7 +53,7 @@ class NovaCore(QObject):
         self.last_status = ""     # the latest overlay text (Connecting, Unreachable, ...); "" while playing
         self.url_hash = settings_key(url)
 
-        self.display_name = (camera_name or "").strip()      # for the window title, as typed
+        self.display_name = printable(camera_name)           # for the window title, as typed (minus control characters)
         if camera_name:
             self.camera_name = camera_name
         else:

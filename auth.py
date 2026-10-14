@@ -541,10 +541,14 @@ class ONVIFClient:
         url = self.media_url if service_type == "media" else self.device_url
         log_xml_pretty(f"{action_name} REQUEST", self.session.headers, xml_envelope)
         try:
-            resp = _call(self.should_stop, self.session.post, url, data=xml_envelope, timeout=8)
-            log_xml_pretty(f"{action_name} RESPONSE", resp.headers, resp.text)
-            if resp.status_code != 200: return None
-            return resp.text
+            resp = _call(self.should_stop, self.session.post, url, data=xml_envelope, timeout=8, stream=True)
+            if resp.status_code != 200:
+                resp.close()
+                logging.debug(f"[ONVIF] {action_name}: HTTP {resp.status_code}")
+                return None
+            text = _body(resp).decode(resp.encoding or "utf-8", "replace")
+            log_xml_pretty(f"{action_name} RESPONSE", resp.headers, text)
+            return text
         except Exception as e:
             err_str = str(e).lower()
             if "refused" in err_str: msg = "Connection Refused"
@@ -674,11 +678,25 @@ def _net_error(e, timeout):
     if "exceeded" in err: return "Max retries exceeded"
     return "Network Error"
 
+BODY_LIMIT = 4_000_000      # bytes of a device's answer Nova reads at most: a misbehaving device must not fill memory
+
+def _body(resp, limit=BODY_LIMIT):
+    """The response body, read in bounded form (requests would read all of it); bytes.
+    Raises ValueError when the device sends more than `limit`."""
+    try:
+        data = resp.raw.read(limit + 1, decode_content=True)
+    finally:
+        resp.close()
+    if len(data) > limit:
+        raise ValueError(f"the device's answer exceeds {limit // 1_000_000} MB")
+    return data
+
 def _digest_get(url, user, pwd, tag, should_stop, timeout=5):
     """GET with HTTP Digest only (Basic would send the password in clear over plain http).  The
-    response, or None after logging the network failure."""
+    response (its body not read yet: _body), or None after logging the network failure."""
     try:
-        return _call(should_stop, requests.get, url, auth=requests.auth.HTTPDigestAuth(user, pwd), timeout=timeout)
+        return _call(should_stop, requests.get, url, auth=requests.auth.HTTPDigestAuth(user, pwd), timeout=timeout,
+                     stream=True)
     except Exception as e:
         _fail(f"{tag} ❌ {_net_error(e, timeout)}: {url.split('/')[2]}")
         logging.debug(f"{tag} 🔍 Full Query: {mask_url(url)}")
@@ -689,6 +707,7 @@ def _denied(resp, tag):
     """True, and the failure logged, when the device did not answer 200."""
     if resp.status_code == 200:
         return False
+    resp.close()
     what = "authentication failed (HTTP Digest)" if resp.status_code == 401 else "Access denied or failed"
     _fail(f"{tag} ❌ {what}. Status: {resp.status_code}")
     return True
@@ -782,9 +801,9 @@ def _resolve_hikvision(info, should_stop=None):
     if resp is None or _denied(resp, "[Hikvision]"):
         return None, False
     try:
-        channels = _find(xmltodict.parse(resp.content), 'StreamingChannel') or []
+        channels = _find(xmltodict.parse(_body(resp)), 'StreamingChannel') or []
     except Exception as e:
-        _fail(f"[Hikvision] ❌ unreadable channel list from {ip}: {type(e).__name__}")
+        _fail(f"[Hikvision] ❌ unreadable channel list from {ip}: {type(e).__name__}: {mask_url(str(e))[:80]}")
         return None, False
     if not isinstance(channels, list): channels = [channels]
     ids = [str(_text(_find(c, 'id')) or "").strip() for c in channels]
@@ -797,9 +816,11 @@ def _resolve_hikvision(info, should_stop=None):
     protocols = None
     if resp is not None and resp.status_code == 200:
         try:
-            protocols = _find(xmltodict.parse(resp.content), 'AdminAccessProtocol')
+            protocols = _find(xmltodict.parse(_body(resp)), 'AdminAccessProtocol')
         except Exception as e:
             logging.debug(f"[Hikvision] unreadable adminAccesses: {type(e).__name__}")
+    elif resp is not None:
+        resp.close()
     if protocols is None:
         logging.debug(f"[Hikvision] adminAccesses not readable (status {getattr(resp, 'status_code', 'n/a')}); assuming RTSP port 554")
     else:
@@ -825,12 +846,17 @@ def _resolve_dahua(info, should_stop=None):
     resp = _digest_get(api_url, user, pwd, "[Dahua]", should_stop)
     if resp is None or _denied(resp, "[Dahua]"):
         return None, False
+    try:
+        text = _body(resp).decode("utf-8", "replace")
+    except ValueError as e:
+        _fail(f"[Dahua] ❌ {e}")
+        return None, False
     rtsp_port, from_device = 554, True
-    m = re.search(r'(?im)^\s*table\.RTSP\.Port\s*=\s*(.*?)\s*$', resp.text)
+    m = re.search(r'(?im)^\s*table\.RTSP\.Port\s*=\s*(.*?)\s*$', text)
     if m:
         rtsp_port, from_device = _device_port(m.group(1), "[Dahua]", ip)
     else:
-        logging.debug(f"[Dahua] no table.RTSP.Port in the answer ({resp.text[:60]!r}); assuming 554")
+        logging.debug(f"[Dahua] no table.RTSP.Port in the answer ({text[:60]!r}); assuming 554")
     resolved_url = _rtsp_url(user, pwd, info['host'], rtsp_port, f"/cam/realmonitor?channel={ch}&subtype={info['stream_idx']}")
     logging.info(f"[Dahua] 🎯 Resolved RTSP (channel {ch}, subtype {info['stream_idx']}): {mask_url(resolved_url)}")
     return resolved_url, from_device
@@ -853,10 +879,11 @@ def _resolve_reolink(info, should_stop=None):
         body = [{"cmd": cmd, "action": 0, "param": param or {}}]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")          # InsecureRequestWarning for the self-signed certificate
-            r = _call(should_stop, sess.post, url, params=q, json=body, timeout=8, verify=False)
+            r = _call(should_stop, sess.post, url, params=q, json=body, timeout=8, verify=False, stream=True)
         if r.status_code != 200:
+            r.close()
             raise RuntimeError(f"HTTP {r.status_code}")
-        data = r.json()
+        data = json.loads(_body(r))
         if not (isinstance(data, list) and data and isinstance(data[0], dict)):
             raise RuntimeError("unexpected answer")
         return data[0]
@@ -942,12 +969,17 @@ def _resolve_axis(info, should_stop=None):
     resp = _digest_get(api_url, user, pwd, "[Axis]", should_stop)
     if resp is None or _denied(resp, "[Axis]"):
         return None, False
+    try:
+        text = _body(resp).decode("utf-8", "replace")
+    except ValueError as e:
+        _fail(f"[Axis] ❌ {e}")
+        return None, False
     rtsp_port, from_device = 554, True
-    m = re.search(r'(?m)^\s*root\.Network\.RTSP\.Port\s*=\s*(\S+)', resp.text)
+    m = re.search(r'(?m)^\s*root\.Network\.RTSP\.Port\s*=\s*(\S+)', text)
     if m:
         rtsp_port, from_device = _device_port(m.group(1), "[Axis]", ip)
     else:
-        logging.debug(f"[Axis] no Network.RTSP.Port in the answer ({resp.text[:60]!r}); assuming 554")
+        logging.debug(f"[Axis] no Network.RTSP.Port in the answer ({text[:60]!r}); assuming 554")
     path = "/axis-media/media.amp" + (f"?camera={ch}" if info['channel_given'] else "")
     resolved_url = _rtsp_url(user, pwd, info['host'], rtsp_port, path)
     logging.info(f"[Axis] 🎯 Resolved RTSP (camera {ch}): {mask_url(resolved_url)}")
