@@ -16,6 +16,7 @@ DEFAULT_DIR = "./videos"
 DEFAULT_INTERVAL_S = 1800
 LOCK_NAME = ".nova-recording.lock"
 GAP_S = 60                  # a stop this long after the last frame ends the segment at that frame
+PICTURE_GONE_S = 1.0        # audio past the boundary with no video this long waits for the next segment
 
 
 def _min_interval():
@@ -162,7 +163,7 @@ class AVRecorder(Player):
 
         self.start_ts = 0
         self.next_ts = 0
-        self.last_now = 0
+        self.last_now = self.last_v_now = 0
         self.path = ""
         self.lock = None
         self._locked_out = False    # set on the worker thread: another process records this camera
@@ -282,7 +283,7 @@ class AVRecorder(Player):
         first video frame, at that frame's size: the decoder's width()/height() read 0 between a
         reconnect and its next frame."""
         self.writer = None
-        self.last_now = 0
+        self.last_now = self.last_v_now = 0
         was_locked_out, self._locked_out = self._locked_out, False     # (another failure is not a lock-out)
         sub = self._folder()
         os.makedirs(sub, exist_ok=True)
@@ -340,9 +341,15 @@ class AVRecorder(Player):
                 self._rollover("interval", now, end_ts=int(self.next_ts), frame=frame)
         elif self.writer is None or self._time_jump(now):
             return                              # audio waits for the video frame that opens the segment
+        elif now >= self.next_ts and now - self.last_v_now > PICTURE_GONE_S:
+            # past the boundary with the picture gone (reconnecting, or the next connection's audio
+            # ahead of its first keyframe): the segment ends at the boundary, this audio belongs to
+            # the next one, which only a video frame can open
+            return
         self.last_now = now
 
         if typ == 1:
+            self.last_v_now = now
             self.writer.write_video(frame)
         else:
             self.writer.write_audio(frame)
@@ -396,7 +403,7 @@ class AVRecorder(Player):
         self.writer, self.path = writer, path
         self.start_ts = int(now)
         self.next_ts = next_boundary(now, self.interval_s)
-        self.last_now = now
+        self.last_now = self.last_v_now = now
 
     def _finish(self, writer, path, start, end_ts):
         try:

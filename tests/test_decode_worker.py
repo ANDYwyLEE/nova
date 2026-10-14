@@ -113,7 +113,7 @@ def test_corrupt_packets_are_skipped_not_reconnected(qapp, tmp_path, caplog):
     msgs = [r.getMessage() for r in caplog.records]
     assert any("rejected a video packet" in m for m in msgs)
     assert any("audio packet rejected" in m for m in msgs)
-    assert not any("reconnecting" in m for m in msgs)
+    assert not any("; reconnecting." in m for m in msgs)     # the _Reconnect wording; the clip's end logs "stream ended"
     assert w.sample_rate == 48000
 
 

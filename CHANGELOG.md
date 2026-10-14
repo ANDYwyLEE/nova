@@ -5,6 +5,7 @@
 A check of every vendor URL format against the makers' documentation and the reference clients (Home Assistant's `hikvision_next`, `reolink_aio` and `icsee-ptz`, `python-amcrest`).
 
 ### Fixed
+- **A reconnect straddling a segment boundary no longer puts the next connection's audio into the old segment.** The audio of a new connection arrives ahead of its first keyframe; past the boundary, with the picture gone, it used to go into the segment whose name says it ended at the boundary (up to a GOP of audio: 9.6 s measured with a 10 s GOP). It now waits for the video frame that opens the next segment. At an ordinary boundary, with the picture flowing, nothing changes.
 - `hik://`, `dahua://` and `xmeye://` never learned the device's RTSP port and always produced 554: Hikvision's channel list carries no port (it is the RTSP entry of `/ISAPI/Security/adminAccesses`), Dahua's config section is `RTSP` (not `Rtsp`), XMeye keeps it in `NetWork.RTSP` (`Server.Port`), not `NetWork.NetCommon`. Each is now read from the right place and checked as before (a reported port must be a number); a device that reports RTSP switched off (Hikvision `enabled`, Reolink `rtspEnable`, XMeye `IsServer`) gets a warning naming the setting.
 - `hik://` checks that the stream exists in the device's channel list and lists the ones it has; `xmeye://` builds the path the device itself shows (`…stream=0.sdp?real_stream`).
 - A malformed shortcut URI is explained in the log with the expected form.

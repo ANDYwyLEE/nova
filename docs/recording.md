@@ -47,7 +47,7 @@ Nova stamps every frame from the camera's own clock (RTP timestamps), not by cou
 
 - A camera that announces 25 fps but delivers 12 produces a file that plays at the right speed, with audio in sync.
 - Dropped or missing frames become short freezes, not a sped-up timeline.
-- A reconnect (network outage, camera reboot) re-anchors the stream to wall time: the gap is preserved in the file and audio/video stay aligned.
+- A reconnect (network outage, camera reboot) re-anchors the stream to wall time: the gap is preserved in the file and audio/video stay aligned. The new connection's audio arrives ahead of its first keyframe and goes into the segment whose time it falls in: past a boundary it waits for the video frame that opens the next segment.
 - Audio and video from the same camera share one clock inside each segment; the camera's audio is resampled when the encoder needs a different rate, and when its format changes after a reconnect.
 - Whether a file gets an audio track is decided by the camera's first audio frame: the writer holds up to 2 s of video for it (not at all for a camera without an audio stream).
 

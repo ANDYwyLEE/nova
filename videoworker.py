@@ -971,6 +971,8 @@ class VideoWorker(QThread):
                         raise _Reconnect(reason)
                     dec.fallback_sw(f"{dec.name}: {reason}", False)
                     t_vframe = now
+            if self.run_flag:                # the demuxer hit the end of the stream (EOF)
+                logging.info(f"[VideoWorker] stream ended after {time.monotonic() - t_start:.0f} s; reconnecting [{u_disp}]")
         except _Reconnect as r:
             self.stat_sig.emit(f"Reconnecting:\n{r}")
             self._log_fail(re.sub(r"\d+", "#", str(r)), f"[VideoWorker] {r}; reconnecting. [{u_disp}]")

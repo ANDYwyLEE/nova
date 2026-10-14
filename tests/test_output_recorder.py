@@ -242,3 +242,44 @@ def test_a_failed_rename_never_lets_the_next_segment_truncate_the_file(app, tmp_
     assert names == ["20261014_1029_1030.mp4", "20261014_1030_1031.mp4", "20261014_1031_1031.mp4"], names
     assert (sub / "20261014_1029_1030.mp4").stat().st_size == kept
     assert abs(count_frames(sub / "20261014_1029_1030.mp4") - 10 * FPS) <= 1     # (float clock steps)
+
+
+class FakeWriter:
+    """Counts what the recorder hands it; no file is written."""
+    def __init__(self, *a, **k):
+        self.first_packet_sent = True
+        self.v_frames = self.a_frames = 0
+
+    def write_video(self, f): self.v_frames += 1
+    def write_audio(self, f): self.a_frames += 1
+    def close(self): pass
+
+
+def test_audio_past_the_boundary_with_the_picture_gone_waits_for_the_next_segment(app, tmp_path, monkeypatch):
+    """A reconnect straddling a segment boundary: the next connection's audio arrives ahead of its first
+    keyframe.  It used to go into the old segment, whose name says it ended at the boundary (up to a GOP
+    of audio, measured 9.6 s with a 10 s GOP).  At an ordinary boundary, with the picture flowing, the
+    audio just past it still goes to the old segment: no hole at the start of the next one."""
+    writers = []
+    monkeypatch.setattr(recorder, "AVWriter", lambda *a, **k: writers.append(FakeWriter()) or writers[-1])
+    clock = Clock(local(2026, 10, 14, 21, 40, 0))
+    monkeypatch.setattr(recorder, "time", clock)
+    r = make_recorder(tmp_path, monkeypatch)
+    r.set_interval(60)
+    t0 = clock.t
+    feed(r, clock, t0, t0 + 10)                       # picture until 21:40:10, then gone
+    assert len(writers) == 1
+    clock.t = t0 + 40; r.write(2, "audio")            # the next connection's audio, before the boundary
+    assert writers[0].a_frames == 1                   # ... is this segment's
+    clock.t = t0 + 61; r.write(2, "audio")            # past 21:41:00 with no picture for 51 s: waits
+    assert writers[0].a_frames == 1 and len(writers) == 1
+    clock.t = t0 + 63; r.write(1, frame(0))           # the first keyframe opens the next segment
+    assert len(writers) == 2 and writers[1].v_frames == 1
+    clock.t = t0 + 63.05; r.write(2, "audio")
+    assert writers[1].a_frames == 1
+
+    n = feed(r, clock, t0 + 63.04, t0 + 120, i0=1)    # picture flowing up to the 21:42:00 boundary
+    clock.t = t0 + 120.01; r.write(2, "audio")        # just past it, the next frame 30 ms away
+    assert len(writers) == 2 and writers[1].a_frames == 2
+    clock.t = t0 + 120.04; r.write(1, frame(n))
+    assert len(writers) == 3
