@@ -61,7 +61,7 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # one [section] pe
 - **Streaming that matches the target.** H.264 for RTMP (what YouTube accepts), H.264/HEVC for HLS, 2-second keyframes, a silent audio track when the camera has none, and reconnection with backoff when the server drops the connection. A night of 1080p25 to YouTube with recording on the side ran at a flat 1 GB of memory and a fifth of a core.
 - **Encoders chosen for you.** With `--accel`, the matching hardware encoder (NVENC, Quick Sync, AMF, VideoToolbox), else libx264; probed once per process under a cross-process lock, and swapped for the next candidate if it fails at the real size.
 - **Real FFmpeg option pass-through.** `--ffmpeg "-rtsp_transport udp -i -b:v 4M -vf transpose=1 -r 10"` is routed by FFmpeg's own option tables: every option goes to the demuxer, decoder, encoder or muxer that defines it, `-i` splits input from output options as on an `ffmpeg` command line, and options that only the `ffmpeg` program has are reported with what to use instead.
-- **Camera discovery.** `onvif://`, `xmeye://`, `hik://`, `dahua://` resolve the RTSP URL for you; results are cached without the password.
+- **Camera discovery.** `onvif://`, `hik://`, `dahua://`, `xmeye://`, `reolink://` and `axis://` ask the device for its RTSP port and stream URL, `tapo://` and `unv://` know the maker's path, and `/CHANNEL/STREAM` picks a recorder channel (`hik://admin:pw@nvr/3/sub`); results are cached without the password.
 - **Your secrets stay yours.** `cameras.ini` is git-ignored and read by each camera process itself, so a password or stream key never appears on a command line (`ps`), in a log (masked) or in a file others can read: recordings, snapshots, logs, layouts and settings are created private. A pre-commit guard refuses to commit credentials.
 - **Small and transparent.** Under 10k lines of Python in 28 files; no ffmpeg binary, no GStreamer, no database, no daemon. The PyPI `av` wheel already bundles FFmpeg with NVENC/NVDEC, Quick Sync and AMF.
 
@@ -69,13 +69,13 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # one [section] pe
 
 | Area | What you get |
 |---|---|
-| Inputs | RTSP (TCP/UDP), RTMP, SRT*, HTTP/HLS, MPEG-TS over UDP, files, capture devices (`-i 0`, `dshow://video=NAME`, `v4l2:///dev/video2`), `onvif://` `xmeye://` `hik://` `dahua://` |
+| Inputs | RTSP (TCP/UDP), RTMP, SRT*, HTTP/HLS, MPEG-TS over UDP, files, capture devices (`-i 0`, `dshow://video=NAME`, `v4l2:///dev/video2`), `onvif://` `hik://` `dahua://` `xmeye://` `reolink://` `axis://` `tapo://` `unv://` |
 | Decoding | software (multi-threaded), `cuda` (NVDEC/CUVID), `qsv`, `vaapi`*, `videotoolbox`, `d3d11va`, `dxva2`, `rkmpp`/`v4l2m2m` (SBCs) |
 | Display | OpenGL shader path (NV12/YUV direct), QPainter fallback, frame-rate cap, zoom, fullscreen, focus-coloured borders |
 | Recording | fragmented MP4 segments aligned to the clock, camera-clock timestamps, NVENC/QSV/AMF/VideoToolbox/x264, `-vf` filters, `-r` decimation |
 | Streaming | RTMP (YouTube, Twitch), HLS (YouTube HLS ingest incl. HEVC), SRT*, MPEG-TS; silent-audio synthesis |
 | Audio | PortAudio playback with device selection and resampling fallback |
-| Discovery | ONVIF (port probing, vendor-agnostic SOAP), XMeye DVRIP, Hikvision ISAPI, Dahua CGI |
+| Discovery | ONVIF (port probing, vendor-agnostic SOAP), Hikvision ISAPI, Dahua CGI, XMeye DVRIP, Reolink HTTP API, Axis VAPIX; Tapo and Uniview paths; recorder channels |
 | Operations | `nova` launcher (`start`, `record`, `run`, `stop`, `restart`, `status`, `layout`) with a git-ignored camera list and a control channel per camera, layouts (save / apply to running windows / export to Wayland window rules), auto-reconnect, bounded I/O timeouts, clean SIGINT/SIGTERM shutdown, masked passwords, private files, pre-commit secret guard |
 
 \* SRT and VAAPI need a [custom FFmpeg build](docs/custom-ffmpeg.md); everything else works with the PyPI wheel.
@@ -107,7 +107,7 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 | `avwriter.py` | encoder selection, timestamps, `-vf` graph, muxing to files and live targets |
 | `recorder.py`, `streamer.py`, `recworker.py` | segment rotation, stream lifecycle, encoder threads |
 | `audioworker.py`, `audioplayer.py` | PortAudio playback |
-| `auth.py` | ONVIF / XMeye / Hikvision / Dahua URL resolution |
+| `auth.py` | ONVIF / Hikvision / Dahua / XMeye / Reolink / Axis / Tapo / Uniview URL resolution |
 | `ffparser.py`, `ffopts_tables.py`, `tools/gen_ffopts.py` | `--ffmpeg` string → input / decoder / encoder / muxer options, routed by FFmpeg's own option tables (generated from `ffmpeg -h`, the codec tables read from the PyAV build) |
 | `util.py`, `logsync.py` | platform checks, password/stream-key masking (logs, launcher output, the pre-commit hook), log setup |
 | `dispframe.py`, `zoomer.py`, `mousehandler.py`, `keyhandler.py`, `helper.py` | display frame container, zoom math, input handling, help overlay (`docs/gen_keys.py` builds the manual's tables from it) |

@@ -518,10 +518,12 @@ class VideoWorker(QThread):
 
     # ------------------------------------------------------------------ connection
     def _resolve_source(self):
-        """onvif:// xmeye:// hik:// dahua:// are resolved here, on the worker thread.  The result is kept;
-        after RERESOLVE_AFTER attempts in a row without a picture it is resolved again, bypassing the
-        disk cache (the camera may have moved to another port, or the first answer was a fallback)."""
-        if not any(self.url.startswith(p) for p in ("onvif://", "xmeye://", "hik://", "dahua://")):
+        """Shortcut URIs (onvif:// xmeye:// hik:// dahua:// reolink:// ...: auth.SHORTCUT_DEFAULT_PORTS) are
+        resolved here, on the worker thread.  The result is kept; after RERESOLVE_AFTER attempts in a row
+        without a picture it is resolved again, bypassing the disk cache (the camera may have moved to
+        another port, or the first answer was a fallback)."""
+        from auth import shortcut_scheme, resolve_input_uri
+        if shortcut_scheme(self.url) is None:
             self._resolved = self.url
             return self._resolved
         again = self._resolved is not None
@@ -531,7 +533,6 @@ class VideoWorker(QThread):
         self.stat_sig.emit(f"Resolving...\n{display_url(self.url)}")
         url = None
         try:
-            from auth import resolve_input_uri
             url = resolve_input_uri(self.url, use_cache=not again, should_stop=lambda: not self.run_flag,
                                     quiet=self._resolve_failed or again)
         except Exception as e:

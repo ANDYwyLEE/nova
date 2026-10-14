@@ -10,6 +10,7 @@ import base64
 import socket
 import hashlib
 import logging
+import warnings
 import selectors
 import threading
 import ipaddress
@@ -34,7 +35,23 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(CURRENT_DIR, ".uri_cache.json")
 CACHE_EXPIRE_DAYS = 1
 
-SHORTCUT_DEFAULT_PORTS = {"onvif": None, "xmeye": 34567, "hik": 80, "dahua": 80}
+# Shortcut schemes -> default port of what Nova talks to first: the device's management interface
+# (ONVIF: probed; XMeye: DVRIP; Hikvision, Dahua, Axis: HTTP; Reolink: HTTPS then HTTP), or the RTSP
+# port itself for the schemes that only build a URL (Tapo, Uniview).  Resolvers: _RESOLVERS below.
+SHORTCUT_DEFAULT_PORTS = {"onvif": None, "xmeye": 34567, "hik": 80, "dahua": 80, "reolink": None,
+                          "axis": 80, "tapo": 554, "unv": 554}
+# OEM lines that run their maker's firmware and HTTP API
+SCHEME_ALIASES = {"amcrest": "dahua", "annke": "hik", "hilook": "hik"}
+# the STREAM part of a shortcut URI: 0 main, 1 sub, 2 third
+STREAM_NAMES = {"": 0, "0": 0, "m": 0, "main": 0, "1": 1, "s": 1, "sub": 1, "2": 2, "t": 2, "third": 2, "ext": 2}
+
+
+def shortcut_scheme(url):
+    """'hik' for 'hik://...' (and for its alias 'annke://...'), None for anything that is no shortcut."""
+    s = str(url or "")
+    scheme = s.split("://", 1)[0].lower() if "://" in s else ""
+    scheme = SCHEME_ALIASES.get(scheme, scheme)
+    return scheme if scheme in SHORTCUT_DEFAULT_PORTS else None
 
 
 # --- Stop / quiet support ----------------------------------------------------------------
@@ -131,7 +148,7 @@ def _masked_for_cache(url):
 def save_cache(uri, resolved_url):
     masked = _masked_for_cache(resolved_url)
     if masked is None:
-        logging.debug("[ONVIF] resolved URI not cached: its password cannot be masked")
+        logging.debug("[Resolve] resolved URI not cached: its password cannot be masked")
         return
     cache = load_cache()
     cache[_cache_key(uri)] = {
@@ -297,16 +314,18 @@ def _qpath(s):
     return s.replace("&", "%26").replace("#", "%23").replace("?", "%3F")
 
 def parse_uri(uri, default_port, default_stream='0'):
-    """scheme://user:password@host[:port][/stream].  The user info ends at the *last* '@' (a password may
-    contain '@' or '/'), user and password are percent-decoded, IPv6 hosts are written [addr].
-    'ip' is the bare host, 'host' its URL form."""
+    """scheme://user:password@host[:port][/[channel/]stream].  The user info ends at the *last* '@' (a
+    password may contain '@' or '/'), user and password are percent-decoded, IPv6 hosts are written
+    [addr].  'ip' is the bare host, 'host' its URL form; 'channel' the recorder channel (1-based,
+    default 1, 'channel_given' tells whether it was written); 'stream_idx' 0 main / 1 sub / 2 third
+    (STREAM_NAMES) or, for an ONVIF profile, any index; 'stream' the text as written."""
     m = re.match(r'^[A-Za-z][A-Za-z0-9+.\-]*://(.*)$', uri or "", re.S)
     if not m: return None
     userinfo, at, hostpart = m.group(1).rpartition('@')
     if not at: return None
     user, colon, pwd = userinfo.partition(':')
     if not colon: return None
-    hostport, _, stream = hostpart.partition('/')
+    hostport, _, path = hostpart.partition('/')
     if hostport.startswith('['):
         end = hostport.find(']')
         if end < 0: return None
@@ -321,11 +340,25 @@ def parse_uri(uri, default_port, default_stream='0'):
         if port is None: return None
     else:
         port = default_port
-    stream_val = stream if stream else default_stream
+    parts = [p for p in path.split('/') if p] if path else []
+    if len(parts) > 2: return None
+    channel = 1
+    if len(parts) == 2:
+        if not re.fullmatch(r'[1-9][0-9]{0,3}', parts[0]): return None
+        channel = int(parts[0])
+    stream_val = parts[-1] if parts else default_stream
+    key = stream_val.strip().lower()
+    if key in STREAM_NAMES:
+        stream_idx = STREAM_NAMES[key]
+    elif re.fullmatch(r'[0-9]{1,3}', key):
+        stream_idx = int(key)           # an ONVIF profile index; the vendor resolvers refuse > 2
+    else:
+        return None
     return {
         'user': unquote(user), 'pwd': unquote(pwd),
         'ip': ip, 'host': _url_host(ip), 'port': port,
-        'stream': stream_val, 'stream_idx': 0 if stream_val in ['0', 'm', 'main', ''] else 1,
+        'channel': channel, 'channel_given': len(parts) == 2,
+        'stream': stream_val, 'stream_idx': stream_idx,
     }
 
 
@@ -410,17 +443,21 @@ def _points_to_camera(url, info):
 
 #========================================
 def resolve_input_uri(uri, use_cache=True, should_stop=None, quiet=False):
-    """onvif:// xmeye:// hik:// dahua:// -> rtsp:// URL with credentials (None on failure).
-    use_cache=False asks the device again (the cache is refreshed); should_stop() is polled between
-    and during network calls; quiet=True logs failures at DEBUG (the caller reports repeats)."""
-    scheme = uri.split("://", 1)[0].lower() if "://" in uri else ""
-    if scheme not in SHORTCUT_DEFAULT_PORTS:
+    """A shortcut URI (onvif:// xmeye:// hik:// dahua:// reolink:// axis:// tapo:// unv:// and the
+    aliases in SCHEME_ALIASES) -> rtsp:// URL with credentials (None on failure); any other URL is
+    returned as it is.  use_cache=False asks the device again (the cache is refreshed); should_stop()
+    is polled between and during network calls; quiet=True logs failures at DEBUG (the caller reports
+    repeats)."""
+    scheme = shortcut_scheme(uri)
+    if scheme is None:
         return uri
+    written = uri.split("://", 1)[0].lower()
     info = parse_uri(uri, SHORTCUT_DEFAULT_PORTS[scheme])
     if not info:
         (logging.debug if quiet else logging.error)(
-            f"[ONVIF] ❌ cannot parse the {scheme}:// URI; expected {scheme}://user:password@host[:port][/0|1] "
-            f"(a ':' in the user name must be written %3A)")
+            f"[Resolve] ❌ cannot parse the {written}:// URI; expected {written}://user:password@host[:port]"
+            f"[/CHANNEL][/STREAM] with STREAM 0|main, 1|sub or 2|third (a ':' in the user name must be written %3A; "
+            f"the password shows as *** here)")
         return None
     key = _cache_key(uri)
     if use_cache:
@@ -428,27 +465,25 @@ def resolve_input_uri(uri, use_cache=True, should_stop=None, quiet=False):
         if entry:
             cached_url = _restore_password(entry["url"], info['pwd'])
             if _points_to_camera(cached_url, info):
-                logging.info(f"[ONVIF] ✅ Found cached URI: {mask_url(cached_url)}")
+                logging.info(f"[Resolve] ✅ Found cached URI: {mask_url(cached_url)}")
                 return cached_url
-            logging.warning(f"[ONVIF] ⚠️ ignoring a cached URI that does not point to {info['ip']}")
-    resolver = {"onvif": _resolve_onvif, "xmeye": _resolve_xmeye,
-                "hik": _resolve_hikvision, "dahua": _resolve_dahua}[scheme]
+            logging.warning(f"[Resolve] ⚠️ ignoring a cached URI that does not point to {info['ip']}")
     _tls.quiet = quiet
     try:
-        resolved, from_device = resolver(info, should_stop)
+        resolved, from_device = _RESOLVERS[scheme](info, should_stop)
     except ResolveStopped:
-        logging.debug(f"[ONVIF] {scheme}:// resolution stopped")
+        logging.debug(f"[Resolve] {written}:// resolution stopped")
         return None
     finally:
         _tls.quiet = False
     if resolved and not _points_to_camera(resolved, info):
-        logging.error(f"[ONVIF] ❌ refusing a resolved URI that does not point to {info['ip']}: {mask_url(resolved)}")
+        logging.error(f"[Resolve] ❌ refusing a resolved URI that does not point to {info['ip']}: {mask_url(resolved)}")
         return None
     if resolved:
         if from_device:
             save_cache(uri, resolved)
         else:
-            logging.debug("[ONVIF] resolved URI is a fallback; not cached")
+            logging.debug("[Resolve] the URI is not the device's own answer; not cached")
     return resolved
 
 class ONVIFClient:
@@ -520,6 +555,10 @@ _RE_URI = re.compile(r'<(?:\w+:)?Uri>\s*(.*?)\s*</(?:\w+:)?Uri>', re.S)
 # device reported are cached; a fallback (xmeye's default port after a failed query) is not.
 
 def _resolve_onvif(info, should_stop=None):
+    if info['channel_given']:
+        _fail("[ONVIF] ❌ ONVIF profiles are one flat list, there is no channel: pick a profile with /N "
+              "(0 = the first profile, usually the main stream, 1 = the second, ...)")
+        return None, False
     if info['port']:
         ports = [info['port']]
     else:
@@ -607,128 +646,300 @@ def _resolve_onvif(info, should_stop=None):
     return None, False
 
 
-def _resolve_xmeye(info, should_stop=None):
+# --- HTTP helpers shared by the vendor resolvers ---
+def _net_error(e, timeout):
+    err = str(e).lower()
+    if "refused" in err: return "Connection Refused"
+    if "timeout" in err or "timed out" in err: return f"Connection Timeout ({timeout}s)"
+    if "exceeded" in err: return "Max retries exceeded"
+    return "Network Error"
 
+def _digest_get(url, user, pwd, tag, should_stop, timeout=5):
+    """GET with HTTP Digest only (Basic would send the password in clear over plain http).  The
+    response, or None after logging the network failure."""
+    try:
+        return _call(should_stop, requests.get, url, auth=requests.auth.HTTPDigestAuth(user, pwd), timeout=timeout)
+    except Exception as e:
+        _fail(f"{tag} ❌ {_net_error(e, timeout)}: {url.split('/')[2]}")
+        logging.debug(f"{tag} 🔍 Full Query: {mask_url(url)}")
+        logging.trace(f"{tag} 🛠️ Raw Detail: {mask_url(str(e))}")
+        return None
+
+def _denied(resp, tag):
+    """True, and the failure logged, when the device did not answer 200."""
+    if resp.status_code == 200:
+        return False
+    what = "authentication failed (HTTP Digest)" if resp.status_code == 401 else "Access denied or failed"
+    _fail(f"{tag} ❌ {what}. Status: {resp.status_code}")
+    return True
+
+def _no_such_stream(tag, info, have):
+    _fail(f"{tag} ❌ stream {info['stream']!r} does not exist: this device has {have}")
+    return None, False
+
+
+def _resolve_xmeye(info, should_stop=None):
+    """XMeye / XiongMai (DVRIP on 34567): the RTSP port and on/off switch from the NetWork.RTSP config,
+    the stream /user=***&password=***&channel=N&stream=S.sdp?real_stream as the device shows it."""
     try: from dvrip import DVRIPCam
     except ImportError:
         logging.error("python-dvr is required for xmeye:// URIs. Run 'pip install python-dvr'")
         return None, False
-
-    ip, user, pwd = info['ip'], info['user'], info['pwd']
-    mgmt_port = info['port']
-    stream_idx = info['stream_idx']
-
-    logging.verbose(f"[XMeye] 🔍 Connecting to {ip}:{mgmt_port} to fetch RTSP port...")
-
-    rtsp_port = 554
-    from_device = True
+    if info['stream_idx'] > 1:
+        return _no_such_stream("[XMeye]", info, "streams 0 (main) and 1 (sub)")
+    ip, user, pwd, mgmt_port = info['ip'], info['user'], info['pwd'], info['port']
+    logging.verbose(f"[XMeye] 🔍 Connecting to {ip}:{mgmt_port} to fetch the RTSP port...")
+    rtsp_port, from_device = 554, True
     cam = None
     try:
         cam = DVRIPCam(ip, user=user, password=pwd, port=mgmt_port)
         if not _call(should_stop, cam.login):
             _fail(f"[XMeye] ❌ Login failed at {ip}:{mgmt_port}. Check credentials.")
             return None, False
-
-        logging.info(f"[XMeye] ✅ Login successful. Searching configs...")
+        logging.info("[XMeye] ✅ Login successful. Reading NetWork.RTSP...")
         try:
-            configs = ["NetWork.NetCommon", "NetWork.NetOrder"]
-            for cfg_name in configs:
-                cfg_data = _call(should_stop, cam.get_info, cfg_name)
-                if isinstance(cfg_data, dict) and cfg_data.get("RtspPort"):
-                    rtsp_port, from_device = _device_port(cfg_data.get("RtspPort"), "[XMeye]", ip)
-                    break
+            cfg = _call(should_stop, cam.get_info, "NetWork.RTSP")
         except Exception as e:
-            logging.debug(f"[XMeye] Optional config fetch failed: {e}")
-
-        logging.info(f"[XMeye] 🎯 Final RTSP Port determined: {rtsp_port}")
-
+            logging.debug(f"[XMeye] NetWork.RTSP not readable: {mask_url(str(e))}")
+            cfg = None
+        server = cfg.get("Server") if isinstance(cfg, dict) else None
+        if isinstance(server, dict):
+            if cfg.get("IsServer") is False:
+                logging.warning(f"[XMeye] ⚠️ the RTSP server is switched off on {ip} (NetService > RTSP in the device's settings)")
+            if server.get("Port") not in (None, ""):
+                rtsp_port, from_device = _device_port(server.get("Port"), "[XMeye]", ip)
+        else:
+            logging.debug("[XMeye] no NetWork.RTSP config (older firmware); assuming port 554")
+        logging.info(f"[XMeye] 🎯 RTSP port: {rtsp_port}")
     except Exception as e:
-        _fail(f"[XMeye] ❌ Device communication error: {e}")
-        logging.info(f"[XMeye] ⚠️  Falling back to default port 554 (not cached).")
+        _fail(f"[XMeye] ❌ Device communication error: {mask_url(str(e))}")
+        logging.info("[XMeye] ⚠️  Falling back to default port 554 (not cached).")
         rtsp_port, from_device = 554, False
     finally:
         if cam:
             try: cam.close()
             except Exception: pass
     login = "&".join(f"{k}={_qpath(v)}" for k, v in (("user", user), ("password", pwd)))
-    final_url = _rtsp_url(user, pwd, info['host'], rtsp_port, f"/{login}&channel=1&stream={stream_idx}.sdp")
+    path = f"/{login}&channel={info['channel']}&stream={info['stream_idx']}.sdp?real_stream"
+    final_url = _rtsp_url(user, pwd, info['host'], rtsp_port, path)
     logging.info(f"[XMeye] 🚀 Generated URI: {mask_url(final_url)}")
     return final_url, from_device
 
 
 def _resolve_hikvision(info, should_stop=None):
-    ip, user, pwd, port = info['ip'], info['user'], info['pwd'], info['port']
-    stream_idx = info['stream_idx'] # 0: main, 1: sub
-    api_url = f"http://{info['host']}:{port}/ISAPI/Streaming/channels"
+    """Hikvision ISAPI (HTTP Digest): the stream id is channel x 100 + 1 main / 2 sub / 3 third, checked
+    against /ISAPI/Streaming/channels; the RTSP port is the RTSP entry of /ISAPI/Security/adminAccesses
+    (the channel list does not carry it)."""
+    ip, user, pwd, port, ch = info['ip'], info['user'], info['pwd'], info['port'], info['channel']
+    if info['stream_idx'] > 2:
+        return _no_such_stream("[Hikvision]", info, "streams 0 (main), 1 (sub) and 2 (third)")
+    ch_id = str(ch * 100 + info['stream_idx'] + 1)
+    base = f"http://{info['host']}:{port}/ISAPI"
+    resp = _digest_get(f"{base}/Streaming/channels", user, pwd, "[Hikvision]", should_stop)
+    if resp is None or _denied(resp, "[Hikvision]"):
+        return None, False
     try:
-        # Digest only: HTTP Basic would send the password in clear text over plain http
-        auth = requests.auth.HTTPDigestAuth(user, pwd)
-        resp = _call(should_stop, requests.get, api_url, auth=auth, timeout=5)
-        if resp.status_code != 200:
-            what = "authentication failed (HTTP Digest)" if resp.status_code == 401 else "Access denied or failed"
-            _fail(f"[Hikvision] ❌ {what}. Status: {resp.status_code}")
-            return None, False
-        doc = xmltodict.parse(resp.content)
-        root = _find(doc, 'StreamingChannelList') or {}
-        channels = _find(root, 'StreamingChannel') or []
-        if not isinstance(channels, list): channels = [channels]
-        target_ch_id = "101" if stream_idx == 0 else "102"
-        rtsp_port, from_device = 554, True
-        for ch in channels:
-            ch_id = _text(_find(ch, 'id'))
-            if ch_id == target_ch_id:
-                prot_list = _find(ch, 'ControlProtocol') or []
-                if not isinstance(prot_list, list): prot_list = [prot_list]
-                for prot in prot_list:
-                    if _text(_find(prot, 'streamingTransport')) == 'RTSP':
-                        rtsp_port, from_device = _device_port(_text(_find(prot, 'portNo')), "[Hikvision]", ip)
-                break
-        resolved_url = _rtsp_url(user, pwd, info['host'], rtsp_port, f"/Streaming/Channels/{target_ch_id}")
-        logging.info(f"[Hikvision] 🎯 Resolved RTSP (stream:{stream_idx}): {mask_url(resolved_url)}")
-        return resolved_url, from_device
+        channels = _find(xmltodict.parse(resp.content), 'StreamingChannel') or []
     except Exception as e:
-        err_str = str(e).lower()
-        if "refused" in err_str: msg = "Connection Refused"
-        elif "timeout" in err_str: msg = "Connection Timeout (5s)"
-        elif "exceeded" in err_str: msg = "Max retries exceeded"
-        else: msg = "Network Error"
-        host_port = api_url.split('/')[2]
-        _fail(f"[Hikvision] ❌ {msg}: {host_port}")
-        logging.debug(f"[Hikvision] 🔍 Full Query: {api_url}")
-        logging.trace(f"[Hikvision] 🛠️ Raw Detail: {e}")
-    return None, False
+        _fail(f"[Hikvision] ❌ unreadable channel list from {ip}: {type(e).__name__}")
+        return None, False
+    if not isinstance(channels, list): channels = [channels]
+    ids = [str(_text(_find(c, 'id')) or "").strip() for c in channels]
+    if ids and ch_id not in ids:
+        shown = ", ".join(ids[:16]) + (" ..." if len(ids) > 16 else "")
+        _fail(f"[Hikvision] ❌ {ip} has no stream {ch_id} (channel {ch}, stream {info['stream_idx']}); it lists {shown}")
+        return None, False
+    rtsp_port, from_device = 554, True
+    resp = _digest_get(f"{base}/Security/adminAccesses", user, pwd, "[Hikvision]", should_stop)
+    protocols = None
+    if resp is not None and resp.status_code == 200:
+        try:
+            protocols = _find(xmltodict.parse(resp.content), 'AdminAccessProtocol')
+        except Exception as e:
+            logging.debug(f"[Hikvision] unreadable adminAccesses: {type(e).__name__}")
+    if protocols is None:
+        logging.debug(f"[Hikvision] adminAccesses not readable (status {getattr(resp, 'status_code', 'n/a')}); assuming RTSP port 554")
+    else:
+        if not isinstance(protocols, list): protocols = [protocols]
+        for p in protocols:
+            if str(_text(_find(p, 'protocol')) or "").strip().upper() == "RTSP":
+                if str(_text(_find(p, 'enabled')) or "true").strip().lower() == "false":
+                    logging.warning(f"[Hikvision] ⚠️ RTSP is switched off on {ip} (Network > Advanced Settings > Integration Protocol / Port)")
+                rtsp_port, from_device = _device_port(_text(_find(p, 'portNo')), "[Hikvision]", ip)
+                break
+    resolved_url = _rtsp_url(user, pwd, info['host'], rtsp_port, f"/Streaming/Channels/{ch_id}")
+    logging.info(f"[Hikvision] 🎯 Resolved RTSP (channel {ch}, stream {info['stream_idx']}): {mask_url(resolved_url)}")
+    return resolved_url, from_device
 
 
 def _resolve_dahua(info, should_stop=None):
-    ip, user, pwd, port = info['ip'], info['user'], info['pwd'], info['port']
-    stream_idx = info['stream_idx'] # 0: main, 1: sub
-    api_url = f"http://{info['host']}:{port}/cgi-bin/configManager.cgi?action=getConfig&name=Rtsp"
+    """Dahua CGI (HTTP Digest; Amcrest and other OEM lines are the same): the RTSP port from
+    configManager.cgi name=RTSP, the stream /cam/realmonitor?channel=N&subtype=S (0 main, 1 sub, 2 third)."""
+    ip, user, pwd, port, ch = info['ip'], info['user'], info['pwd'], info['port'], info['channel']
+    if info['stream_idx'] > 2:
+        return _no_such_stream("[Dahua]", info, "subtypes 0 (main), 1 (sub) and 2 (third)")
+    api_url = f"http://{info['host']}:{port}/cgi-bin/configManager.cgi?action=getConfig&name=RTSP"
+    resp = _digest_get(api_url, user, pwd, "[Dahua]", should_stop)
+    if resp is None or _denied(resp, "[Dahua]"):
+        return None, False
+    rtsp_port, from_device = 554, True
+    m = re.search(r'(?im)^\s*table\.RTSP\.Port\s*=\s*(.*?)\s*$', resp.text)
+    if m:
+        rtsp_port, from_device = _device_port(m.group(1), "[Dahua]", ip)
+    else:
+        logging.debug(f"[Dahua] no table.RTSP.Port in the answer ({resp.text[:60]!r}); assuming 554")
+    resolved_url = _rtsp_url(user, pwd, info['host'], rtsp_port, f"/cam/realmonitor?channel={ch}&subtype={info['stream_idx']}")
+    logging.info(f"[Dahua] 🎯 Resolved RTSP (channel {ch}, subtype {info['stream_idx']}): {mask_url(resolved_url)}")
+    return resolved_url, from_device
+
+
+def _resolve_reolink(info, should_stop=None):
+    """Reolink HTTP API: Login -> GetNetPort (RTSP on/off and port) -> GetRtspUrl (the device's own URL
+    for the channel; older firmware: <codec>Preview_<channel>_<main|sub> from GetEnc) -> Logout.  HTTPS
+    first (the certificate is self-signed and not verified, but the password is not readable on the
+    wire); plain HTTP only when HTTPS is off, with a warning."""
+    ip, user, pwd, ch, s = info['ip'], info['user'], info['pwd'], info['channel'], info['stream_idx']
+    if s > 1:
+        return _no_such_stream("[Reolink]", info, "streams 0 (main) and 1 (sub)")
+    stream = ("main", "sub")[s]
+    sess = requests.Session()
+    token = base = None
+
+    def post(url, cmd, param=None, tok=None):
+        q = {"cmd": cmd, **({"token": tok} if tok else {})}
+        body = [{"cmd": cmd, "action": 0, "param": param or {}}]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")          # InsecureRequestWarning for the self-signed certificate
+            r = _call(should_stop, sess.post, url, params=q, json=body, timeout=8, verify=False)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        data = r.json()
+        if not (isinstance(data, list) and data and isinstance(data[0], dict)):
+            raise RuntimeError("unexpected answer")
+        return data[0]
+
+    def get(cmd, param=None):
+        try:
+            ans = post(base, cmd, param, token)
+        except Exception as e:
+            logging.debug(f"[Reolink] {cmd} failed: {_net_error(e, 8)} ({type(e).__name__})")
+            return None
+        if ans.get("code") != 0:
+            logging.debug(f"[Reolink] {cmd}: {ans.get('error')}")
+            return None
+        return ans.get("value") or {}
+
     try:
-        auth = requests.auth.HTTPDigestAuth(user, pwd)
-        resp = _call(should_stop, requests.get, api_url, auth=auth, timeout=5)
-        if resp.status_code != 200:
-            _fail(f"[Dahua] ❌ Access failed. Status: {resp.status_code}")
+        for scheme, port in (("https", info['port'] or 443), ("http", info['port'] or 80)):
+            url = f"{scheme}://{info['host']}:{port}/cgi-bin/api.cgi"
+            try:
+                ans = post(url, "Login", {"User": {"userName": user, "password": pwd}})
+            except Exception as e:
+                logging.debug(f"[Reolink] {scheme}://{ip}:{port}: {_net_error(e, 8)} ({type(e).__name__})")
+                continue
+            if ans.get("code") != 0:
+                err = ans.get("error") or {}
+                _fail(f"[Reolink] ❌ login refused by {ip}:{port}: {err.get('detail', '?')} (rspCode {err.get('rspCode', '?')})")
+                return None, False
+            try:
+                token = str(ans["value"]["Token"]["name"])
+            except (KeyError, TypeError):
+                _fail(f"[Reolink] ❌ unexpected login answer from {ip}:{port}")
+                return None, False
+            base = url
+            if scheme == "http":
+                logging.warning(f"[Reolink] ⚠️ HTTPS is switched off on {ip}: the password went over plain HTTP")
+            logging.info(f"[Reolink] ✅ logged in at {scheme}://{ip}:{port}")
+            break
+        if token is None:
+            _fail(f"[Reolink] ❌ no HTTP API answers on {ip} (port {info['port'] or '443, then 80'}); "
+                  f"battery cameras have none, add-on cameras are reached through their NVR")
             return None, False
-        content = resp.text
         rtsp_port, from_device = 554, True
-        for line in content.splitlines():
-            if "table.Rtsp.Port=" in line:
-                rtsp_port, from_device = _device_port(line.split("=", 1)[-1].strip(), "[Dahua]", ip)
-                break
-        resolved_url = _rtsp_url(user, pwd, info['host'], rtsp_port, f"/cam/realmonitor?channel=1&subtype={stream_idx}")
-        logging.info(f"[Dahua] 🎯 Resolved RTSP (stream:{stream_idx}): {mask_url(resolved_url)}")
-        return resolved_url, from_device
-    except Exception as e:
-        err_str = str(e).lower()
-        if "refused" in err_str: msg = "Connection Refused"
-        elif "timeout" in err_str: msg = "Connection Timeout (5s)"
-        elif "exceeded" in err_str: msg = "Max retries exceeded"
-        else: msg = "Network Error"
-        host_port = api_url.split('/')[2]
-        _fail(f"[Dahua] ❌ {msg}: {host_port}")
-        logging.debug(f"[Dahua] 🔍 Full Query: {api_url}")
-        logging.trace(f"[Dahua] 🛠️ Raw Detail: {e}")
-    return None, False
+        net = (get("GetNetPort") or {}).get("NetPort")
+        if isinstance(net, dict):
+            if net.get("rtspEnable", 1) != 1:
+                logging.warning(f"[Reolink] ⚠️ RTSP is switched off on {ip}: enable it in the Reolink app "
+                                "(Settings > Network > Advanced > Port Settings)")
+            rtsp_port, from_device = _device_port(net.get("rtspPort"), "[Reolink]", ip)
+        dev = (get("GetDevInfo") or {}).get("DevInfo")
+        if isinstance(dev, dict) and isinstance(dev.get("channelNum"), int) and ch > dev["channelNum"]:
+            _fail(f"[Reolink] ❌ {dev.get('model') or ip} has {dev['channelNum']} channel(s); channel {ch} does not exist")
+            return None, False
+        urls = (get("GetRtspUrl", {"channel": ch - 1}) or {}).get("rtspUrl")
+        raw = urls.get(f"{stream}Stream") if isinstance(urls, dict) else None
+        checked = _check_stream_uri(str(raw), info, "[Reolink]") if raw else None
+        if checked:
+            final = _with_credentials(checked, user, pwd)
+            logging.info(f"[Reolink] 🎯 Resolved RTSP (channel {ch}, {stream}): {mask_url(final)}")
+            return final, from_device
+        enc = (get("GetEnc", {"channel": ch - 1}) or {}).get("Enc")
+        vtype = ((enc.get(f"{stream}Stream") or {}).get("vType") if isinstance(enc, dict) else None) or ""
+        codec = "h265" if str(vtype).lower().startswith("h265") else "h264"
+        final = _rtsp_url(user, pwd, info['host'], rtsp_port, f"/{codec}Preview_{ch:02d}_{stream}")
+        logging.info(f"[Reolink] 🎯 Resolved RTSP (channel {ch}, {stream}, no GetRtspUrl): {mask_url(final)}")
+        return final, from_device
+    finally:
+        if token and base:
+            try: post(base, "Logout", None, token)
+            except Exception: pass
+        sess.close()
+
+
+def _resolve_axis(info, should_stop=None):
+    """Axis VAPIX (HTTP Digest): the RTSP port from param.cgi, the stream /axis-media/media.amp with
+    ?camera=N when a channel is written (multi-sensor devices).  Axis has no numbered sub stream:
+    stream profiles are chosen in an rtsp:// URL written by hand (...media.amp?streamprofile=NAME)."""
+    ip, user, pwd, port, ch = info['ip'], info['user'], info['pwd'], info['port'], info['channel']
+    if info['stream_idx'] != 0:
+        _fail("[Axis] ❌ Axis cameras have no numbered sub stream; use an rtsp:// URL with a stream profile: "
+              "rtsp://user:pw@ip/axis-media/media.amp?streamprofile=NAME")
+        return None, False
+    api_url = f"http://{info['host']}:{port}/axis-cgi/param.cgi?action=list&group=Network.RTSP.Port"
+    resp = _digest_get(api_url, user, pwd, "[Axis]", should_stop)
+    if resp is None or _denied(resp, "[Axis]"):
+        return None, False
+    rtsp_port, from_device = 554, True
+    m = re.search(r'(?m)^\s*root\.Network\.RTSP\.Port\s*=\s*(\S+)', resp.text)
+    if m:
+        rtsp_port, from_device = _device_port(m.group(1), "[Axis]", ip)
+    else:
+        logging.debug(f"[Axis] no Network.RTSP.Port in the answer ({resp.text[:60]!r}); assuming 554")
+    path = "/axis-media/media.amp" + (f"?camera={ch}" if info['channel_given'] else "")
+    resolved_url = _rtsp_url(user, pwd, info['host'], rtsp_port, path)
+    logging.info(f"[Axis] 🎯 Resolved RTSP (camera {ch}): {mask_url(resolved_url)}")
+    return resolved_url, from_device
+
+
+def _resolve_tapo(info, should_stop=None):
+    """TP-Link Tapo: /stream1 (high quality) and /stream2 (standard) on port 554, with the camera
+    account created in the Tapo app (not the TP-Link cloud login).  Nothing is asked of the camera."""
+    if info['stream_idx'] > 1:
+        return _no_such_stream("[Tapo]", info, "/stream1 (0) and /stream2 (1)")
+    if info['channel'] != 1:
+        _fail("[Tapo] ❌ a Tapo camera has one channel")
+        return None, False
+    url = _rtsp_url(info['user'], info['pwd'], info['host'], info['port'], f"/stream{info['stream_idx'] + 1}")
+    logging.info(f"[Tapo] 🎯 {mask_url(url)}")
+    return url, False
+
+
+def _resolve_unv(info, should_stop=None):
+    """Uniview: cameras serve /media/video1|2|3 (main, sub, third), recorders /unicast/cN/sS/live; a
+    channel written in the URI (unv://user:pw@nvr/CH/STREAM) selects the recorder form.  Nothing is
+    asked of the device."""
+    if info['stream_idx'] > 2:
+        return _no_such_stream("[Uniview]", info, "streams 0 (main), 1 (sub) and 2 (third)")
+    ch, s = info['channel'], info['stream_idx']
+    path = f"/unicast/c{ch}/s{s}/live" if info['channel_given'] else f"/media/video{s + 1}"
+    url = _rtsp_url(info['user'], info['pwd'], info['host'], info['port'], path)
+    logging.info(f"[Uniview] 🎯 {mask_url(url)}")
+    return url, False
+
+
+_RESOLVERS = {"onvif": _resolve_onvif, "xmeye": _resolve_xmeye, "hik": _resolve_hikvision, "dahua": _resolve_dahua,
+              "reolink": _resolve_reolink, "axis": _resolve_axis, "tapo": _resolve_tapo, "unv": _resolve_unv}
+assert set(_RESOLVERS) == set(SHORTCUT_DEFAULT_PORTS) and set(SCHEME_ALIASES.values()) <= set(_RESOLVERS)
 
 
 def _public(resolver, default_port):
@@ -747,3 +958,5 @@ resolve_onvif = _public(_resolve_onvif, None)
 resolve_xmeye = _public(_resolve_xmeye, 34567)
 resolve_hikvision = _public(_resolve_hikvision, 80)
 resolve_dahua = _public(_resolve_dahua, 80)
+resolve_reolink = _public(_resolve_reolink, None)
+resolve_axis = _public(_resolve_axis, 80)

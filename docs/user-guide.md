@@ -45,12 +45,35 @@ enabled = no
 
 | Key | Meaning |
 |---|---|
-| `url` | anything FFmpeg can open: `rtsp://`, `rtmp://`, `srt://`, `http(s)://`, `udp://`, a file, or the shortcuts `onvif://user:pw@ip[:port][/0\|1]`, `xmeye://`, `hik://`, `dahua://`, `0` / `v4l2:///dev/video2` / `dshow://video=NAME` / `avfoundation://0` for capture devices |
+| `url` | anything FFmpeg can open: `rtsp://`, `rtmp://`, `srt://`, `http(s)://`, `udp://`, a file; a brand shortcut that finds the RTSP URL for you: `onvif://user:pw@ip[:port][/N]`, `hik://`, `dahua://`, `xmeye://`, `reolink://`, `axis://`, `tapo://`, `unv://` ([Camera brands](#camera-brands)); `0` / `v4l2:///dev/video2` / `dshow://video=NAME` / `avfoundation://0` for capture devices |
 | `name` | window title, the folder under `videos/` and the start of snapshot file names (default: the section name; characters other than letters, digits, `.`, `_`, `-` become `_`) |
 | `opts` | any `nova.py` options; appended to `[defaults] opts` |
 | `enabled` | `no` keeps the camera out of `start` (it can still be started by id) |
 
 Comments are whole lines starting with `;` or `#`. A `;` after a value is part of the value.
+
+## Camera brands
+
+The RTSP path differs by maker and the port by setup. For the brands below, write a shortcut instead of an `rtsp://` URL: Nova asks the device for its port and stream, or builds the URL from the maker's documented form.
+
+```
+scheme://user:password@host[:port][/CHANNEL][/STREAM]
+```
+
+`CHANNEL` is the recorder channel (1 = the first; leave it out for a camera), `STREAM` is `0`/`main`, `1`/`sub` or `2`/`third` (default: main). `hik://admin:pw@nvr/3/sub` is the sub stream of channel 3 of a Hikvision NVR; `dahua://admin:pw@cam/1` the sub stream of a camera.
+
+| Shortcut | Also for | What Nova asks, and where | RTSP URL it builds |
+|---|---|---|---|
+| `onvif://` | any ONVIF camera | the ONVIF service on `:port` (25 common ports probed when none is given): the media profiles and the stream URI | the device's own answer; `/N` picks the N-th profile (0 = the first) |
+| `hik://` | Annke (`annke://`), HiLook (`hilook://`), HiWatch | ISAPI on `:80` (HTTP Digest): the channel list and the RTSP port | `/Streaming/Channels/<CHANNEL><1\|2\|3>` |
+| `dahua://` | Amcrest (`amcrest://`), EmpireTech and other Dahua OEM lines | the CGI on `:80` (HTTP Digest): the RTSP port | `/cam/realmonitor?channel=<CHANNEL>&subtype=<0\|1\|2>` |
+| `xmeye://` | cameras and DVRs set up with the XMeye, ICSee or VMS app (XiongMai firmware) | DVRIP on `:34567` (`pip install python-dvr`): the RTSP port and whether the RTSP server is on | `/user=…&password=…&channel=<CHANNEL>&stream=<0\|1>.sdp?real_stream` |
+| `reolink://` | Reolink cameras and NVRs (battery models have no API) | the HTTP API, HTTPS `:443` first, then HTTP `:80` with a warning: login, the ports (and whether RTSP is on), the channel count, the device's own stream URL | the device's answer; older firmware `/h264Preview_<CHANNEL>_<main\|sub>` (`h265` when the stream is H.265) |
+| `axis://` | Axis | VAPIX on `:80` (HTTP Digest): the RTSP port | `/axis-media/media.amp` (`?camera=<CHANNEL>` when a channel is written; no numbered sub stream: write a stream profile into an `rtsp://` URL yourself) |
+| `tapo://` | TP-Link Tapo (the camera account from the Tapo app, not the cloud login) | nothing: `:port` is the RTSP port | `/stream1` or `/stream2` |
+| `unv://` | Uniview | nothing: `:port` is the RTSP port | camera `/media/video<1\|2\|3>`; with a channel written, recorder `/unicast/c<CHANNEL>/s<0\|1\|2>/live` |
+
+What a device answers is checked before the password is attached: the stream must be `rtsp`/`rtsps` on the device's own address with a valid port, a reported port must be a number (never `554@other-host`), and the password only ever goes to the address you wrote (Digest for HTTP, never Basic). A device that reports RTSP switched off gets a warning in the log naming the setting to turn on. For other brands, the maker's manual or the camera's web page gives the RTSP URL, `onvif://` works for most, and `-l DEBUG` shows every answer with credentials masked.
 
 ## The launcher: nova
 
@@ -115,7 +138,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 <!-- generated:args -->
 | Option | Meaning |
 |---|---|
-| `-i, --input` | Video source: rtsp/rtmp/srt URL, onvif://, xmeye://, hik://, dahua://, a capture device ('0' = /dev/video0 or avfoundation 0, 'dshow://video=NAME' on Windows). |
+| `-i, --input` | Video source: rtsp/rtmp/srt URL; a brand shortcut that finds the RTSP URL (onvif://, hik://, dahua://, xmeye://, reolink://, axis://, tapo://, unv:// followed by user:pw@host[:port][/CHANNEL][/STREAM]); a capture device ('0' = /dev/video0 or avfoundation 0, 'dshow://video=NAME' on Windows). |
 | `-n, --name, --camera-name` | Camera name: the window title becomes 'Nova - NAME', recordings go to videos/NAME/ and snapshots are named NAME_<time>.png. |
 | `--opengl` | Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended). |
 | `--accel` | Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m ...). |
@@ -234,7 +257,7 @@ Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom regio
 | Windows | registry `HKEY_CURRENT_USER\Software\judvi\Nova` |
 | macOS | `~/Library/Preferences/com.judvi.Nova.plist` |
 
-Resolved `onvif://` / `xmeye://` / `hik://` / `dahua://` URLs are cached for one day in `.uri_cache.json` next to `nova.py`, without the password. Only URLs built from the device's own answer are cached, and a camera that gives no picture three times in a row is asked again. What a device answers is checked before the password is attached: the stream must be `rtsp`/`rtsps` on the camera's own address and a valid port. A password may contain `@` (`user:pa@ss@ip` works) or be percent-encoded.
+Resolved shortcut URLs (`onvif://`, `hik://`, `dahua://`, `xmeye://`, `reolink://`, `axis://`: [Camera brands](#camera-brands)) are cached for one day in `.uri_cache.json` next to `nova.py`, without the password. Only URLs built from the device's own answer are cached (`tapo://` and `unv://` need no cache), and a camera that gives no picture three times in a row is asked again. A password may contain `@` (`user:pa@ss@ip` works) or be percent-encoded.
 
 Everything Nova and the launcher write (recordings, snapshots, logs, layouts, the pid file, the settings file) is created readable by you only (umask 077 on Linux and macOS): footage and logs are private on a shared machine. Files from older versions keep their permissions; `chmod -R go-rwx videos snapshots logs layouts` tightens them. If another account or a service (Samba, a media server, backups) reads `videos/`, set `NOVA_UMASK = 022` in `[env]` (and in the shell that runs `./nova`). Keep `cameras.ini` at `chmod 600`; the launcher warns when others can read it.
 

@@ -1,5 +1,5 @@
 name: Camera does not connect
-description: No picture, "Unreachable", "Failed", or discovery (onvif://, xmeye://, hik://, dahua://) finds nothing
+description: No picture, "Unreachable", "Failed", or a shortcut (onvif://, hik://, dahua://, xmeye://, reolink://, ...) finds nothing
 labels: [camera]
 body:
   - type: markdown
@@ -13,7 +13,7 @@ body:
       options:
         - rtsp:// with the URL typed by hand
         - onvif:// (discovery)
-        - xmeye:// / hik:// / dahua:// (vendor discovery)
+        - a brand shortcut (hik://, dahua://, xmeye://, reolink://, axis://, tapo://, unv://)
         - http:// (MJPEG or HLS)
         - srt:// / udp:// / rtmp://
         - a capture device (-i 0, dshow://, v4l2://)

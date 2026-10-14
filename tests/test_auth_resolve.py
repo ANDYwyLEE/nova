@@ -72,12 +72,16 @@ def device():
         d.close()
 
 
-def digest_only(ok_text):
-    """HTTP Digest like a Hikvision / Dahua camera: 401 with a challenge until Digest credentials come."""
+def digest_only(ok_text, paths=None):
+    """HTTP Digest like a Hikvision / Dahua / Axis camera: 401 with a challenge until Digest credentials
+    come.  paths: {path: text} answered by path (query string ignored); other paths 404."""
     def answer(h, body):
-        if h.headers.get("Authorization", "").startswith("Digest "):
+        if not h.headers.get("Authorization", "").startswith("Digest "):
+            return 401, {"WWW-Authenticate": 'Digest realm="cam", nonce="abc", qop="auth"'}, ""
+        if paths is None:
             return 200, {}, ok_text
-        return 401, {"WWW-Authenticate": 'Digest realm="cam", nonce="abc", qop="auth"'}, ""
+        text = paths.get(h.path.split("?")[0])
+        return (200, {}, text) if text is not None else (404, {}, "")
     return answer
 
 
@@ -92,6 +96,29 @@ def test_parse_uri_credentials_and_hosts():
     assert auth.parse_uri("onvif://admin:pw@10.0.0.5:99999", None) is None
     assert auth.parse_uri("onvif://admin:pw@10.0.0.5:80x", None) is None
     assert auth.parse_uri("onvif://10.0.0.5", None) is None
+
+
+@pytest.mark.parametrize("tail, channel, given, idx", [
+    ("", 1, False, 0), ("/", 1, False, 0), ("/0", 1, False, 0), ("/main", 1, False, 0), ("/sub", 1, False, 1),
+    ("/third", 1, False, 2), ("/2", 1, False, 2), ("/7", 1, False, 7),          # 7: an ONVIF profile index
+    ("/3/1", 3, True, 1), ("/12/main", 12, True, 0), ("/3/1/", 3, True, 1),
+])
+def test_parse_uri_channel_and_stream(tail, channel, given, idx):
+    i = auth.parse_uri(f"hik://u:p@10.0.0.5{tail}", 80)
+    assert (i["channel"], i["channel_given"], i["stream_idx"]) == (channel, given, idx), tail
+
+
+@pytest.mark.parametrize("tail", ["/x", "/0/1", "/a/1", "/1/x", "/1/2/3", "/1/1234/"])
+def test_parse_uri_rejects_bad_channel_or_stream(tail):
+    assert auth.parse_uri(f"hik://u:p@10.0.0.5{tail}", 80) is None, tail
+
+
+def test_shortcut_schemes_and_aliases():
+    assert auth.shortcut_scheme("HIK://u:p@h") == "hik"
+    assert auth.shortcut_scheme("amcrest://u:p@h") == "dahua" and auth.shortcut_scheme("annke://u:p@h") == "hik"
+    assert auth.shortcut_scheme("rtsp://u:p@h/x") is None and auth.shortcut_scheme("0") is None
+    assert auth.resolve_input_uri("rtsp://u:p@h/x") == "rtsp://u:p@h/x"            # not a shortcut: untouched
+    assert set(auth._RESOLVERS) == set(auth.SHORTCUT_DEFAULT_PORTS)
 
 
 def test_ipv6_brackets_are_kept():
@@ -128,18 +155,36 @@ def test_device_ports_must_be_port_numbers():
 
 
 # ---------------------------------------------------------------- Hikvision
-HIK_XML = """<?xml version="1.0" encoding="UTF-8"?>
-<StreamingChannelList xmlns="http://www.hikvision.com/ver20/XMLSchema">
-<StreamingChannel><id>101</id><Transport><ControlProtocolList>
-<ControlProtocol><streamingTransport>RTSP</streamingTransport><portNo>{port}</portNo></ControlProtocol>
-</ControlProtocolList></Transport></StreamingChannel></StreamingChannelList>"""
+def hik_channels(*ids):
+    """/ISAPI/Streaming/channels as a camera (101, 102) or an NVR (101, 102, 201, ...) lists it."""
+    items = "".join(f"<StreamingChannel version=\"2.0\"><id>{i}</id><channelName>Camera</channelName>"
+                    "<Transport><ControlProtocolList><ControlProtocol><streamingTransport>RTSP</streamingTransport>"
+                    "</ControlProtocol></ControlProtocolList></Transport></StreamingChannel>" for i in ids)
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<StreamingChannelList version="2.0" '
+            f'xmlns="http://www.hikvision.com/ver20/XMLSchema">{items}</StreamingChannelList>')
+
+def hik_access(rtsp_port, enabled="true"):
+    """/ISAPI/Security/adminAccesses: the one place ISAPI reports the RTSP port."""
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<AdminAccessProtocolList version="2.0" '
+            'xmlns="http://www.hikvision.com/ver20/XMLSchema">'
+            '<AdminAccessProtocol version="2.0"><id>1</id><enabled>true</enabled><protocol>HTTP</protocol><portNo>80</portNo></AdminAccessProtocol>'
+            f'<AdminAccessProtocol version="2.0"><id>3</id><enabled>{enabled}</enabled><protocol>RTSP</protocol><portNo>{rtsp_port}</portNo></AdminAccessProtocol>'
+            '</AdminAccessProtocolList>')
+
+def hik_device(device, rtsp_port="554", ids=(101, 102), access=True, enabled="true"):
+    paths = {"/ISAPI/Streaming/channels": hik_channels(*ids)}
+    if access:
+        paths["/ISAPI/Security/adminAccesses"] = hik_access(rtsp_port, enabled)
+    return device(digest_only(None, paths))
 
 
 def test_hikvision_port_from_the_device(device, cache_file):
-    d = device(digest_only(HIK_XML.format(port="8554")))
+    d = hik_device(device, "8554")
     uri = f"hik://admin:p%40ss/w@127.0.0.1:{d.port}/0"
     url = auth.resolve_input_uri(uri)
     assert url == "rtsp://admin:p%40ss%2Fw@127.0.0.1:8554/Streaming/Channels/101"
+    assert [r.path for r in d.requests if r.headers.get("Authorization", "").startswith("Digest")] == \
+        ["/ISAPI/Streaming/channels", "/ISAPI/Security/adminAccesses"]
     cached = json.loads(cache_file.read_text())
     assert "p@ss" not in cache_file.read_text() and "p%40ss" not in cache_file.read_text()
     assert list(cached.values())[0]["url"].startswith("rtsp://admin:***@127.0.0.1:8554/")
@@ -147,10 +192,33 @@ def test_hikvision_port_from_the_device(device, cache_file):
 
 
 def test_hikvision_hostile_port_is_rejected(device, cache_file):
-    d = device(digest_only(HIK_XML.format(port="554@127.0.0.1:9")))
+    d = hik_device(device, "554@127.0.0.1:9")
     url = auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}/0")
     assert url == "rtsp://admin:pw@127.0.0.1/Streaming/Channels/101"
     assert not cache_file.exists()                                  # a fallback is not cached
+
+
+def test_hikvision_without_admin_accesses_assumes_554(device, caplog):
+    d = hik_device(device, access=False)
+    assert auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}/1") == \
+        "rtsp://admin:pw@127.0.0.1/Streaming/Channels/102"
+
+
+def test_hikvision_nvr_channels(device, caplog):
+    d = hik_device(device, "10554", ids=(101, 102, 201, 202, 203))
+    assert auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}/2/third") == \
+        "rtsp://admin:pw@127.0.0.1:10554/Streaming/Channels/203"
+    with caplog.at_level(logging.ERROR):
+        assert auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}/3/0") is None
+    assert "no stream 301" in caplog.text and "101, 102, 201" in caplog.text
+    assert auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}/1/5") is None     # no such stream
+
+
+def test_hikvision_warns_when_rtsp_is_off(device, caplog):
+    d = hik_device(device, "554", enabled="false")
+    with caplog.at_level(logging.WARNING):
+        assert auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}").endswith("/Streaming/Channels/101")
+    assert "RTSP is switched off" in caplog.text
 
 
 def test_hikvision_never_sends_basic_auth(device):
@@ -160,18 +228,138 @@ def test_hikvision_never_sends_basic_auth(device):
     assert sent and not any(a.startswith("Basic") for a in sent)
 
 
+def test_annke_is_hikvision(device):
+    d = hik_device(device, "8554")
+    assert auth.resolve_input_uri(f"annke://admin:pw@127.0.0.1:{d.port}") == \
+        "rtsp://admin:pw@127.0.0.1:8554/Streaming/Channels/101"
+
+
 # ---------------------------------------------------------------- Dahua
 def test_dahua_hostile_port_and_encoding(device, cache_file):
-    d = device(digest_only("table.Rtsp.Enable=true\r\ntable.Rtsp.Port=554@evil.example:80\r\n"))
+    d = device(digest_only("table.RTSP.Enable=true\r\ntable.RTSP.Port=554@evil.example:80\r\n"))
     url = auth.resolve_input_uri(f"dahua://admin:Adm%40in@127.0.0.1:{d.port}/1")
     assert url == "rtsp://admin:Adm%40in@127.0.0.1/cam/realmonitor?channel=1&subtype=1"
     assert not cache_file.exists()
 
 
-def test_dahua_port(device):
-    d = device(digest_only("table.Rtsp.Port=10554\r\n"))
+def test_dahua_port_and_channels(device):
+    d = device(digest_only("table.RTSP.Port=10554\r\n"))
     assert auth.resolve_input_uri(f"dahua://admin:pw@127.0.0.1:{d.port}") == \
         "rtsp://admin:pw@127.0.0.1:10554/cam/realmonitor?channel=1&subtype=0"
+    assert d.requests[-1].path == "/cgi-bin/configManager.cgi?action=getConfig&name=RTSP"
+    assert auth.resolve_input_uri(f"amcrest://admin:pw@127.0.0.1:{d.port}/4/2") == \
+        "rtsp://admin:pw@127.0.0.1:10554/cam/realmonitor?channel=4&subtype=2"
+    assert auth.resolve_input_uri(f"dahua://admin:pw@127.0.0.1:{d.port}/4/3") is None
+
+
+# ---------------------------------------------------------------- Reolink
+def reolink_device(device, rtsp_port=554, rtsp_enable=1, channels=1, rtsp_url=True, login_ok=True, vtype="h264"):
+    """The JSON API of a Reolink camera / NVR on plain HTTP (HTTPS is tried first and fails here)."""
+    def answer(h, body):
+        q = dict(p.split("=", 1) for p in h.path.split("?", 1)[1].split("&"))
+        cmd = q["cmd"]
+        if cmd == "Login":
+            if not login_ok:
+                return 200, {}, json.dumps([{"cmd": "Login", "code": 1, "error": {"detail": "login failed", "rspCode": -7}}])
+            return 200, {}, json.dumps([{"cmd": "Login", "code": 0, "value": {"Token": {"leaseTime": 3600, "name": "T0kenValue"}}}])
+        if q.get("token") != "T0kenValue":
+            return 200, {}, json.dumps([{"cmd": cmd, "code": 1, "error": {"detail": "please login first", "rspCode": -6}}])
+        ch = json.loads(body)[0].get("param", {}).get("channel", 0)
+        value = {
+            "GetNetPort": {"NetPort": {"httpPort": 80, "httpsPort": 443, "rtspEnable": rtsp_enable, "rtspPort": rtsp_port,
+                                       "onvifPort": 8000, "rtmpPort": 1935, "mediaPort": 9000}},
+            "GetDevInfo": {"DevInfo": {"channelNum": channels, "model": "RLN8-410", "type": "NVR"}},
+            "GetRtspUrl": {"rtspUrl": {"channel": ch, "mainStream": f"rtsp://192.0.2.9:{rtsp_port}/h264Preview_{ch + 1:02d}_main",
+                                       "subStream": f"rtsp://192.0.2.9:{rtsp_port}/h264Preview_{ch + 1:02d}_sub"}} if rtsp_url else None,
+            "GetEnc": {"Enc": {"channel": ch, "mainStream": {"vType": vtype}, "subStream": {"vType": "h264"}}},
+            "Logout": {},
+        }.get(cmd)
+        if value is None:
+            return 200, {}, json.dumps([{"cmd": cmd, "code": 1, "error": {"detail": "not support", "rspCode": -9}}])
+        return 200, {}, json.dumps([{"cmd": cmd, "code": 0, "value": value}])
+    return device(answer)
+
+
+def test_reolink_url_from_the_device(device, cache_file, caplog):
+    import logsync
+    mask = logsync.CredentialMaskFilter()                          # Nova's handlers mask every record, urllib3's too
+    caplog.handler.addFilter(mask)
+    d = reolink_device(device, rtsp_port=8554)
+    uri = f"reolink://admin:p%40ss@127.0.0.1:{d.port}"
+    try:
+        with caplog.at_level(logging.DEBUG):
+            url = auth.resolve_input_uri(uri)
+    finally:
+        caplog.handler.removeFilter(mask)
+    assert url == "rtsp://admin:p%40ss@127.0.0.1:8554/h264Preview_01_main"     # 192.0.2.9 pointed back at the camera
+    cmds = [r.path.split("cmd=")[1].split("&")[0] for r in d.requests]
+    assert cmds == ["Login", "GetNetPort", "GetDevInfo", "GetRtspUrl", "Logout"]
+    assert all(r.path.startswith("/cgi-bin/api.cgi?") for r in d.requests)
+    assert "token=T0kenValue" in "".join(r.path for r in d.requests)          # the API wants it in the query string
+    assert "p@ss" not in caplog.text and "T0kenValue" not in caplog.text and "token=***" in caplog.text
+    assert "plain HTTP" in caplog.text                                          # HTTPS failed, HTTP was used
+    assert cache_file.exists() and auth.resolve_input_uri(uri) == url
+
+
+def test_reolink_channels_and_sub_stream(device):
+    d = reolink_device(device, channels=8)
+    assert auth.resolve_input_uri(f"reolink://admin:pw@127.0.0.1:{d.port}/3/sub") == \
+        "rtsp://admin:pw@127.0.0.1/h264Preview_03_sub"
+    assert auth.resolve_input_uri(f"reolink://admin:pw@127.0.0.1:{d.port}/9/0") is None    # 8 channels
+    assert auth.resolve_input_uri(f"reolink://admin:pw@127.0.0.1:{d.port}/2") is None      # no third stream
+
+
+def test_reolink_old_firmware_builds_the_path(device, cache_file):
+    d = reolink_device(device, rtsp_url=False, vtype="h265")
+    assert auth.resolve_input_uri(f"reolink://admin:pw@127.0.0.1:{d.port}/main") == \
+        "rtsp://admin:pw@127.0.0.1/h265Preview_01_main"
+    assert auth.resolve_input_uri(f"reolink://admin:pw@127.0.0.1:{d.port}/sub") == \
+        "rtsp://admin:pw@127.0.0.1/h264Preview_01_sub"
+
+
+def test_reolink_login_refused_and_rtsp_off(device, caplog):
+    d = reolink_device(device, login_ok=False)
+    with caplog.at_level(logging.ERROR):
+        assert auth.resolve_input_uri(f"reolink://admin:pw@127.0.0.1:{d.port}") is None
+    assert "login refused" in caplog.text and "rspCode -7" in caplog.text
+    d = reolink_device(device, rtsp_enable=0)
+    with caplog.at_level(logging.WARNING):
+        assert auth.resolve_input_uri(f"reolink://admin:pw@127.0.0.1:{d.port}") is not None
+    assert "RTSP is switched off" in caplog.text
+
+
+def test_reolink_token_is_masked_in_urls():
+    from util import mask_url
+    assert mask_url("http://10.0.0.5/cgi-bin/api.cgi?cmd=GetNetPort&token=T0kenValue") == \
+        "http://10.0.0.5/cgi-bin/api.cgi?cmd=GetNetPort&token=***"
+
+
+# ---------------------------------------------------------------- Axis
+def test_axis_port_and_camera_number(device, cache_file):
+    d = device(digest_only("root.Network.RTSP.Port=8554\n"))
+    assert auth.resolve_input_uri(f"axis://root:pw@127.0.0.1:{d.port}") == "rtsp://root:pw@127.0.0.1:8554/axis-media/media.amp"
+    assert d.requests[-1].path == "/axis-cgi/param.cgi?action=list&group=Network.RTSP.Port"
+    assert auth.resolve_input_uri(f"axis://root:pw@127.0.0.1:{d.port}/2/0") == \
+        "rtsp://root:pw@127.0.0.1:8554/axis-media/media.amp?camera=2"
+    assert auth.resolve_input_uri(f"axis://root:pw@127.0.0.1:{d.port}/1") is None     # no numbered sub stream
+    assert cache_file.exists()
+
+
+# ---------------------------------------------------------------- URL-only vendors
+def test_tapo_and_uniview_build_urls_without_a_device(cache_file):
+    assert auth.resolve_input_uri("tapo://cam:p%40w@10.0.0.9") == "rtsp://cam:p%40w@10.0.0.9/stream1"
+    assert auth.resolve_input_uri("tapo://cam:pw@10.0.0.9:8554/sub") == "rtsp://cam:pw@10.0.0.9:8554/stream2"
+    assert auth.resolve_input_uri("tapo://cam:pw@10.0.0.9/2") is None
+    assert auth.resolve_input_uri("tapo://cam:pw@10.0.0.9/2/0") is None
+    assert auth.resolve_input_uri("unv://admin:pw@10.0.0.9/third") == "rtsp://admin:pw@10.0.0.9/media/video3"
+    assert auth.resolve_input_uri("unv://admin:pw@10.0.0.9/3/1") == "rtsp://admin:pw@10.0.0.9/unicast/c3/s1/live"
+    assert not cache_file.exists()                                  # nothing was asked of a device
+
+
+def test_bad_shortcut_uri_is_explained(caplog):
+    with caplog.at_level(logging.ERROR):
+        assert auth.resolve_input_uri("reolink://admin:pw@10.0.0.9/x/y") is None
+    assert "@host[:port][/CHANNEL][/STREAM]" in caplog.text and "0|main, 1|sub or 2|third" in caplog.text
 
 
 # ---------------------------------------------------------------- ONVIF
@@ -278,7 +466,11 @@ def fake_dvrip(monkeypatch, behaviour):
                 raise OSError("timed out")
             return True
         def get_info(self, name):
-            return {"RtspPort": behaviour} if name == "NetWork.NetCommon" else None
+            self.asked = name
+            if behaviour == "old":                   # firmware without NetWork.RTSP: python-dvr returns the error dict
+                return {"Name": name, "Ret": 102, "SessionID": "0x1"}
+            return {"Client": {"Port": 554}, "IsClient": False, "IsServer": behaviour != "off",
+                    "Server": {"Port": 554 if behaviour == "off" else behaviour}} if name == "NetWork.RTSP" else None
         def close(self): pass
     monkeypatch.setitem(sys.modules, "dvrip", SimpleNamespace(DVRIPCam=DVRIPCam))
 
@@ -286,18 +478,30 @@ def fake_dvrip(monkeypatch, behaviour):
 def test_xmeye_transient_failure_is_not_cached(monkeypatch, cache_file):
     fake_dvrip(monkeypatch, "down")
     url = auth.resolve_input_uri("xmeye://admin:p&w@127.0.0.1")
-    assert url == "rtsp://admin:p%26w@127.0.0.1/user=admin&password=p%26w&channel=1&stream=0.sdp"
+    assert url == "rtsp://admin:p%26w@127.0.0.1/user=admin&password=p%26w&channel=1&stream=0.sdp?real_stream"
     assert not cache_file.exists()
 
 
-def test_xmeye_device_port(monkeypatch, cache_file):
+def test_xmeye_device_port_and_channel(monkeypatch, cache_file):
     fake_dvrip(monkeypatch, 8554)
     assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1/1") == \
-        "rtsp://admin:pw@127.0.0.1:8554/user=admin&password=pw&channel=1&stream=1.sdp"
+        "rtsp://admin:pw@127.0.0.1:8554/user=admin&password=pw&channel=1&stream=1.sdp?real_stream"
     assert cache_file.exists() and "pw" not in json.loads(cache_file.read_text()).popitem()[1]["url"].split("@")[0][7:]
+    assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1/5/0") == \
+        "rtsp://admin:pw@127.0.0.1:8554/user=admin&password=pw&channel=5&stream=0.sdp?real_stream"
+    assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1/2") is None               # no third stream
 
 
 def test_xmeye_hostile_port(monkeypatch, cache_file):
     fake_dvrip(monkeypatch, "554@198.51.100.9:80")
     assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1").startswith("rtsp://admin:pw@127.0.0.1/user=")
     assert not cache_file.exists()
+
+
+def test_xmeye_old_firmware_and_rtsp_off(monkeypatch, cache_file, caplog):
+    fake_dvrip(monkeypatch, "old")
+    assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1").startswith("rtsp://admin:pw@127.0.0.1/user=")
+    fake_dvrip(monkeypatch, "off")
+    with caplog.at_level(logging.WARNING):
+        assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1", use_cache=False) is not None
+    assert "RTSP server is switched off" in caplog.text

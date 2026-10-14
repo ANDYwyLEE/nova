@@ -24,7 +24,8 @@ def build_parser():
         dest="url",
         type=str,
         required=True,
-        help="Video source: rtsp/rtmp/srt URL, onvif://, xmeye://, hik://, dahua://, "
+        help="Video source: rtsp/rtmp/srt URL; a brand shortcut that finds the RTSP URL (onvif://, hik://, dahua://, "
+             "xmeye://, reolink://, axis://, tapo://, unv:// followed by user:pw@host[:port][/CHANNEL][/STREAM]); "
              "a capture device ('0' = /dev/video0 or avfoundation 0, 'dshow://video=NAME' on Windows)"
     )
     parser.add_argument(

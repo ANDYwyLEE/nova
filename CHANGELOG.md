@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-14 — brand shortcuts: the RTSP port asked from the right place, recorder channels, four more brands
+
+A check of every vendor URL format against the makers' documentation and the reference clients (Home Assistant's `hikvision_next`, `reolink_aio` and `icsee-ptz`, `python-amcrest`).
+
+### Fixed
+- `hik://`, `dahua://` and `xmeye://` never learned the device's RTSP port and always produced 554: Hikvision's channel list carries no port (it is the RTSP entry of `/ISAPI/Security/adminAccesses`), Dahua's config section is `RTSP` (not `Rtsp`), XMeye keeps it in `NetWork.RTSP` (`Server.Port`), not `NetWork.NetCommon`. Each is now read from the right place and checked as before (a reported port must be a number); a device that reports RTSP switched off (Hikvision `enabled`, Reolink `rtspEnable`, XMeye `IsServer`) gets a warning naming the setting.
+- `hik://` checks that the stream exists in the device's channel list and lists the ones it has; `xmeye://` builds the path the device itself shows (`…stream=0.sdp?real_stream`).
+- A malformed shortcut URI is explained in the log with the expected form.
+
+### Added
+- **Recorder channels and the third stream.** `scheme://user:pw@host[:port][/CHANNEL][/STREAM]`: `hik://admin:pw@nvr/3/sub` is channel 3, sub stream; `STREAM` is `0|main`, `1|sub` or `2|third` (Hikvision, Dahua, Uniview). An ONVIF profile is picked with `/N`.
+- **`reolink://`** (HTTP API: login, ports, channel count, the device's own RTSP URL via `GetRtspUrl`, logout; HTTPS first, plain HTTP only with a warning; older firmware gets `h264Preview_…`/`h265Preview_…` from `GetEnc`), **`axis://`** (VAPIX: the RTSP port, `?camera=N` for a written channel), **`tapo://`** and **`unv://`** (the makers' documented paths, nothing asked of the device) and the OEM aliases `amcrest://`, `annke://`, `hilook://`. User guide: a "Camera brands" table.
+
 ## 2026-10-14 — second full review: crashes, silent stops, secrets, the launcher
 
 A review of every module (five reviewers in parallel, each finding reproduced or confirmed in the code) and the fixes, tested against the old code where a reproduction was possible.
