@@ -1,3 +1,5 @@
+import os
+import math
 from PySide6.QtCore import Qt, QPoint
 
 BORDER = 6
@@ -25,6 +27,9 @@ ZONE_CURSOR = {
 }
 
 WHEEL_NOTCH = 120   # QWheelEvent.angleDelta() of one wheel notch; hi-res wheels and touchpads send fractions
+# Pushing the wheel away zooms in, pulling it toward you zooms out, as maps, image viewers and games do.
+# NOVA_WHEEL_INVERT=1 ([env] in cameras.ini) for the other way round.
+WHEEL_INVERT = os.environ.get("NOVA_WHEEL_INVERT", "").strip().lower() in ("1", "true", "yes", "on")
 
 class MouseHdlr:
     def __init__(self, parent, key_modifier):
@@ -173,10 +178,23 @@ class MouseHdlr:
         self.p.toggle_fullscreen()
 
     def wheel(self, e):
-        steps = e.angleDelta().y() / WHEEL_NOTCH
+        steps = e.angleDelta().y() / WHEEL_NOTCH         # > 0: the wheel was pushed away
         if not steps: return
+        # macOS "natural scrolling" reports the wheel the other way round (inverted()); for zooming the
+        # hand's movement is what counts, so follow the wheel as Qt recommends for non-scrolling uses
+        if e.inverted(): steps = -steps
+        if WHEEL_INVERT: steps = -steps
         pos = self.p.mapFromGlobal(e.globalPosition().toPoint())
-        self.p.zoomer.zoom(pos, -steps)
+        self.p.zoomer.zoom(pos, steps)
+        self.p.set_bt()
+        self.p.update()
+
+    def pinch(self, e):
+        """macOS trackpad pinch (QNativeGestureEvent: value() is the relative size change, e.g. 0.05 for
+        5 % bigger): zoom around the fingers by exactly that."""
+        v = e.value()
+        if not v or v <= -1: return
+        self.p.zoomer.zoom(e.position().toPoint(), math.log(1 + v) / math.log(11 / 10))   # a notch is 10 %
         self.p.set_bt()
         self.p.update()
 

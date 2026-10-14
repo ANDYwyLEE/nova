@@ -551,6 +551,9 @@ class Nova(QOpenGLWindow):
             self._set_focus(True)
         elif e.type() == _DPR_CHANGE and self.is_running:
             self._rebuild_osd()          # moved to a screen with another scale factor
+        elif e.type() == QEvent.NativeGesture and e.gestureType() == Qt.ZoomNativeGesture:
+            self.mouse_hdlr.pinch(e)     # macOS trackpad
+            return True
         return super().event(e)
 
     def focusInEvent(self, e):

@@ -65,6 +65,7 @@ nova restart [ID ...] [options]      stop, then start again as launched (record 
 nova status                          launched cameras: running or exited, uptime, and what each is doing now
 nova list                            cameras, enabled state and options (passwords masked)
 nova -h                              help; `python nova.py --help` lists the camera options
+nova -c FILE <command>               use FILE instead of cameras.ini
 ```
 
 - Words that do not start with `-` are camera ids; everything from the first option on is passed to `nova.py`: `nova start frontdoor -r` shows the window and records, `nova record yard -t rtmp://…` records without a window and streams.
@@ -112,27 +113,29 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 <!-- generated:args -->
 | Option | Meaning |
 |---|---|
-| `-i, --input` | Video source: rtsp/rtmp/srt URL, onvif://, xmeye://, hik://, dahua://, '0' (USB cam), dshow://video=NAME |
-| `-n, --name, --camera-name` | Logical camera name for output recording folders. |
-| `--opengl` | Enable hardware acceleration using OpenGL (recommended for high performance). |
-| `--accel` | HW Acceleration backend. cuda, qsv, vaapi, videotoolbox, d3d11va. |
-| `--gpu` | GPU index for HW decode/encode (0, 1, or a list 0,1 to pick at random; default: NOVA_GPU_DEVICES). |
-| `-f, --fps` | Target video frame rate (default: 30). |
-| `-b, --border` | Enable the colored window border. (default: no border line) |
-| `-g, --grid-size` | Grid size for window alignment in pixels (default: 20). |
+| `-i, --input` | Video source: rtsp/rtmp/srt URL, onvif://, xmeye://, hik://, dahua://, a capture device ('0' = /dev/video0 or avfoundation 0, 'dshow://video=NAME' on Windows). |
+| `-n, --name, --camera-name` | Camera name: the window title becomes 'Nova - NAME', recordings go to videos/NAME/ and snapshots are named NAME_<time>.png. |
+| `--opengl` | Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended). |
+| `--accel` | Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m ...). |
+| `--gpu` | GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). Default: NOVA_GPU_DEVICES, else 0. |
+| `-f, --fps` | Target display frame rate. Default: 30. |
+| `-b, --border` | Enable the colored window border. |
+| `-g, --grid-size` | Grid size for window alignment in pixels. Default: 20. |
 | `--geometry` | Initial window placement x,y,w,h; overrides the remembered one (nova start --layout uses it). |
 | `--zoom` | Initial zoom region as ratios rx,ry,rw,rh of the picture (0,0,1,1 = whole picture). |
 | `-a, --audio, --enable-audio` | Enable audio playback automatically on startup. |
 | `--headless, --no-gui` | Run in headless mode without showing the visual camera window. |
 | `-r, --record, --auto-record` | Start recording automatically on startup. |
-| `-e, --encoder` | Explicitly specify video encoder (e.g., av1_nvenc, hevc_nvenc) |
-| `--record-interval` | Recording segment length (e.g. 10m, 1h, 3600s; default: 30m). |
+| `-e, --encoder` | Explicitly specify video encoder (e.g., h264_nvenc, hevc_nvenc, libx264). |
+| `--record-interval` | Recording segment length (e.g. 10m, 1h, 3600s). Default: 30m. |
 | `--output-dir` | Base directory for snapshots and recordings. |
 | `--snapshot-dir` | Directory for snapshots (overrides --output-dir for snapshots). |
 | `--recording-dir` | Directory for recorded videos (overrides --output-dir for recordings). |
-| `--ffmpeg` | FFmpeg options: -rtsp_transport udp -b:v 4M -crf 23 -g 60 -s WxH -r N -vf transpose=1 -pix_fmt -ar -ac -b:a -metadata k=v -movflags (README lists what works) |
-| `-t, --target` | Live stream URL (e.g. YouTube, Twitch) or output path |
-| `-l, --log-level` | Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10; default: INFO). |
+| `--ffmpeg` | Direct FFmpeg options, e.g. "-rtsp_transport udp -b:v 4M -g 60 -movflags +faststart". |
+| `-t, --target` | Live stream URL (e.g. YouTube, Twitch) or output path. |
+| `-l, --log-level` | Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10). Default: INFO. |
+| `--camera` | Read URL, name and options of camera ID from cameras.ini (what the nova launcher passes). |
+| `--config` | The cameras.ini that --camera reads. |
 <!-- /generated:args -->
 
 Notes:
@@ -192,7 +195,7 @@ Window moves and resizes happen in grid steps (`-g`, default 20 px) and are clam
 <!-- generated:mouse -->
 | Mouse | Action |
 |---|---|
-| `Wheel` | Zoom in or out around the cursor. |
+| `Wheel` | Zoom in (push the wheel away) or out (pull it toward you) around the cursor; a trackpad pinch on macOS too. |
 | `Double Click` | Toggle fullscreen mode. |
 | `Right Click` | Fit the window to the video (or the zoomed region). |
 | `Middle Click` | Make what the window shows the zoomed region (unzoomed: cut the video to the window shape). |
@@ -205,7 +208,7 @@ A double-click on a control-strip icon counts as one click (it no longer also to
 
 ## Zoom
 
-The wheel zooms around the cursor, 10 % per notch (high-resolution wheels and touchpads by the fraction of a notch they report); **I**/**O** (or **+**/**−**) zoom around the centre. The zoomed region is a crop of the decoded frame, rendered at full window resolution, and it is remembered per camera (see [settings](#where-settings-are-stored)). **Esc** resets it.
+Pushing the wheel away zooms in and pulling it toward you zooms out, 10 % per notch, around the cursor (high-resolution wheels and touchpads by the fraction of a notch they report); **I**/**O** (or **+**/**−**) zoom around the centre. On macOS, "natural scrolling" is taken into account so the hand's movement means the same, and a trackpad pinch zooms by exactly what the fingers do. `NOVA_WHEEL_INVERT = 1` in `[env]` reverses the wheel. The zoomed region is a crop of the decoded frame, rendered at full window resolution, and it is remembered per camera (see [settings](#where-settings-are-stored)). **Esc** resets it.
 
 The zoom is a *region* of the picture, not a magnification. Resizing the window keeps the region and shows it at the new size; where the window is wider or taller than the region, the picture around the region fills the extra space instead of black bars (the region itself is always shown whole; black appears only where the frame runs out). Narrowing the window back shows exactly the region again, so a window can be moved, enlarged to full screen and shrunk again without touching the zoom. **Ctrl-drag** and **Shift+Arrow** move the region inside the window; the wheel, **I**/**O** and these act on what is shown, so after a resize the surroundings that came into view become part of the region. Middle-click makes what is shown the region (unzoomed: cuts the video to the window's shape); right-click resizes the window to the region's own aspect ratio.
 
@@ -240,6 +243,8 @@ Everything Nova and the launcher write (recordings, snapshots, logs, layouts, th
 | `NOVA_TIMEOUT` | socket / read timeout in microseconds (default 5 s for camera input and 10 s for a stream target; `cameras.example.ini` sets 10 s). Also bounds how long shutdown can take while a camera answers but stalls in the RTSP handshake; a camera that is down is detected by a TCP probe first and stops at once. For a network stream target (`-t rtmp://…`, SRT, HLS) it is the write deadline: a connection that accepts nothing for that long ends the stream (connecting may take up to 30 s). |
 | `NOVA_GPU_DEVICES` | GPU index, or a comma list (`0,1`). With a list, `nova start` / `nova run` deal the cameras over the GPUs in file order, so a camera always lands on the same one (14 cameras on `0,1` → 7 + 7); `--gpu N` in a camera's `opts` pins it. A bare `python nova.py` given a list picks one at random |
 | `NOVA_AUDIO_DEVICE_INDEX` | force a PortAudio output device |
+| `NOVA_WHEEL_INVERT` | `1` reverses the wheel's zoom direction (default: pushing the wheel away zooms in) |
+| `NOVA_MIN_RECORD_INTERVAL` | the shortest `--record-interval` in seconds (default 60; the test suite lowers it) |
 | `NOVA_UMASK` | permissions for new files, octal (default `077`: this user only; `022` lets other accounts read recordings and logs) |
 | `QT_QPA_PLATFORM` | `offscreen` is set automatically for `--headless`; on a Wayland session Nova sets `xcb` (XWayland) itself, `wayland` asks for a native window |
 

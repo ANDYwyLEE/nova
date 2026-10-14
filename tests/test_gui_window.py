@@ -309,7 +309,7 @@ class Mouse:
     def __init__(self, w):
         self.w = w
 
-    def ev(self, x, y, button=Qt.LeftButton, buttons=None, dbl=False, delta=0, mods=Qt.NoModifier):
+    def ev(self, x, y, button=Qt.LeftButton, buttons=None, dbl=False, delta=0, mods=Qt.NoModifier, inverted=False):
         w = self.w
         g = w.mapToGlobal(QPoint(x, y))
         from types import SimpleNamespace
@@ -317,12 +317,13 @@ class Mouse:
         return SimpleNamespace(
             button=lambda: button, buttons=lambda: (button if buttons is None else buttons),
             flags=lambda: flags, position=lambda: QPointF(x, y), globalPosition=lambda: QPointF(g),
-            angleDelta=lambda: QPoint(0, delta), accept=lambda: None, modifiers=lambda: mods)
+            angleDelta=lambda: QPoint(0, delta), accept=lambda: None, modifiers=lambda: mods,
+            inverted=lambda: inverted)
 
     def press(self, x, y, **kw): self.w.mousePressEvent(self.ev(x, y, **kw))
     def release(self, x, y, **kw): self.w.mouseReleaseEvent(self.ev(x, y, buttons=Qt.NoButton, **kw))
     def move(self, x, y, **kw): self.w.mouseMoveEvent(self.ev(x, y, button=Qt.NoButton, buttons=Qt.LeftButton, **kw))
-    def wheel(self, x, y, delta): self.w.wheelEvent(self.ev(x, y, button=Qt.NoButton, delta=delta))
+    def wheel(self, x, y, delta, **kw): self.w.wheelEvent(self.ev(x, y, button=Qt.NoButton, delta=delta, **kw))
 
     def double_click(self, x, y):
         """Qt: press, release, press (flagged as part of a double-click), double-click, release."""
@@ -379,7 +380,7 @@ def test_wheel_and_middle_click_repaint(make, monkeypatch):
     w, core = make("200,100,640,360", None)
     core.connected(1920, 1080)
     repaints = spy(monkeypatch, w, "update")
-    Mouse(w).wheel(320, 180, -120)
+    Mouse(w).wheel(320, 180, 120)                   # pushed away: zoom in
     assert w.zoomer.is_zoom() and repaints
     repaints.clear()
     Mouse(w).press(320, 180, button=Qt.MiddleButton)
@@ -397,17 +398,17 @@ def test_a_wheel_notch_zooms_ten_percent_and_fine_steps_zoom_by_their_fraction(m
     from zoomer import Zoomer
     ref = Zoomer(1920, 1080, 640, 360)
     ref.setRect(*start)
-    ref.zoom(QPoint(300, 170), 1)                # what a notch has always done: 10 % (key I)
-    m.wheel(300, 170, -120)
+    ref.zoom(QPoint(300, 170), 1)                # one notch = 10 %, like key I
+    m.wheel(300, 170, 120)                      # pushed away: in
     assert w.zoomer.getRect() == pytest.approx(ref.getRect())
 
     w.zoomer.setRect(*start)
     for _ in range(8):                           # a hi-res wheel: 8 events of 15 make one notch
-        m.wheel(300, 170, -15)
+        m.wheel(300, 170, 15)
     assert w.zoomer.getRect() == pytest.approx(ref.getRect(), abs=0.5)
 
     w.zoomer.setRect(*start)
-    m.wheel(300, 170, -15)
+    m.wheel(300, 170, 15)
     assert w.zoomer.width() == pytest.approx(start[2] * (10 / 11) ** 0.125)
 
 
@@ -720,3 +721,23 @@ def test_ctrl_drag_moves_the_region_not_the_window(make, app):
     assert w.zoomer.x() == pytest.approx(moved) and w.zoomer.getRect()[2:] == (v.width(), v.height())
     m.press(200, 450); m.release(200, 450)                # a plain click: no pan
     assert w.zoomer.x() == pytest.approx(moved)
+
+
+def test_wheel_direction_follows_the_hand_on_natural_scrolling_and_pinch_zooms_by_its_value(make):
+    w, core = make("200,100,640,360", None)
+    core.connected(1920, 1080)
+    m = Mouse(w)
+    for _ in range(5):
+        w.zoomer.zoom(None, 1)
+    start = w.zoomer.getRect()
+    m.wheel(300, 170, -120)                                  # pulled toward you: out
+    assert w.zoomer.width() > start[2]
+    w.zoomer.setRect(*start)
+    m.wheel(300, 170, -120, inverted=True)                   # macOS natural scrolling: fingers pushed away = in
+    assert w.zoomer.width() < start[2]
+    w.zoomer.setRect(*start)
+    from types import SimpleNamespace
+    w.mouse_hdlr.pinch(SimpleNamespace(value=lambda: 0.25, position=lambda: QPointF(300, 170)))
+    assert w.zoomer.width() == pytest.approx(start[2] / 1.25)       # 25 % bigger picture = region 1/1.25
+    w.mouse_hdlr.pinch(SimpleNamespace(value=lambda: -0.2, position=lambda: QPointF(300, 170)))
+    assert w.zoomer.width() == pytest.approx(start[2] / 1.25 / 0.8)

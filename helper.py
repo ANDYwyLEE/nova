@@ -2,32 +2,11 @@
 
 from typing import Dict
 from player import Player
+from novaargs import option_table
 from PySide6.QtCore import Signal
 
 
-ARG_DESCRIPTIONS = {
-    '-i, --input': "Video source: rtsp/rtmp/srt URL, onvif://, xmeye://, hik://, dahua://, '0' (USB cam), dshow://video=NAME",
-    '-n, --name, --camera-name' : 'Logical camera name for output recording folders.',
-    '--opengl': 'Enable hardware acceleration using OpenGL (recommended for high performance).',
-    '--accel': 'HW Acceleration backend. cuda, qsv, vaapi, videotoolbox, d3d11va.',
-    '--gpu': 'GPU index for HW decode/encode (0, 1, or a list 0,1 to pick at random; default: NOVA_GPU_DEVICES).',
-    '-f, --fps': 'Target video frame rate (default: 30).',
-    '-b, --border': 'Enable the colored window border. (default: no border line)',
-    '-g, --grid-size': 'Grid size for window alignment in pixels (default: 20).',
-    '--geometry': 'Initial window placement x,y,w,h; overrides the remembered one (nova start --layout uses it).',
-    '--zoom': 'Initial zoom region as ratios rx,ry,rw,rh of the picture (0,0,1,1 = whole picture).',
-    '-a, --audio, --enable-audio': 'Enable audio playback automatically on startup.',
-    '--headless, --no-gui': 'Run in headless mode without showing the visual camera window.',
-    '-r, --record, --auto-record': 'Start recording automatically on startup.',
-    '-e, --encoder': 'Explicitly specify video encoder (e.g., av1_nvenc, hevc_nvenc)',
-    '--record-interval': 'Recording segment length (e.g. 10m, 1h, 3600s; default: 30m).',
-    '--output-dir': 'Base directory for snapshots and recordings.',
-    '--snapshot-dir': 'Directory for snapshots (overrides --output-dir for snapshots).',
-    '--recording-dir': 'Directory for recorded videos (overrides --output-dir for recordings).',
-    '--ffmpeg' : 'FFmpeg options: -rtsp_transport udp -b:v 4M -crf 23 -g 60 -s WxH -r N -vf transpose=1 -pix_fmt -ar -ac -b:a -metadata k=v -movflags (README lists what works)',
-    '-t, --target': 'Live stream URL (e.g. YouTube, Twitch) or output path',
-    '-l, --log-level': 'Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10; default: INFO).',
-}
+ARG_DESCRIPTIONS = option_table()       # nova.py's options, as --help describes them (novaargs.py)
 
 CONTROL_DESCRIPTIONS = {
     'H / F1': 'Show or hide the help/controls overlay.',
@@ -47,7 +26,7 @@ CONTROL_DESCRIPTIONS = {
     'PgUp / PgDown': 'Shrink / enlarge the window by 10% (keeps the top-left corner).',
     'I / + / =': 'Zoom in (Ctrl: enlarge the window around its centre).',
     'O / - / _': 'Zoom out (Ctrl: shrink the window around its centre).',
-    'Mouse Wheel': 'Zoom in or out around the cursor.',
+    'Mouse Wheel': 'Zoom in (push the wheel away) or out (pull it toward you) around the cursor; a trackpad pinch on macOS too.',
     'Mouse Double Click': 'Toggle fullscreen mode.',
     'Mouse Right Click': 'Fit the window to the video (or the zoomed region).',
     'Mouse Middle Click': 'Make what the window shows the zoomed region (unzoomed: cut the video to the window shape).',

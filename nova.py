@@ -4,14 +4,13 @@ import os
 import sys
 import signal
 import logging
-import argparse
 
 from PySide6.QtCore import Qt, QMetaObject, QTimer
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
 from util import parse_time, mask_url
-from ffparser import NovaParser
+from novaargs import build_parser
 
 
 def expand_camera(argv):
@@ -41,150 +40,12 @@ def expand_camera(argv):
     return cid, cams.camera_args(cam, defaults) + argv
 
 
-def log_level_type(value):
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return str(value).upper()
-
-
 if __name__ == "__main__":
     if os.name != "nt":
         import cams
         os.umask(cams.umask())   # recordings, snapshots, logs, window settings: this user's only (NOVA_UMASK)
     camera_id, argv = expand_camera(sys.argv[1:])
-    parser = NovaParser(
-        description='Nova: High-performance RTSP Player',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-
-    parser.add_argument(
-        "-i", "--input",
-        dest="url",
-        type=str,
-        required=True,
-        help="Video source: rtsp/rtmp/srt URL, onvif://, xmeye://, hik://, dahua://, "
-             "a capture device ('0' = /dev/video0 or avfoundation 0, 'dshow://video=NAME' on Windows)"
-    )
-    parser.add_argument(
-        "-n", "--name", "--camera-name",
-        dest="camera_name",
-        type=str,
-        help="Camera name: the window title becomes 'Nova - NAME', recordings go to videos/NAME/ and snapshots are named NAME_<time>.png."
-    )
-    parser.add_argument(
-        "--opengl",
-        action="store_true",
-        help="Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended)."
-    )
-    parser.add_argument(
-        "--accel",
-        type=str,
-        default=None,
-        help='Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m ...)'
-    )
-    parser.add_argument(
-        "--gpu",
-        type=str,
-        default=None,
-        help="GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). "
-             "Default: NOVA_GPU_DEVICES, else 0."
-    )
-    parser.add_argument(
-        "-f", "--fps",
-        type=int,
-        default=30,
-        help="Target display frame rate."
-    )
-    parser.add_argument(
-        "-b", "--border",
-        action="store_true",
-        help="Enable the colored window border."
-    )
-    parser.add_argument(
-        "-g", "--grid-size",
-        type=int,
-        default=20,
-        help="Grid size for window alignment in pixels."
-    )
-    parser.add_argument(
-        "--geometry",
-        type=str,
-        help="Initial window placement x,y,w,h; overrides the remembered one (nova start --layout uses it)."
-    )
-    parser.add_argument(
-        "--zoom",
-        type=str,
-        help="Initial zoom region as ratios rx,ry,rw,rh of the picture (0,0,1,1 = whole picture)."
-    )
-    parser.add_argument(
-        "-a", "--audio", "--enable-audio",
-        dest="auto_audio",
-        action="store_true",
-        help="Enable audio playback automatically on startup."
-    )
-    parser.add_argument(
-        "--headless", "--no-gui",
-        dest="headless",
-        action="store_true",
-        help="Run in headless mode without showing the visual camera window."
-    )
-    parser.add_argument(
-        "-r", "--record", "--auto-record",
-        dest="auto_record",
-        action="store_true",
-        help="Start recording automatically on startup."
-    )
-    parser.add_argument(
-        "-e", "--encoder",
-        type=str,
-        help="Explicitly specify video encoder (e.g., h264_nvenc, hevc_nvenc, libx264)"
-    )
-    parser.add_argument(
-        "--record-interval",
-        type=str,
-        default="30m",
-        help="Recording segment length (e.g. 10m, 1h, 3600s)."
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        help="Base directory for snapshots and recordings."
-    )
-    parser.add_argument(
-        "--snapshot-dir",
-        type=str,
-        help="Directory for snapshots (overrides --output-dir for snapshots)."
-    )
-    parser.add_argument(
-        "--recording-dir",
-        type=str,
-        help="Directory for recorded videos (overrides --output-dir for recordings)."
-    )
-    parser.add_argument(
-        '--ffmpeg',
-        type=str,
-        default='',
-        help='Direct FFmpeg options, e.g. "-rtsp_transport udp -b:v 4M -g 60 -movflags +faststart"'
-    )
-    parser.add_argument(
-        "-t", "--target",
-        type=str,
-        help="Live stream URL (e.g. YouTube, Twitch) or output path"
-    )
-    parser.add_argument(
-        "-l", "--log-level",
-        type=log_level_type,  # custom function
-        default="INFO",
-        help="Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10)."
-    )
-
-    parser.add_argument(
-        "--camera", metavar="ID",
-        help="Read URL, name and options of camera ID from cameras.ini (what the nova launcher passes)."
-    )
-    parser.add_argument("--config", metavar="FILE", help="The cameras.ini that --camera reads.")
-    parser.add_argument("--control", help=argparse.SUPPRESS)      # control channel address (control.py)
+    parser = build_parser()
 
     args = parser.parse_args(argv)
 
