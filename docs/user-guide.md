@@ -243,7 +243,9 @@ Recording and streaming always use the full frame, never the zoomed view.
 
 ## Audio
 
-**A** (or `-a` at start) plays the camera's audio through PortAudio. Nova opens the device at the camera's sample rate and falls back to 48 kHz with resampling when the device refuses. On Linux, PipeWire/Pulse devices are preferred; `NOVA_AUDIO_DEVICE_INDEX` forces a device (`-l TRACE` lists them at start). Playback is best-effort live audio: it is not lip-synced to the display, but recordings and streams are.
+**A** (or `-a` at start) plays the camera's audio through PortAudio. Nova opens the device at the camera's sample rate and channel count and falls back when the device refuses: first to 48 kHz with resampling (most devices refuse the 8 kHz of G.711), then to stereo with the camera's mono doubled (WASAPI shared mode, some HDMI outputs), then to the default device. On Linux, PipeWire/Pulse devices are preferred; `NOVA_AUDIO_DEVICE_INDEX` forces a device (`-l TRACE` lists them at start). Playback is best-effort live audio: it is not lip-synced to the display, but recordings and streams are.
+
+What cameras send is decoded by the FFmpeg inside PyAV: G.711 µ-law and A-law, G.722, G.726 (16 to 40 kbit/s), AAC-LC at any rate and channel count (also as MP4A-LATM), Opus, MP2/MP3 and L16 PCM were checked over RTP; G.723.1, G.729, AMR-NB/WB, iLBC and Speex decoders are in the build too. The log says what a camera sends (`[VideoWorker] audio: pcm_alaw 8000 Hz mono`) and `nova status` shows it next to the video size. Recordings and streams carry the audio re-encoded to AAC at the camera's rate (`--ffmpeg "-ar 48000"` resamples it, `-ac 2` makes it stereo, `-an` drops it); a stream of audio packets the decoder keeps rejecting is dropped for that connection with a warning, the picture is not affected.
 
 ## Snapshots
 

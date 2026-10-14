@@ -121,8 +121,10 @@ class AudioWorker(QThread):
         self.stream = None
 
         self.sr = None
-        self.ch = None
+        self.ch = None            # channels the device was opened with
+        self.src_ch = None        # channels of the camera's audio (1 while a mono-refusing device plays it as stereo)
         self.do_resample = False
+        self.dup_mono = False
 
     def _init_pa(self):
         if logging.getLogger().getEffectiveLevel() <= TRACE_LEVEL:
@@ -150,6 +152,8 @@ class AudioWorker(QThread):
         dev_idx = None
         rate = src_sr
         self.do_resample = False
+        self.dup_mono = False
+        self.src_ch = ch
 
         # allow override from env
         env_dev = os.environ.get("NOVA_AUDIO_DEVICE_INDEX")
@@ -162,8 +166,10 @@ class AudioWorker(QThread):
         elif LINUX:
             dev_idx = find_preferred_device(self.pa)
 
-        # Main open logic with simple fallbacks
-        tried_fallback = False
+        # Main open logic with simple fallbacks: the camera's rate, then 48 kHz with resampling (most
+        # devices refuse 8 kHz), then stereo with the mono doubled (some devices refuse mono), then the
+        # default device instead of the preferred one.
+        tried_rate = tried_stereo = False
 
         while True:
             try:
@@ -178,20 +184,28 @@ class AudioWorker(QThread):
                 )
                 self.sr = rate
                 self.ch = ch
+                how = (f" (camera {src_sr} Hz{', mono' if self.dup_mono else ''}: "
+                       f"{'resampled' if self.do_resample else ''}{' and ' if self.do_resample and self.dup_mono else ''}"
+                       f"{'doubled to stereo' if self.dup_mono else ''})") if self.do_resample or self.dup_mono else ""
                 self.stat_sig.emit(f"Audio stream opened ({rate} Hz, {ch} ch)")
-                logging.info(f"[AudioWorker] Audio stream opened ({rate} Hz, {ch} ch)")
+                logging.info(f"[AudioWorker] Audio stream opened ({rate} Hz, {ch} ch){how}")
                 return
             except Exception as e:
-                logging.debug(f"[AudioWorker] Audio open failed (rate={rate}, dev={dev_idx}): {e}")
+                logging.debug(f"[AudioWorker] Audio open failed (rate={rate}, ch={ch}, dev={dev_idx}): {e}")
 
-                if not tried_fallback:
-                    # fallback: force TARGET_SR and enable resample
+                if not tried_rate:
                     rate = TARGET_SR
                     self.do_resample = True
-                    tried_fallback = True
+                    tried_rate = True
                     continue
 
-                # second fallback: drop device index and try default
+                if not tried_stereo and ch == 1:
+                    ch = 2
+                    self.dup_mono = True
+                    tried_stereo = True
+                    continue
+
+                # last fallback: drop device index and try default
                 if dev_idx is not None:
                     dev_idx = None
                     continue
@@ -226,7 +240,7 @@ class AudioWorker(QThread):
             # (re)open stream if params changed
             if (
                 self.stream is None
-                or ch != self.ch
+                or ch != self.src_ch
                 or (not self.do_resample and sr != self.sr)
             ):
                 now = time.monotonic()
@@ -251,6 +265,8 @@ class AudioWorker(QThread):
             out = data
             if self.do_resample and self.sr is not None and self.sr != sr:
                 out = resample(data, sr, self.sr, ch)
+            if self.dup_mono and ch == 1:
+                out = np.repeat(np.frombuffer(out, dtype=np.int16), 2).tobytes()
 
             try:
                 self.stream.write(out)

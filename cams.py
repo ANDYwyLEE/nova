@@ -819,6 +819,8 @@ def live_state(st):
     if not st or not st.get("ok"):
         return ""
     parts = [f"video {st['video']}" if st.get("video") else "no video yet"]
+    if st.get("video") and st.get("audio_codec"):
+        parts.append(f"audio {st['audio_codec']}")
     for k in ("record", "stream"):
         if st.get(k) not in (None, "off", "n/a"):
             parts.append(f"{k} {st[k]}")

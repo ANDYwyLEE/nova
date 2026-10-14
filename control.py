@@ -113,6 +113,7 @@ class ControlServer(QObject):
             "pid": os.getpid(), "camera": self.camera_id, "name": core.display_name,
             "uptime": int(time.time() - self.started), "window": self.view is not None,
             "video": f"{w}x{h}" if w > 0 and h > 0 else None,
+            "audio_codec": getattr(core.vid_worker, "audio_codec", None),
             "playing": playing,
             "status": text,
             "record": _player_state(getattr(core, "recorder", None)),

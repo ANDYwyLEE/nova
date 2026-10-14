@@ -393,6 +393,7 @@ class VideoWorker(QThread):
         self.last_frame_time = 0.0      # time.monotonic() of the last decoded video frame (0.0: none yet)
         self.sample_rate = 0
         self.channels = 0
+        self.audio_codec = None         # 'pcm_alaw 8000 Hz mono' once connected (nova status, the log)
         self.audio_q = queue.Queue(maxsize=10)
         # ~1.6 s at 25 fps: audio frames (~50/s) share the queues. When a writer cannot keep up the
         # oldest items are dropped and counted (_put); larger queues would hold GBs of decoded 4K frames.
@@ -862,6 +863,9 @@ class VideoWorker(QThread):
                       f"{dec.base.width}x{dec.base.height}")
         dec.open()
         audio_context = audio_stream.codec_context if audio_stream else None
+        self.audio_codec = _audio_desc(audio_stream)
+        if audio_stream is not None:
+            logging.info(f"[VideoWorker] audio: {self.audio_codec}")
 
         fps_cap = self._frame_rate(video_stream)
         self.fps = fps_cap
@@ -1070,6 +1074,19 @@ def _nb_channels(frame) -> int:
         chans = getattr(layout, "channels", None)
         n = len(chans) if chans is not None else None
     return int(n) if n else 1
+
+def _audio_desc(stream):
+    """'pcm_alaw 8000 Hz mono' for a camera's audio stream, None without one."""
+    if stream is None:
+        return None
+    try:
+        cc = stream.codec_context
+        ch = cc.layout.nb_channels if cc.layout else 0
+        chs = {0: "", 1: " mono", 2: " stereo"}.get(ch, f" {ch} ch")
+        return f"{cc.name} {stream.rate or cc.sample_rate or '?'} Hz{chs}"
+    except Exception:
+        return getattr(getattr(stream, "codec_context", None), "name", None) or "audio"
+
 
 def _frame_to_pcm16(frame, ch):
     """Decoded audio frame -> interleaved int16 bytes, channel count."""
