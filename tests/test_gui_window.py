@@ -309,7 +309,7 @@ class Mouse:
     def __init__(self, w):
         self.w = w
 
-    def ev(self, x, y, button=Qt.LeftButton, buttons=None, dbl=False, delta=0):
+    def ev(self, x, y, button=Qt.LeftButton, buttons=None, dbl=False, delta=0, mods=Qt.NoModifier):
         w = self.w
         g = w.mapToGlobal(QPoint(x, y))
         from types import SimpleNamespace
@@ -317,7 +317,7 @@ class Mouse:
         return SimpleNamespace(
             button=lambda: button, buttons=lambda: (button if buttons is None else buttons),
             flags=lambda: flags, position=lambda: QPointF(x, y), globalPosition=lambda: QPointF(g),
-            angleDelta=lambda: QPoint(0, delta), accept=lambda: None)
+            angleDelta=lambda: QPoint(0, delta), accept=lambda: None, modifiers=lambda: mods)
 
     def press(self, x, y, **kw): self.w.mousePressEvent(self.ev(x, y, **kw))
     def release(self, x, y, **kw): self.w.mouseReleaseEvent(self.ev(x, y, buttons=Qt.NoButton, **kw))
@@ -682,3 +682,41 @@ def test_place_before_the_first_frame_keeps_the_zoom_for_it(make, app):
     w.place("120,130,640,360", "0.5,0.5,0.5,0.5")
     core.connected(1920, 1080)
     assert w.zoomer.getRect() == (960, 540, 960, 540)
+
+
+# ---------------------------------------------------------------- zoom is a region: resizing keeps it
+
+def test_resizing_the_window_keeps_the_region_and_what_is_saved(make, app):
+    w, core = make("100,100,400,900", "0.4,0.1,0.2,0.8")
+    core.connected(1920, 1080)
+    assert w.zoomer.getRect() == (768, 108, 384, 864)
+    w._persist_if_changed()
+    saved = stored(core)[1]
+    w.resize(1600, 900); app.processEvents()
+    assert w.zoomer.w_widget == 1600
+    assert w.zoomer.getRect() == (768, 108, 384, 864)                 # the region stays
+    assert w.zoomer.view_rect().width() == pytest.approx(1536)        # the sides show the picture
+    assert w._pic_ratio() == pytest.approx(1600 / 900)                # no black bars
+    w._persist_if_changed()
+    assert stored(core)[1] == saved                                   # and nothing new is saved
+    v = w.zoomer.view_rect()
+    w.pan_region(0.1, 0)                                              # Shift+Right: a tenth of the view further right
+    assert w.zoomer.x() == pytest.approx(v.x() + 0.1 * v.width())
+    w.resize(400, 900); app.processEvents()
+    assert w.zoomer.view_rect().width() == pytest.approx(1536)        # the pan made the wide view the region
+
+
+def test_ctrl_drag_moves_the_region_not_the_window(make, app):
+    w, core = make("100,100,400,900", "0.4,0.1,0.2,0.8")
+    core.connected(1920, 1080)
+    m = Mouse(w)
+    g = w.geometry()
+    v, s = w.zoomer.view_rect(), w.zoomer.scale()         # what is shown (the window need not have the region's shape)
+    m.press(200, 450, mods=Qt.ControlModifier)
+    m.move(150, 450, mods=Qt.ControlModifier)             # the picture follows the pointer 50 px to the left
+    m.release(150, 450, mods=Qt.ControlModifier)
+    assert w.geometry() == g                              # the window did not move
+    moved = v.x() + 50 / s
+    assert w.zoomer.x() == pytest.approx(moved) and w.zoomer.getRect()[2:] == (v.width(), v.height())
+    m.press(200, 450); m.release(200, 450)                # a plain click: no pan
+    assert w.zoomer.x() == pytest.approx(moved)

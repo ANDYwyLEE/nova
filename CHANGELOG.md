@@ -15,6 +15,7 @@ A review of every module (five reviewers in parallel, each finding reproduced or
 - `--accel cuda`: the container is opened without hardware acceleration and the decoder is chosen after the stream is known, so each camera has one CUDA context instead of two: 796 → 410 MiB of VRAM per camera on an RTX 4090 (≈ 5.7 GB over 15 cameras; measured again with two cameras decoding, recording and streaming on one GPU).
 - Segments follow the local clock (and daylight-saving time) instead of UTC: `24h` cut at 01:00/02:00 in Central Europe.
 - `nova stop`/`restart` wait 2 × NOVA_TIMEOUT + 5 s by default (25 s with the example config), the longest a camera needs while its stream is stalled, and 30 s more for cameras with a stream target (caught in the stream's connect).
+- **Zoom and window size are independent.** The zoom is a region of the picture; resizing the window keeps the region and shows it at the new size, and the space a wider or taller window adds shows the picture around the region instead of black bars (the region is never cut; black only where the frame runs out). Narrowing the window back shows exactly the region again. New: **Ctrl-drag** and **Shift+Arrow** move the region inside the window. The wheel, I/O, middle click act on what is shown.
 - Held keys repeat only moves, resizes and zoom; a wheel notch zooms 10 % and touchpads by their fraction of a notch (they zoomed 8–15× too fast).
 
 ### Fixed — crashes

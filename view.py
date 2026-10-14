@@ -272,7 +272,7 @@ class Nova(QOpenGLWindow):
         if df is not None:
             img = df.to_qimage()
             if img is not None and not img.isNull():
-                src = self.zoomer.toRect() if self.zoomer.is_zoom() else img.rect()
+                src = self.zoomer.view_rect().toRect() if self.zoomer.is_zoom() else img.rect()
                 r = self._pic_ratio()
                 if wh < ww / r: h = wh; w = round(h * r)
                 else: w = ww; h = round(w / r)
@@ -448,6 +448,14 @@ class Nova(QOpenGLWindow):
             self.set_bt()
             self.update()
         return flag
+
+    def pan_region(self, fx, fy):
+        """Shift+Arrow: move the zoomed region by a fraction of what is shown (+fx: see more to the right)."""
+        if not self.zoomer.is_zoom(): return
+        ww, wh = self._widget_wh()
+        self.zoomer.pan(-fx * ww, -fy * wh)
+        self.set_bt()
+        self.update()
 
     def reset_zoom(self):
         self.z_ratio = (0.0, 0.0, 1.0, 1.0)     # also before the first frame, while the zoomer is a placeholder
@@ -762,7 +770,7 @@ class Nova(QOpenGLWindow):
         self._placed_by_user()
         if self.is_fullscreen(): self.max_screen(); return
 
-        r = self.zoomer.ratio()
+        r = self.zoomer.roi_ratio()
         ow, oh = self._widget_wh()
         if oh < ow / r: nw, nh = round(oh * r), oh
         else: nw, nh = ow, round(ow / r)

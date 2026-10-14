@@ -34,6 +34,7 @@ class MouseHdlr:
         self.resizing = False
         self._dblclk = False    # the release that ends a double-click is next
         self._drag = None       # (zone, global press position, geometry) while moving/resizing by hand
+        self._pan = None        # last pointer position while Ctrl-dragging the zoomed region
         #self.zone = 'NONE'
 
     def _zone(self, pos: QPoint):
@@ -84,6 +85,10 @@ class MouseHdlr:
             elif self.p.in_bt(pos, 4):
                 self.p.toggle_help()
             return
+        if e.modifiers() & Qt.ControlModifier and self.p.zoomer.is_zoom():
+            self._pan = pos                     # Ctrl-drag moves the zoomed region, not the window
+            self.p.setCursor(Qt.ClosedHandCursor)
+            return
         if self.p.is_fullscreen(): return
         z = self._zone(pos)
         edge = self._edge(z)
@@ -115,6 +120,16 @@ class MouseHdlr:
         self.p.setGeometry(x, y, w, h)
 
     def move(self, e):
+        if self._pan is not None:
+            if e.buttons() & Qt.LeftButton:
+                pos = e.position().toPoint()
+                d = pos - self._pan
+                self._pan = pos
+                self.p.zoomer.pan(d.x(), d.y())
+                self.p.set_bt()
+                self.p.update()
+                return
+            self._pan = None
         if self._drag is not None:
             if e.buttons() & Qt.LeftButton:
                 self._drag_to(e.globalPosition().toPoint())
@@ -123,6 +138,9 @@ class MouseHdlr:
         pos = e.position().toPoint()
         if self.p.in_bt_zone(pos):
             self.p.setCursor(Qt.PointingHandCursor)
+            return
+        if e.modifiers() & Qt.ControlModifier and self.p.zoomer.is_zoom():
+            self.p.setCursor(Qt.OpenHandCursor)
             return
         if self.p.is_fullscreen():
             self.p.setCursor(Qt.ArrowCursor)
@@ -133,7 +151,9 @@ class MouseHdlr:
     def release(self, e):
         if e.button() == Qt.LeftButton:
             self._drag = None
-            if self._dblclk:
+            if self._pan is not None:
+                self._pan = None                # the region moved, not the window: nothing to snap
+            elif self._dblclk:
                 # After a double-click that left fullscreen, geometry() can still be the fullscreen rectangle
                 # (the window manager restores the normal one when it gets to it): snapping that would make
                 # the window screen-sized.

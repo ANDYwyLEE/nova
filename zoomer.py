@@ -2,6 +2,10 @@ import logging
 from PySide6.QtCore import QRectF, QPointF
 
 class Zoomer(QRectF):
+    """The zoomed region of the picture, in frame pixels (the rectangle itself). It is what the user chose
+    and what is remembered; what the window shows is view_rect(): the region widened to the window's
+    shape, so resizing the window keeps the region and reveals the picture around it, and narrowing the
+    window back shows exactly the region again. The wheel and Ctrl-drag act on what is shown."""
     def __init__(self, w_video: int, h_video: int, w_widget: int, h_widget: int):
         super().__init__(0, 0, w_video, h_video)
 
@@ -44,11 +48,29 @@ class Zoomer(QRectF):
         )
 
     def resize(self, w, h):
+        """The window changed size: the region stays, the scale follows (see view_rect)."""
         self.w_widget = w
         self.h_widget = h
-        #TODO
-        #self.reset()
         self.zoom(None, 0)
+
+    def _set(self, r: QRectF):
+        self.setRect(r.x(), r.y(), r.width(), r.height())
+
+    def view_rect(self) -> QRectF:
+        """What the window shows: the region widened about its centre to the window's shape, so the
+        space a resize adds shows the picture around the region instead of black bars. It stops at the
+        frame's edges (shifted, not cut) and only the part no picture can fill is letterboxed. The
+        region itself is always shown whole."""
+        vw, vh, ww, wh = self.w_video, self.h_video, self.w_widget, self.h_widget
+        if not self.is_zoom() or ww <= 0 or wh <= 0 or vw <= 0 or vh <= 0:
+            return QRectF(0, 0, vw, vh)
+        x, y, w, h = self.x(), self.y(), self.width(), self.height()
+        wr = ww / wh
+        if w / h < wr: nw, nh = min(vw, h * wr), h      # window wider than the region: more at the sides
+        else: nw, nh = w, min(vh, w / wr)                # taller: more above and below
+        nx = min(max(0.0, x + (w - nw) / 2), vw - nw)
+        ny = min(max(0.0, y + (h - nh) / 2), vh - nh)
+        return QRectF(nx, ny, nw, nh)
 
     def scale(self):
         return self._scale_cache
@@ -57,8 +79,8 @@ class Zoomer(QRectF):
         ww, wh = self.w_widget, self.h_widget
         if ww <= 0 or wh <= 0:
             self._scale_cache = 1.0; return
-        vw, vh = self.w_video, self.h_video
-        if self.is_zoom(): vw, vh = self.width(), self.height()
+        v = self.view_rect()
+        vw, vh = v.width(), v.height()
         if vw <= 0 or vh <= 0:
             self._scale_cache = 1.0; return
         fr = vw / vh; wr = ww / wh
@@ -73,10 +95,34 @@ class Zoomer(QRectF):
         return x != 0 or y != 0 or w != vw  or h != vh
 
     def ratio(self):
+        """Aspect ratio of what is shown (the region widened to the window: view_rect)."""
+        v = self.view_rect()
+        return v.width() / v.height() if v.height() > 0 else 1
+
+    def roi_ratio(self):
+        """Aspect ratio of the region itself (right click sizes the window to it)."""
         w, h = self.width(), self.height()
         return w / h if h > 0 else 1
 
+    def pan(self, dx, dy):
+        """Ctrl-drag: move the region by a pointer movement of (dx, dy) window pixels, the picture
+        following the pointer; it stops at the frame's edges."""
+        if not self.is_zoom(): return
+        self._set(self.view_rect())              # what is shown is what moves
+        self._calc_scale()
+        s = self._scale_cache or 1.0
+        w, h = self.width(), self.height()
+        x = min(max(0.0, self.x() - dx / s), self.w_video - w)
+        y = min(max(0.0, self.y() - dy / s), self.h_video - h)
+        self.setRect(x, y, w, h)
+        self._calc_scale()
+
     def fit_widget(self):
+        """Middle click. Zoomed: the region becomes what is shown, the picture a resize revealed included.
+        Unzoomed: the picture cut to the window's shape (no bars)."""
+        if self.is_zoom():
+            self.set_rect(self.view_rect())
+            return
         ww, wh = self.w_widget, self.h_widget
         x, y, w, h = self.getRect()
         w_ratio = ww / wh
@@ -88,6 +134,8 @@ class Zoomer(QRectF):
         self._calc_scale()
 
     def zoom(self, pos, step):
+        if step != 0 and self.is_zoom():
+            self._set(self.view_rect())          # zoom from what is shown, not from the region alone
         if pos == None:
             pos = QPointF(self.w_widget / 2, self.h_widget / 2)
         else:

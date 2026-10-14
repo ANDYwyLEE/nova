@@ -16,6 +16,9 @@ REPEATING = {
     Qt.Key_Plus, Qt.Key_Equal, Qt.Key_I, Qt.Key_Minus, Qt.Key_Underscore, Qt.Key_O,
 }
 
+PAN_STEP = 0.1      # Shift+Arrow moves the zoomed region by this fraction of what is shown
+
+
 class KeyHdlr:
     def __init__(self, parent):
         self.p = parent # parent is Nova class
@@ -74,23 +77,28 @@ class KeyHdlr:
         elif k == Qt.Key_P:
             self.p.print_info()
 
-        # Grid Move
+        # Arrows: the window moves (plain), grows (Ctrl) or shrinks (Alt) on that edge; the zoomed region
+        # moves inside the window (Shift), a tenth of what is shown per step
         elif k == Qt.Key_Up:
-            if self.m.ctrl:  self.p.expand_up()
-            elif self.m.alt: self.p.shrink_down()
-            else:          self.p.move_up()
+            if self.m.ctrl:    self.p.expand_up()
+            elif self.m.alt:   self.p.shrink_down()
+            elif self.m.shift: self.p.pan_region(0, -PAN_STEP)
+            else:              self.p.move_up()
         elif k == Qt.Key_Down:
-            if self.m.ctrl:  self.p.expand_down()
-            elif self.m.alt: self.p.shrink_up()
-            else:          self.p.move_down()
+            if self.m.ctrl:    self.p.expand_down()
+            elif self.m.alt:   self.p.shrink_up()
+            elif self.m.shift: self.p.pan_region(0, PAN_STEP)
+            else:              self.p.move_down()
         elif k == Qt.Key_Left:
-            if self.m.ctrl:  self.p.expand_left()
-            elif self.m.alt: self.p.shrink_right()
-            else:          self.p.move_left()
+            if self.m.ctrl:    self.p.expand_left()
+            elif self.m.alt:   self.p.shrink_right()
+            elif self.m.shift: self.p.pan_region(-PAN_STEP, 0)
+            else:              self.p.move_left()
         elif k == Qt.Key_Right:
-            if self.m.ctrl:  self.p.expand_right()
-            elif self.m.alt: self.p.shrink_left()
-            else:          self.p.move_right()
+            if self.m.ctrl:    self.p.expand_right()
+            elif self.m.alt:   self.p.shrink_left()
+            elif self.m.shift: self.p.pan_region(PAN_STEP, 0)
+            else:              self.p.move_right()
 
         # Size change
         elif k == Qt.Key_PageDown: self.p.expand_right_bottom()

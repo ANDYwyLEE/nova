@@ -177,9 +177,11 @@ Status text in the window ("Connecting…", "Failed: …", "Stream error: …") 
 | `Up/Down/Left/Right` | Move the window by one grid step. |
 | `Ctrl + Arrow` | Grow the window on that edge by one grid step. |
 | `Alt + Arrow` | Shrink the window on that edge by one grid step. |
+| `Shift + Arrow` | Move the zoomed region inside the window (a tenth of the view per step). |
 | `PgUp / PgDown` | Shrink / enlarge the window by 10% (keeps the top-left corner). |
 | `I / + / =` | Zoom in (Ctrl: enlarge the window around its centre). |
 | `O / - / _` | Zoom out (Ctrl: shrink the window around its centre). |
+| `Ctrl + Mouse Drag` | Move the zoomed region inside the window. |
 | `Ctrl-C` | Exit the program (both terminal and GUI). |
 <!-- /generated:keys -->
 
@@ -193,7 +195,7 @@ Window moves and resizes happen in grid steps (`-g`, default 20 px) and are clam
 | `Wheel` | Zoom in or out around the cursor. |
 | `Double Click` | Toggle fullscreen mode. |
 | `Right Click` | Fit the window to the video (or the zoomed region). |
-| `Middle Click` | Fit the zoomed region to the window shape. |
+| `Middle Click` | Make what the window shows the zoomed region (unzoomed: cut the video to the window shape). |
 | `Drag` | Move the window. |
 | `Border Drag` | Resize the window. |
 | `Top-Left Corner` | Show the control strip (stream, record, audio, help). |
@@ -203,7 +205,9 @@ A double-click on a control-strip icon counts as one click (it no longer also to
 
 ## Zoom
 
-The wheel zooms around the cursor, 10 % per notch (high-resolution wheels and touchpads by the fraction of a notch they report); **I**/**O** (or **+**/**−**) zoom around the centre. The zoomed region is a crop of the decoded frame, rendered at full window resolution, and it is remembered per camera (see [settings](#where-settings-are-stored)). **Esc** resets it. Middle-click fits the region to the window's aspect ratio; right-click resizes the window to the region's aspect ratio instead.
+The wheel zooms around the cursor, 10 % per notch (high-resolution wheels and touchpads by the fraction of a notch they report); **I**/**O** (or **+**/**−**) zoom around the centre. The zoomed region is a crop of the decoded frame, rendered at full window resolution, and it is remembered per camera (see [settings](#where-settings-are-stored)). **Esc** resets it.
+
+The zoom is a *region* of the picture, not a magnification. Resizing the window keeps the region and shows it at the new size; where the window is wider or taller than the region, the picture around the region fills the extra space instead of black bars (the region itself is always shown whole; black appears only where the frame runs out). Narrowing the window back shows exactly the region again, so a window can be moved, enlarged to full screen and shrunk again without touching the zoom. **Ctrl-drag** and **Shift+Arrow** move the region inside the window; the wheel, **I**/**O** and these act on what is shown, so after a resize the surroundings that came into view become part of the region. Middle-click makes what is shown the region (unzoomed: cuts the video to the window's shape); right-click resizes the window to the region's own aspect ratio.
 
 Recording and streaming always use the full frame, never the zoomed view.
 

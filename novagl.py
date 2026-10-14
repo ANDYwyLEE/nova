@@ -449,7 +449,7 @@ class NovaGL(Nova):
         u0, v0, u1, v1 = 0.0, 0.0, 1.0, 1.0
         if self.zoomer.is_zoom() and df is not None and df.width > 0 and df.height > 0:
             fw, fh = df.width, df.height
-            zr = self.zoomer.toRect()
+            zr = self.zoomer.view_rect()
             u0, v0 = zr.x()/fw, zr.y()/fh
             u1, v1 = (zr.x()+zr.width())/fw, (zr.y()+zr.height())/fh
         data = np.array([
