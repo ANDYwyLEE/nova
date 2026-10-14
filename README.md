@@ -120,6 +120,18 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 - Tests: `pip install -r requirements-dev.txt` then `pytest`. They need no camera and no GPU: option parsing, URL masking, the launcher's logic, the timestamp mapper, and a headless decode → libx264 → fragmented-MP4 recording of a generated clip. GitHub Actions runs them on Linux for every push and on Windows and macOS weekly (`.github/workflows/`). `pytest --cov=. --cov-report=term-missing` shows what they leave out (about 30 %: the Qt window, the OpenGL renderer, the hardware decoders and the process entry points, which are checked by hand on a desktop).
 - `git config core.hooksPath .githooks` enables the pre-commit guard against committed credentials.
 
+## Built with Claude
+
+Nova's design and its original code are ANDYwyLEE's. Since 2026-10-11 the work on this repository has been done together with Claude, Anthropic's AI model (Claude Opus 5.5, then Claude Fable 5.1), in Claude Code sessions on the author's machine: as of 2026-10-14, 93 of the 97 commits carry a `Co-Authored-By: Claude` line. The author set the goals and made the design decisions; Claude read the code, proposed, measured and implemented; everything went through the test suite, CI on three platforms and, where it mattered, the author's own camera wall.
+
+What Claude did in that time:
+
+- Three full reviews of the code and the fixes that followed: crashes and silent stops, secrets kept out of command lines, logs and files, the launcher's control channel, the recorder's recovery and retries.
+- `--ffmpeg` option routing rebuilt from FFmpeg's own option tables; the brand URL shortcuts checked against the makers' documentation and real devices; FFmpeg's log levels matched to Nova's; a pass over every input Nova parses.
+- The test suite, `nova doctor`, the issue templates, the manual in `docs/`, the changelog, and the measurements quoted in this README.
+
+What Claude could not verify is said so in the documentation: the Windows and macOS windows beyond what CI's tests reach, and camera brands other than the ones on the author's network.
+
 ## License
 
 Nova is released under the [BSD Zero Clause License](LICENSE) (0BSD): use, copy, modify and redistribute it for any purpose, with or without attribution. © 2026 ANDYwyLEE.
