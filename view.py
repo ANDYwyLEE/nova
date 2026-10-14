@@ -4,7 +4,7 @@ layouts and the control channel."""
 import sys
 import logging
 
-from PySide6.QtCore import Qt, QTimer, Slot, QEvent, QSettings, QSize, QRect
+from PySide6.QtCore import Qt, QTimer, Slot, QEvent, QSize, QRect
 from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont
 
 try: from PySide6.QtOpenGL import QOpenGLWindow
@@ -16,7 +16,7 @@ from mousehandler import MouseHdlr
 from keyhandler import KeyHdlr
 from helper import Helper
 from fonts import MONO
-from util import WSL, MAC, WINDOWS, mask_url, window_title, parse_geom, parse_zoom
+from util import WSL, MAC, WINDOWS, mask_url, window_title, parse_geom, parse_zoom, WindowStore
 
 GS = 20 # default grid size
 MIN_VISIBLE = 40          # px of a window that must be on some screen for it to count as reachable
@@ -107,9 +107,9 @@ class Nova(QOpenGLWindow):
         # (_held_place) until its monitor is back or the user moves the window.
         self._geom_hold = False
         self._held_place = None
-        self.qset = QSettings()
-        gk = f"geom_{self.url_hash}"
-        g = geometry or self.qset.value(gk)        # --geometry (a layout) wins over the remembered place
+        self.store = WindowStore()                 # this window's own file: no lock shared with other windows
+        saved_geom, saved_zoom = self.store.read(self.url_hash)
+        g = geometry or saved_geom                 # --geometry (a layout) wins over the remembered place
         pg = parse_geom(g) if g else None
         if pg:
             try:
@@ -133,8 +133,7 @@ class Nova(QOpenGLWindow):
         # The zoom is kept as ratios of the picture until the decoder reports the frame size (vid_sz);
         # from then on the zoomer holds it in frame pixels and keeps it across reconnects.
         self.vid_sz = None
-        zk = f"zoom_{self.url_hash}"
-        z = zoom or self.qset.value(zk)
+        z = zoom or saved_zoom
         self.z_ratio = parse_zoom(z) if z else None
         if z and self.z_ratio is None:
             logging.warning(f"[Nova] ⚠️ ignoring zoom {str(z)[:60]!r}: not rx,ry,rw,rh inside the picture")
@@ -601,14 +600,12 @@ class Nova(QOpenGLWindow):
         return geom, f'{rx},{ry},{rw},{rh}'
 
     def _persist(self, force=False):
-        """Write geometry/zoom to QSettings when they changed since the last write (always with force)."""
+        """Write geometry/zoom to the window's file when they changed since the last write (always with force)."""
         state = self._state_strings()
         if state == self._persisted and not force:
             return
         geom, zoom = state
-        self.qset.setValue(f"geom_{self.url_hash}", geom)
-        self.qset.setValue(f"zoom_{self.url_hash}", zoom)
-        self.qset.sync()
+        self.store.write(self.url_hash, geom, zoom)
         self._persisted = state
 
     def _persist_if_changed(self):

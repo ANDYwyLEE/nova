@@ -180,13 +180,10 @@ def url_hash(url):
 
 
 def window_settings():
-    """Nova's per-window settings store (QSettings 'nova' / 'nova': ~/.config/nova/nova.conf on Linux),
-    or None without PySide6."""
-    try:
-        from PySide6.QtCore import QSettings
-    except ImportError:
-        return None
-    return QSettings("nova", "nova")
+    """Nova's per-window settings store (util.WindowStore: <settings dir>/windows/<hash>.conf), or None
+    without PySide6."""
+    from util import WindowStore, settings_dir
+    return WindowStore() if settings_dir() else None
 
 
 def layout_names():
@@ -904,12 +901,10 @@ def cmd_layout(defaults, env, cams, args):
     source = "open cameras" if running else "enabled cameras (none open: positions are from their last exit)"
     entries, missing = {}, []
     for c in chosen:
-        h = url_hash(c.url)
-        geom = qs.value(f"geom_{h}")
+        geom, zoom = qs.read(url_hash(c.url))
         if not geom:
             missing.append(c.id)
             continue
-        zoom = qs.value(f"zoom_{h}")
         entries[c.id] = {"geometry": str(geom), **({"zoom": str(zoom)} if zoom else {})}
     if not entries:
         sys.exit("no window positions on record yet: open the cameras once (nova start), then save")

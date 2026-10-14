@@ -16,6 +16,7 @@ from PySide6.QtGui import QGuiApplication, QImage, QKeyEvent, QMouseEvent, QWhee
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import logsync  # noqa: E402,F401  (logging.trace / logging.verbose, as nova.py installs them)
+from util import WindowStore  # noqa: E402
 
 
 class FakeStreamer:
@@ -94,11 +95,9 @@ def make(app, request):
     def _make(geom=None, zoom=None, key=None, cls=Nova, **kw):
         cls = headless(cls)
         key = key or f"t_{request.node.name}"[:60]
-        s = QSettings()
-        for k, v in ((f"geom_{key}", geom), (f"zoom_{key}", zoom)):
-            if v is None: s.remove(k)
-            else: s.setValue(k, v)
-        s.sync()
+        store = WindowStore()
+        if geom is None and zoom is None: store.remove(key)
+        else: store.write(key, geom, zoom)
         core = FakeCore(key)
         w = cls(core, **kw)
         app.processEvents()
@@ -114,9 +113,7 @@ def make(app, request):
 
 
 def stored(core):
-    s = QSettings()
-    s.sync()
-    return s.value(f"geom_{core.key}"), s.value(f"zoom_{core.key}")
+    return WindowStore().read(core.key)
 
 
 def ratios(text):

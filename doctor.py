@@ -295,9 +295,8 @@ def settings_lines():
         import cams
         qs = cams.window_settings()
         if qs is not None:
-            f = qs.fileName()
-            mode = "-" if WINDOWS or not os.path.exists(f) else oct(os.stat(f).st_mode & 0o777)[2:]
-            lines.append(("Settings", f"{f} ({'mode ' + mode if os.path.exists(f) else 'not written yet'})"))
+            n = len(qs.hashes())
+            lines.append(("Settings", f"{qs.dir}: {n} window file(s)" if n else f"{qs.dir}: none written yet"))
         lines.append(("Layouts", f"{len(cams.layout_names())} in {os.path.relpath(cams.LAYOUTS, HERE)}/"))
     except Exception as e:
         lines.append(("Settings", f"n/a ({e})"))

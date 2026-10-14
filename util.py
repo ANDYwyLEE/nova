@@ -189,6 +189,70 @@ def window_title(name):
     return f"Nova - {name}" if name else "Nova"
 
 
+def settings_dir():
+    """Where Nova keeps its per-window files: $NOVA_SETTINGS_DIR, else the folder Qt gives user settings
+    (~/.config/nova on Linux and macOS, %APPDATA%\\nova on Windows); None without PySide6."""
+    d = os.environ.get("NOVA_SETTINGS_DIR")
+    if d:
+        return os.path.expanduser(d)
+    try:
+        from PySide6.QtCore import QSettings
+    except ImportError:
+        return None
+    return os.path.dirname(QSettings(QSettings.IniFormat, QSettings.UserScope, "nova", "nova").fileName())
+
+
+class WindowStore:
+    """A camera window's place and zoom on record: one small INI file per window, named by the hash of the
+    camera URL, under <settings_dir>/windows.  One file per window because processes that close at the
+    same moment must not wait for one another: QSettings locks its file and retries with sleeps doubling
+    from 0.1 s to 5 s, and thirteen windows closing on one shared file took up to 45 s to exit.  A window
+    without a file of its own is looked up in the former shared file (QSettings 'nova'/'nova': nova.conf,
+    keys geom_<hash> / zoom_<hash>), so places survive the change."""
+    def __init__(self, base=None):
+        self.base = base or settings_dir()
+        self.dir = os.path.join(self.base, "windows") if self.base else None
+
+    def path(self, h):
+        return os.path.join(self.dir, f"{h}.conf")
+
+    @staticmethod
+    def _text(v):
+        return None if v in (None, "") else str(v)
+
+    def read(self, h):
+        """(geometry, zoom) as 'x,y,w,h' / 'rx,ry,rw,rh' strings, each None when not on record."""
+        from PySide6.QtCore import QSettings
+        p = self.path(h)
+        if os.path.exists(p):
+            s = QSettings(p, QSettings.IniFormat)
+            return self._text(s.value("geometry")), self._text(s.value("zoom"))
+        legacy = QSettings("nova", "nova")
+        return self._text(legacy.value(f"geom_{h}")), self._text(legacy.value(f"zoom_{h}"))
+
+    def write(self, h, geometry, zoom):
+        """Write both values (a None removes that value); the file is created on first use."""
+        from PySide6.QtCore import QSettings
+        os.makedirs(self.dir, exist_ok=True)
+        s = QSettings(self.path(h), QSettings.IniFormat)
+        for key, v in (("geometry", geometry), ("zoom", zoom)):
+            if v is None: s.remove(key)
+            else: s.setValue(key, str(v))
+        s.sync()
+        return s.status() == QSettings.Status.NoError
+
+    def remove(self, h):
+        try: os.remove(self.path(h))
+        except OSError: pass
+
+    def hashes(self):
+        """The hashes that have a file."""
+        try:
+            return sorted(f[:-5] for f in os.listdir(self.dir) if f.endswith(".conf"))
+        except OSError:
+            return []
+
+
 if __name__ == "__main__":
     print(f'system: {_system}, WSL:{WSL}')
     print(mask_url("rtsp://admin:secret@192.168.1.2:554/user=admin&password=secret&channel=1"))

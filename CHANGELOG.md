@@ -19,7 +19,7 @@ A check of every vendor URL format against the makers' documentation and the ref
 - Dedicated hardware decoders (`h264_cuvid`, `hevc_qsv`, …) get the stream's time base when the demuxer's context carries none: `Invalid pkt_timebase, passing timestamps as-is` at every start is gone, and cuvid rescales timestamps correctly.
 
 ### Changed
-- The settings store is `~/.config/nova/nova.conf` (Windows `HKEY_CURRENT_USER\Software\nova\nova`, macOS `com.nova.nova.plist`) instead of the `judvi` organisation folder. No migration: an installation from before this change keeps its window places by moving the file once (`mv ~/.config/judvi/Nova.conf ~/.config/nova/nova.conf` with the cameras stopped).
+- Window places and zooms are kept in one small file per window (`~/.config/nova/windows/<hash>.conf`; `%APPDATA%\nova\windows\` on Windows; `NOVA_SETTINGS_DIR` moves the folder) instead of one shared QSettings file. Thirteen windows closing at the same time (`nova stop`, a logout) used to queue on that file's lock, which Qt retries with sleeps doubling from 0.1 s to 5 s: measured, the windows exited 0.4, 0.5, 0.9, 1.7, 3.3, 6.5, 13, 19, 32, 32, 39 and 45 s after the request, while one window alone takes 0.2 s. Now every window exits at once, and `nova layout apply` no longer stalls windows on that lock either. The former shared file (`nova.conf`, before that the `judvi` organisation's `Nova.conf`) is read for a window that has no file of its own yet, so no place is lost.
 
 ### Added
 - **Recorder channels and the third stream.** `scheme://user:pw@host[:port][/CHANNEL][/STREAM]`: `hik://admin:pw@nvr/3/sub` is channel 3, sub stream; `STREAM` is `0|main`, `1|sub` or `2|third` (Hikvision, Dahua, Uniview). An ONVIF profile is picked with `/N`.

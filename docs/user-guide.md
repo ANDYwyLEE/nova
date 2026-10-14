@@ -255,9 +255,10 @@ Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom regio
 
 | OS | Location |
 |---|---|
-| Linux | `~/.config/nova/nova.conf` |
-| Windows | registry `HKEY_CURRENT_USER\Software\nova\nova` |
-| macOS | `~/Library/Preferences/com.nova.nova.plist` |
+| Linux, macOS | `~/.config/nova/windows/<hash>.conf`, one file per camera window |
+| Windows | `%APPDATA%\nova\windows\<hash>.conf` |
+
+One file per window, because windows that close at the same moment (`nova stop`, a logout) must not wait for one another: Qt retries a shared settings file's lock with sleeps doubling from 0.1 s to 5 s, and thirteen windows closing on one file took up to 45 s to exit. A window without a file of its own is looked up once in the former shared file (`~/.config/nova/nova.conf`, before that `~/.config/judvi/Nova.conf`), so places survive the change. `NOVA_SETTINGS_DIR` moves the folder.
 
 Resolved shortcut URLs (`onvif://`, `hik://`, `dahua://`, `xmeye://`, `reolink://`, `axis://`: [Camera brands](#camera-brands)) are cached for one day in `.uri_cache.json` next to `nova.py`, without the password. Only URLs built from the device's own answer are cached (`tapo://` and `unv://` need no cache), and a camera that gives no picture three times in a row is asked again. A password may contain `@` (`user:pa@ss@ip` works) or be percent-encoded.
 
@@ -273,6 +274,7 @@ Everything Nova and the launcher write (recordings, snapshots, logs, layouts, th
 | `NOVA_WHEEL_INVERT` | `1` reverses the wheel's zoom direction (default: pushing the wheel away zooms in) |
 | `NOVA_MIN_RECORD_INTERVAL` | the shortest `--record-interval` in seconds (default 60; the test suite lowers it) |
 | `NOVA_UMASK` | permissions for new files, octal (default `077`: this user only; `022` lets other accounts read recordings and logs) |
+| `NOVA_SETTINGS_DIR` | where the per-window settings files live (`<dir>/windows/<hash>.conf`; default: Qt's user settings folder, see Where settings are stored) |
 | `NOVA_AV_LOG` | FFmpeg's own log threshold, raw: `panic fatal error warning info verbose debug trace quiet` (default: matched to `-l`, with known noise demoted; see Logs) |
 | `QT_QPA_PLATFORM` | `offscreen` is set automatically for `--headless`; on a Wayland session Nova sets `xcb` (XWayland) itself, `wayland` asks for a native window |
 
