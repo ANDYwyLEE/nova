@@ -123,6 +123,16 @@ def test_noise_is_demoted_or_dropped(root_handler):
                        "5 libav.h264 Reinit context to 1920x1088, pix_fmt: yuv420p"]
 
 
+def test_pyavs_unused_option_report_for_nova_s_protocol_options_is_debug(root_handler):
+    records, h = root_handler
+    logging.getLogger().setLevel(logging.INFO)
+    logsync.setup_av_logging()
+    out = logging.getLogger("av.container.output")
+    out.warning("Some options were not used: {'rtmp_flush_interval': '1'}")        # a stock PyAV: expected
+    out.warning("Some options were not used: {'flvflags': 'nope', 'rtmp_flush_interval': '1'}")   # a real one
+    assert records == ["30 av.container.output Some options were not used: {'flvflags': 'nope', 'rtmp_flush_interval': '1'}"]
+
+
 def test_av_quiet_restores_the_threshold(root_handler):
     av.logging.set_level(av.logging.INFO)
     with logsync.av_quiet():

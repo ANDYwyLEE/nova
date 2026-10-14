@@ -136,8 +136,17 @@ AV_NOISE = (
 
 class AVNoiseFilter(logging.Filter):
     """AV_NOISE applied to PyAV's libav.* records.  A handler filter: a filter on the "libav" logger
-    never sees the records of its children (libav.h264, ...)."""
+    never sees the records of its children (libav.h264, ...).  PyAV's own "Some options were not
+    used" warning is kept at DEBUG when every unused option is one Nova gives the output protocol on
+    purpose (avwriter.RTMP_PROTOCOL_OPTIONS): a stock PyAV cannot pass them on, a patched one does."""
     def filter(self, record):
+        if record.name == "av.container.output":
+            msg = record.getMessage()
+            if msg.startswith("Some options were not used") and _only_protocol_options(msg):
+                record.levelno = logging.DEBUG
+                record.levelname = logging.getLevelName(logging.DEBUG)
+                return logging.getLogger().isEnabledFor(logging.DEBUG)
+            return True
         if not record.name.startswith("libav"):
             return True
         msg = record.getMessage()
@@ -150,6 +159,19 @@ class AVNoiseFilter(logging.Filter):
                     record.levelname = logging.getLevelName(logging.DEBUG)
                 return logging.getLogger().isEnabledFor(logging.DEBUG)
         return True
+
+
+def _only_protocol_options(msg):
+    """True when PyAV's unused-options message names only keys of avwriter.RTMP_PROTOCOL_OPTIONS."""
+    import re
+    keys = set(re.findall(r"'([^']+)':", msg))
+    if not keys:
+        return False
+    try:
+        from avwriter import RTMP_PROTOCOL_OPTIONS
+    except Exception:
+        return False
+    return keys <= set(RTMP_PROTOCOL_OPTIONS)
 
 
 @contextlib.contextmanager

@@ -284,10 +284,23 @@ def _net_timeouts(path):
     t = max(1.0, _net_timeout_us() / 1_000_000)
     return max(LIVE_OPEN_TIMEOUT, t), t
 
-def _build_conn_options(fmt, mux_opts):
-    """Muxer options. Protocol options are not among them (see _net_timeouts): SRT settings go in
-    the URL query (srt://host:port?latency=200000&passphrase=...)."""
+# Protocol options for RTMP targets.  PyAV 19 opens the output with avio_open2(..., NULL), so these
+# only take effect with a PyAV that passes the output options to the protocol (patch sent upstream);
+# until then they are harmless and their "not used" report is kept at DEBUG (logsync).
+#   rtmp_flush_interval: FFmpeg reads the server's messages (acknowledgements every ~180 KB from
+#   YouTube, pings) only once per this many FLV packets; at the default 10 a 25 fps + AAC stream
+#   drains about 7 messages a second, barely YouTube's rate, and the rest piled up in the socket's
+#   receive queue (18 B/s, measured; days later the server could no longer send and dropped the
+#   connection).  With 1 every packet drains one message.
+RTMP_PROTOCOL_OPTIONS = {"rtmp_flush_interval": "1"}
+
+def _build_conn_options(fmt, mux_opts, path=""):
+    """Muxer options, plus RTMP_PROTOCOL_OPTIONS for rtmp targets. Other protocol options (rw_timeout,
+    tcp_nodelay, SRT's latency) are not among them (see _net_timeouts): SRT settings go in the URL
+    query (srt://host:port?latency=200000&passphrase=...)."""
     options = {}
+    if str(path).lower().startswith(('rtmp://', 'rtmps://')):
+        options.update(RTMP_PROTOCOL_OPTIONS)
     if fmt == 'hls':
         # the HLS muxer opens every segment/playlist upload itself and passes these on
         options['method'] = 'POST'
@@ -483,7 +496,7 @@ class AVWriter:
         if fmt in ("mp4", "mov") and 'movflags' not in self.mux_opts:
             self.mux_opts['movflags'] = '+frag_keyframe+empty_moov'
 
-        self._container_opts = _build_conn_options(fmt, self.mux_opts)
+        self._container_opts = _build_conn_options(fmt, self.mux_opts, self.path)
         self.timeout = _net_timeouts(self.path)
         self._v_tag = v_tag
         self._enc_args = (accel, encoder, source_codec, dict(self.enc_v_opts), allowed)

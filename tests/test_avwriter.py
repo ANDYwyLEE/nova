@@ -48,6 +48,8 @@ def test_network_targets_get_pyav_deadlines_not_protocol_options(monkeypatch):
     assert avwriter._build_conn_options("flv", {"f": "flv", "flvflags": "no_duration_filesize"}) == \
         {"flvflags": "no_duration_filesize"}
     assert avwriter._build_conn_options("hls", {}) == {"method": "POST", "timeout": "10000000us"}
+    assert avwriter._build_conn_options("flv", {}, "rtmp://a.rtmp.youtube.com/live2/k") == {"rtmp_flush_interval": "1"}
+    assert avwriter._build_conn_options("flv", {}, "/tmp/x.flv") == {}
 
 
 class Container:
