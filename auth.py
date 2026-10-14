@@ -706,6 +706,20 @@ def _resolve_xmeye(info, should_stop=None):
             _fail(f"[XMeye] ❌ Login failed at {ip}:{mgmt_port}. Check credentials.")
             return None, False
         logging.info("[XMeye] ✅ Login successful. Reading NetWork.RTSP...")
+        # SystemInfo: analog + digital (IP) channels; a recorder reports VideoInChannel 0 and DigChannel N
+        try:
+            si = _call(should_stop, cam.get_system_info)
+        except Exception as e:
+            logging.debug(f"[XMeye] SystemInfo not readable: {type(e).__name__}")
+            si = None
+        if isinstance(si, dict) and "Ret" not in si:
+            try:
+                total = int(si.get("VideoInChannel") or 0) + int(si.get("DigChannel") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            if total and info['channel'] > total:
+                _fail(f"[XMeye] ❌ {ip} has {total} channel(s); channel {info['channel']} does not exist")
+                return None, False
         try:
             cfg = _call(should_stop, cam.get_info, "NetWork.RTSP")
         except Exception as e:

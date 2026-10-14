@@ -457,7 +457,7 @@ def test_quiet_failures_log_at_debug(caplog):
 
 
 # ---------------------------------------------------------------- XMeye (python-dvr stubbed)
-def fake_dvrip(monkeypatch, behaviour):
+def fake_dvrip(monkeypatch, behaviour, channels=None):
     class DVRIPCam:
         def __init__(self, ip, user, password, port):
             self.args = (ip, user, password, port)
@@ -465,6 +465,10 @@ def fake_dvrip(monkeypatch, behaviour):
             if behaviour == "down":
                 raise OSError("timed out")
             return True
+        def get_system_info(self):
+            if channels is None:                      # a device without SystemInfo: python-dvr returns the error dict
+                return {"Name": "SystemInfo", "Ret": 102, "SessionID": "0x1"}
+            return {"VideoInChannel": 0, "DigChannel": channels, "HardWare": "NBD8008R-U"}
         def get_info(self, name):
             self.asked = name
             if behaviour == "old":                   # firmware without NetWork.RTSP: python-dvr returns the error dict
@@ -496,6 +500,14 @@ def test_xmeye_hostile_port(monkeypatch, cache_file):
     fake_dvrip(monkeypatch, "554@198.51.100.9:80")
     assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1").startswith("rtsp://admin:pw@127.0.0.1/user=")
     assert not cache_file.exists()
+
+
+def test_xmeye_recorder_channel_count(monkeypatch, cache_file, caplog):
+    fake_dvrip(monkeypatch, 554, channels=16)
+    assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1/16/1").endswith("channel=16&stream=1.sdp?real_stream")
+    with caplog.at_level(logging.ERROR):
+        assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1/17/0") is None
+    assert "has 16 channel(s); channel 17 does not exist" in caplog.text
 
 
 def test_xmeye_old_firmware_and_rtsp_off(monkeypatch, cache_file, caplog):
