@@ -1,6 +1,8 @@
 # Installation
 
 Nova needs Python 3.12 or newer and the packages in `requirements.txt`. Nothing else: the `av` package from PyPI ships its own FFmpeg, and the GPU paths use the driver that is already installed.
+
+What a camera costs, measured on a 13-window wall (Ubuntu 26.04, two RTX 4090, `--opengl --accel cuda -f 30`): a live 1080p H.264 camera takes 4–11 % of one core (0.85 and 18 Mbit/s streams), about 375 MB of RAM and 430–460 MiB of VRAM; recording it adds about 250 MB and 500 MiB (the NVENC session); a window whose camera is unreachable idles at 220 MB without a GPU context. Software decoding of the 18 Mbit/s stream costs 40 % of a core. Thirteen windows together: 0.4 cores and 4 GB. The window is up within a second of launch, the first frame follows in 2–6 s.
 - [What the PyPI FFmpeg can do](#what-the-pypi-ffmpeg-can-do)
 - [Linux](#linux-ubuntu-2404-and-2604)
 - [Windows](#windows)
