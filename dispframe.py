@@ -1,5 +1,5 @@
-# dispframe.py
-# A decoded frame handed from VideoWorker to the GUI thread.
+"""A decoded frame handed from VideoWorker to the GUI thread: the planes the OpenGL renderer uploads as
+they are, or an RGBA image for QPainter."""
 import numpy as np
 from PySide6.QtGui import QImage
 

@@ -1,11 +1,11 @@
-import re
+"""The camera window: frameless QOpenGLWindow with the picture (OpenGL or QPainter), the overlay and
+status strip, geometry and zoom kept in QSettings, fullscreen / maximize / snap, and `place()` for
+layouts and the control channel."""
 import sys
-import traceback
-import queue
 import logging
 
-from PySide6.QtCore import Qt, QTimer, Signal, Slot, QEvent, QSettings, QSize, QRect
-from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont, QSurfaceFormat, QRegion
+from PySide6.QtCore import Qt, QTimer, Slot, QEvent, QSettings, QSize, QRect
+from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont
 
 try: from PySide6.QtOpenGL import QOpenGLWindow
 except ImportError:
@@ -707,16 +707,8 @@ class Nova(QOpenGLWindow):
         left of / above the primary one."""
         return QGuiApplication.primaryScreen().virtualGeometry()
 
-    def _screen_wh_multi(self):
-        g = self._virtual_rect()
-        return g.width(), g.height()
-
     def _widget_wh(self):
         return self.width(), self.height()
-
-    def _widget_wh_scrn(self):
-        sw, sh = self._screen_wh()
-        return self.width(), self.height(), sw, sh
 
     def _curr_pos(self):
         g = self.geometry()   # global geometry
@@ -869,10 +861,6 @@ class Nova(QOpenGLWindow):
     def _resize(self, w, h):
         self._placed_by_user()
         self.resize(int(w), int(h))
-
-    def _resize_d(self, dw, dh):
-        w, h = self._widget_wh()
-        self._resize(w + dw, h + dh)
 
     def _resize_r(self, f): # ratio
         ow, oh = self._widget_wh()

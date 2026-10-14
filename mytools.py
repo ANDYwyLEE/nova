@@ -1,3 +1,5 @@
+"""Small timing helpers: Clock (an interruptible sleep), Skipper (thinning frames to a display rate)
+and FrameRator (a measured frame rate)."""
 import time
 from collections import deque
 from PySide6.QtCore import QMutex, QWaitCondition

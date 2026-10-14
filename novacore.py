@@ -1,4 +1,5 @@
-# novacore.py
+"""NovaCore: the per-camera controller: owns the VideoWorker, the recorder, the streamer and the audio
+player, names the camera and its folders, serves the window and the control channel."""
 import re
 import os
 import time
@@ -13,7 +14,7 @@ from videoworker import VideoWorker
 from recorder import AVRecorder
 from audioplayer import AudioPlayer
 from streamer import AVStreamer
-from util import mask_url, printable
+from util import printable
 
 
 def settings_key(url):
@@ -171,7 +172,7 @@ class NovaCore(QObject):
     def height(self): return self.vid_worker.height()
     def ratio(self): return self.vid_worker.ratio()
 
-    # TODO move to GUI
+    # icons of the window's status strip, read by the view
     def get_recorder_icon(self): return self.recorder.get_icon()
     def get_audio_icon(self): return self.audio.get_icon()
     def get_streamer_icon(self): return self.streamer.get_icon()

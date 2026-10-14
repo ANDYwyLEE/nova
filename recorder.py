@@ -1,4 +1,5 @@
-# recorder.py
+"""Recording to segment files under videos/NAME: the folder lock, segments rotated by --record-interval
+on local time, crash leftovers kept as *_recovered.mp4, retries after a failure."""
 import os, time, errno, logging, traceback
 import av
 from PySide6.QtCore import Signal, Slot, QTimer

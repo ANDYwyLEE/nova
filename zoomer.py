@@ -1,3 +1,4 @@
+"""Zoom math: the zoomed region in frame pixels, and what the window shows of it."""
 import logging
 from PySide6.QtCore import QRectF, QPointF
 

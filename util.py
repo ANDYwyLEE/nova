@@ -1,11 +1,8 @@
+"""Platform checks, password and stream-key masking for logs and terminals, small parsers shared by the
+launcher and the camera (geometry, zoom, intervals), and short forms of FFmpeg's error texts."""
 import os
 import re
-import sys
-import inspect
 import platform
-import logging
-from pprint import pprint
-from urllib.parse import urlparse
 
 
 _system = platform.system().lower()
@@ -84,14 +81,13 @@ def parse_time(value):
     raise ValueError(f"unsupported interval unit: {unit}")
 
 
-# RTSP URL to normal filename
-def parse_url(s):
-    buf = ""
-    for c in s:
-        if c.isalnum(): buf += c
-        elif c == '.': buf += '.'
-        else: buf += '_'
-    return buf
+_ERR_HEAD = re.compile(r'^\[[^\]]+\]\s*([^:]+)')
+
+def short_err(e) -> str:
+    """The first clause of an FFmpeg / PyAV error ('[Errno 5] Input/output error: ...' -> 'Input/output
+    error'), for one-line log messages."""
+    m = _ERR_HEAD.search(str(e))
+    return m.group(1).strip() if m else str(e)
 
 
 _SECRET_KEYS = r'(?:password|passwd|passphrase|passwort|pwd|psw|pass|streamid|secret|token)'
@@ -152,28 +148,6 @@ def display_url(url) -> str:
     tail = s.split("@")[-1] if "://" in s else s
     return mask_url(tail)
 
-
-class Util():
-    @staticmethod
-    def ppmethods(obj):
-        methods = {}
-        for attr_name in dir(obj):
-            attr_value = getattr(obj, attr_name)
-            if callable(attr_value):
-                try:
-                    sig = inspect.signature(attr_value)
-                    methods[attr_name] = [
-                        p.name for p in sig.parameters.values()
-                        if p.kind == p.POSITIONAL_OR_KEYWORD
-                    ]
-                except ValueError:
-                    pass
-        pprint(methods)
-
-    @staticmethod
-    def ppvars(obj):
-        for name, value in vars(obj).items():
-            print(f"{name}: {value}")
 
 
 _ANSI_SEQ = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[ -/]*[0-~]")   # CSI, OSC, other ESC

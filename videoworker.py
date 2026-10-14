@@ -1,4 +1,6 @@
-# videoworker.py
+"""VideoWorker: the decode thread of a camera: TCP probe and connection, shortcut URI resolution, hardware
+decoder selection with software fallback and retry, reconnection, frames fanned out to the window, the
+recorder and the streamer."""
 
 import os
 from urllib.parse import urlparse
@@ -12,7 +14,6 @@ import random
 import logging
 import traceback
 import queue
-from fractions import Fraction
 from collections import deque
 
 import numpy as np
@@ -20,7 +21,7 @@ from PySide6.QtCore import QThread, Signal
 
 import logsync  # installs logging.verbose / logging.trace
 from mytools import Skipper, FrameRator, Clock
-from util import LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI, mask_url, display_url
+from util import LINUX, MAC, WSL, mask_url, display_url, short_err as _short_err
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS
@@ -59,12 +60,6 @@ GOP_UNKNOWN_S = 20.0        # keyframe interval assumed until two keyframes have
 FPS_MAX = 120               # a larger "frame rate" is a clock rate (90000), not frames
 RERESOLVE_AFTER = 3         # connection attempts without a picture before onvif:// etc. are resolved again
 RERESOLVE_MIN_S = 60.0
-
-PATTERN = re.compile(r'^\[[^\]]+\]\s*([^:]+)')
-
-def _short_err(e: Exception) -> str:
-    m = PATTERN.search(str(e))
-    return m.group(1).strip() if m else str(e)
 
 
 def _mask(url) -> str:
@@ -444,10 +439,7 @@ class VideoWorker(QThread):
     def set_audio_on(self, v: bool): self.audio_on = bool(v)
     def get_gpu_idx(self): return self.gpu_idx
     def get_stream_codec(self): return self.codec_name
-    def get_encoder_opts(self): return self.enc_v_opts, self.enc_a_opts
-    def get_open_opts(self): return self.open_opts
     def get_ffopts(self): return self.ffopts
-    def get_resolved_url(self): return self._resolved
 
     # ------------------------------------------------------------------ main loop
     def run(self):

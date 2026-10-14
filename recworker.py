@@ -1,4 +1,5 @@
-# recworker.py
+"""AVRecWorker: the encoder thread behind the recorder and the streamer: frames queued from the
+decoder are written through an AVWriter; failures are reported and retried."""
 import logging
 import queue
 import re
@@ -6,7 +7,8 @@ import time
 import traceback
 import av
 from PySide6.QtCore import QThread, Signal
-from avwriter import OutputOpenError, _short_err
+from avwriter import OutputOpenError
+from util import short_err as _short_err
 
 RETRY_DELAYS = (5, 10, 20, 40, 60) # s between restarts of a failed recording/stream; the last one repeats
 STABLE_AFTER = 60                  # s of output (from the first muxed packet) that start the series again

@@ -1,4 +1,5 @@
-# avwriter.py
+"""AVWriter: the PyAV writer behind recording and streaming: encoder choice and probing (EncoderManager),
+timestamps, the -vf graph, audio (the camera's or silence), the output container, failures at open."""
 import re
 import os
 import sys
@@ -12,18 +13,12 @@ from fractions import Fraction
 import av
 import logsync  # installs logging.verbose / logging.trace
 from ffparser import for_codec
-from util import LINUX, WINDOWS, MAC, WSL, IS_PI, MSYS, get_os_type
+from util import WINDOWS, MAC, IS_PI, MSYS, get_os_type, short_err as _short_err
 
 try: from filelock import FileLock, Timeout
 except ImportError:
     print("Error: filelock is required. Run 'pip install filelock'")
     sys.exit(1)
-
-PATTERN = re.compile(r'^\[[^\]]+\]\s*([^:]+)')
-
-def _short_err(e: Exception) -> str:
-    m = PATTERN.search(str(e))
-    return m.group(1).strip() if m else str(e)
 
 def _get_best_pix_fmt(encoder_name: str) -> str:
     e = encoder_name.lower()
@@ -689,9 +684,6 @@ class AVWriter:
         self._mux(pending)
 
     # ------------------------------------------------------------------ writing
-    @property
-    def frames_written(self): return self.v_frames
-
     def _mux(self, packets):
         """Hand packets to the muxer.  Audio is held back until the first video packet exists:
         encoders with look-ahead (libx264: ~40 frames) emit their first packet late, and if audio

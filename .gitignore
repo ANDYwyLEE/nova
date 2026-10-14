@@ -32,3 +32,4 @@ layouts/
 CLAUDE.md
 CLAUDE.local.md
 .mcp.json
+.coverage

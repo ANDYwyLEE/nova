@@ -1,5 +1,5 @@
-#[helper.py]
-
+"""The help overlay: Nova's options and keys as --help and the key handler describe them
+(docs/gen_keys.py builds the manual's tables from the same source)."""
 from typing import Dict
 from player import Player
 from novaargs import option_table

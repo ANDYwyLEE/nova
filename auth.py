@@ -1,3 +1,6 @@
+"""Brand shortcut URIs (onvif:// hik:// dahua:// xmeye:// reolink:// axis:// tapo:// unv://) resolved
+to rtsp:// URLs: what each device is asked, how its answer is checked before the password is attached,
+and the password-free cache."""
 import os
 import re
 import sys
@@ -15,7 +18,7 @@ import selectors
 import threading
 import ipaddress
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse, urlunparse, urlsplit, urlunsplit, quote, unquote
+from urllib.parse import urlparse, urlsplit, urlunsplit, quote, unquote
 from xml.sax.saxutils import escape as _xml_escape
 
 try: import requests
@@ -244,13 +247,6 @@ def log_xml_pretty(action, http_headers, xml_input):
         logging.trace(f"[ONVIF] XML Parse Error: {type(e).__name__}")
 
 
-def check_port(ip, port, timeout=1):
-    try:
-        with socket.create_connection((ip, int(port)), timeout=timeout):
-            return True
-    except Exception:
-        return False
-
 _CONNECT_IN_PROGRESS = {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
                         getattr(errno, "WSAEWOULDBLOCK", 10035)}
 
@@ -395,15 +391,6 @@ def _rtsp_url(user, pwd, host, port, path, scheme="rtsp"):
     auth = f"{quote(user, safe='')}:{quote(pwd, safe='')}@" if (user or pwd) else ""
     hp = host if (scheme == "rtsp" and port in (None, 554)) else f"{host}:{port}"
     return f"{scheme}://{auth}{hp}{path}"
-
-def clean_rtsp_554_url(url):
-    """rtsp://host:554/... -> rtsp://host/... (IPv6 hosts keep their brackets)."""
-    if not url: return ''
-    parsed = urlparse(url)
-    if parsed.scheme.lower() == "rtsp" and parsed.port == 554:
-        userinfo, at, _ = parsed.netloc.rpartition('@')
-        parsed = parsed._replace(netloc=f"{userinfo}{at}{_url_host(parsed.hostname)}")
-    return urlunparse(parsed)
 
 def _with_credentials(raw_url, user, pwd):
     scheme, sep, rest = raw_url.partition("://")

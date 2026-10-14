@@ -1,4 +1,4 @@
-
+"""The monospace font of the overlay, chosen per platform."""
 from PySide6.QtGui import QFont
 from util import LINUX, WINDOWS, MAC, WSL
 

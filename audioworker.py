@@ -1,5 +1,6 @@
-# audioworker.py
-
+"""Audio playback thread: PCM frames from the decoder played through PortAudio (PyAudio), the device
+opened at the camera's sample rate with 48 kHz resampling as the fallback, PipeWire / Pulse preferred
+on Linux, NOVA_AUDIO_DEVICE_INDEX to force a device."""
 import queue
 import os
 import sys
@@ -9,7 +10,7 @@ import logging
 
 import numpy as np
 from PySide6.QtCore import QThread, Signal
-from util import LINUX, WINDOWS, MAC
+from util import LINUX
 from logsync import TRACE_LEVEL
 
 try: import pyaudio

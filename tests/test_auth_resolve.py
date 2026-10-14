@@ -122,8 +122,6 @@ def test_shortcut_schemes_and_aliases():
 
 
 def test_ipv6_brackets_are_kept():
-    assert auth.clean_rtsp_554_url("rtsp://u:p@[fe80::1]:554/s") == "rtsp://u:p@[fe80::1]/s"
-    assert auth.clean_rtsp_554_url("rtsps://[fe80::1]:554/s") == "rtsps://[fe80::1]:554/s"
     info = auth.parse_uri("onvif://u:p@[fe80::1]", None)
     assert auth._check_stream_uri("rtsp://[FE80:0::1]:8554/x", info) == "rtsp://[fe80:0::1]:8554/x"   # same host
     assert auth._check_stream_uri("rtsp://192.0.2.7/x", info) == "rtsp://[fe80::1]/x"

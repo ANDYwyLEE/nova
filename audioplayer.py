@@ -1,5 +1,7 @@
+"""The audio toggle of a camera (a Player): starts and stops the AudioWorker that plays the camera's
+sound and reports its state to the window."""
 import queue
-from player import Player  # Import the abstract base class
+from player import Player
 from audioworker import AudioWorker
 from PySide6.QtCore import Signal
 

@@ -1,4 +1,5 @@
-# streamer.py
+"""AVStreamer: the live stream to the -t target (RTMP, SRT, HLS or a file): lifecycle, reconnection
+with growing delays, the LIVE icon."""
 import logging
 from player import Player
 from recworker import AVRecWorker, ErrorLog, RETRY_DELAYS, STABLE_AFTER

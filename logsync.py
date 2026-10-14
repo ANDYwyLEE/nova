@@ -1,29 +1,23 @@
-# logsync.py
+"""Logging setup shared by every module: the VERBOSE and TRACE levels, the masking filter, the
+excepthooks, and FFmpeg's log through PyAV (threshold per Nova level, known noise demoted)."""
 import logging
 import os
 import sys
 import threading
-import traceback
 import contextlib
 from util import mask_url
 
 
 try:
     import av
-    from av.codec.hwaccel import HWAccel, hwdevices_available
-except ImportError as e:
-    stack_trace = traceback.format_exc()
-    print(r"Error: av is required. Run 'pip install av'(>=14.x.x)")
+    import av.logging
+except ImportError:
+    print("Error: av is required. Run 'pip install -r requirements.txt'")
     sys.exit(1)
 
 
-# Define custom logging levels
-#logging.CRITICAL = 50
-#logging.ERROR = 40
-#logging.WARNING = 30
-#logging.INFO = 20
+# Nova's two extra levels, between the standard ones (CRITICAL 50, ERROR 40, WARNING 30, INFO 20, DEBUG 10)
 VERBOSE_LEVEL = 15
-#logging.DEBUG = 10
 TRACE_LEVEL = 5
 
 

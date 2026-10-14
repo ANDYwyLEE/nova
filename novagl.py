@@ -1,3 +1,5 @@
+"""The OpenGL renderer of the camera window: NV12 / YUV planes uploaded as textures and converted to
+RGB in a shader, the overlay as an RGBA texture, fit and zoom as a model matrix."""
 import traceback, logging, sys, ctypes, time
 import numpy as np
 from util import WINDOWS

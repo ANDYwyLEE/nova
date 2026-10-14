@@ -1,9 +1,10 @@
-
+"""Player: what the recorder, the streamer and the audio toggle have in common: on / off state, an
+icon for the window's status strip, Qt signals."""
 from abc import abstractmethod, ABCMeta
 import queue
 import numpy as np
 from PySide6.QtCore import QObject
-from PySide6.QtGui import QImage, QColor
+from PySide6.QtGui import QImage
 
 class QABCMeta(type(QObject), ABCMeta):
     pass

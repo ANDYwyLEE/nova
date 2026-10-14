@@ -326,12 +326,7 @@ def for_codec(ctx, opts: dict, what: str = "codec"):
     return apply, skipped
 
 
-def _mask(s: str) -> str:
-    try:
-        from util import mask_url
-        return mask_url(s)
-    except Exception:
-        return s
+from util import mask_url as _mask
 
 
 class FFmpegParser:

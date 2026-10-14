@@ -1,5 +1,6 @@
 #!venv/bin/python3 -u
-
+"""One camera: options (argv, or cameras.ini through --camera / --config), logging, the Qt application
+and platform choice, NovaCore and the window, orderly shutdown."""
 import os
 import sys
 import signal

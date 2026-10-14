@@ -1,3 +1,5 @@
+"""Keyboard handling of the camera window: the key map (zoom, pan, record, stream, audio, snapshot,
+window placement) and the modifier state."""
 from PySide6.QtCore import Qt
 
 

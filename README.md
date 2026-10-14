@@ -110,14 +110,14 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 | `auth.py` | ONVIF / Hikvision / Dahua / XMeye / Reolink / Axis / Tapo / Uniview URL resolution |
 | `ffparser.py`, `ffopts_tables.py`, `tools/gen_ffopts.py` | `--ffmpeg` string → input / decoder / encoder / muxer options, routed by FFmpeg's own option tables (generated from `ffmpeg -h`, the codec tables read from the PyAV build) |
 | `util.py`, `logsync.py` | platform checks, password/stream-key masking (logs, launcher output, the pre-commit hook), log setup |
-| `dispframe.py`, `zoomer.py`, `mousehandler.py`, `keyhandler.py`, `helper.py` | display frame container, zoom math, input handling, help overlay (`docs/gen_keys.py` builds the manual's tables from it) |
+| `dispframe.py`, `zoomer.py`, `mousehandler.py`, `keyhandler.py`, `helper.py`, `player.py`, `mytools.py`, `fonts.py`, `codec_names.py` | display frame container, zoom math, input handling, help overlay (`docs/gen_keys.py` builds the manual's tables from it), the Player base of recorder / streamer / audio, timing helpers, fonts, codec display names |
 
 ## Development notes
 
 - Any file FFmpeg can open works as `-i`, so a test clip replaces a camera. For realistic timing feed it at real time: `ffmpeg -re -stream_loop -1 -i clip.mp4 -c copy -f mpegts udp://127.0.0.1:5004` and `-i udp://127.0.0.1:5004`.
 - GUI tests without a desktop: `Xvfb :99 -screen 0 1280x800x24 &` then `DISPLAY=:99 python nova.py --opengl …`. `--headless` runs the full decode/record/stream pipeline with no window.
 - After editing the key descriptions in `helper.py` or the command-line options in `novaargs.py`, run `python docs/gen_keys.py` to refresh the manual (`--check` only verifies; CI runs it). `python tools/gen_ffopts.py --ffmpeg PATH --source FFMPEG_SRC > ffopts_tables.py` regenerates the `--ffmpeg` routing tables from another FFmpeg.
-- Tests: `pip install -r requirements-dev.txt` then `pytest`. They need no camera and no GPU: option parsing, URL masking, the launcher's logic, the timestamp mapper, and a headless decode → libx264 → fragmented-MP4 recording of a generated clip. GitHub Actions runs them on Linux for every push and on Windows and macOS weekly (`.github/workflows/`).
+- Tests: `pip install -r requirements-dev.txt` then `pytest`. They need no camera and no GPU: option parsing, URL masking, the launcher's logic, the timestamp mapper, and a headless decode → libx264 → fragmented-MP4 recording of a generated clip. GitHub Actions runs them on Linux for every push and on Windows and macOS weekly (`.github/workflows/`). `pytest --cov=. --cov-report=term-missing` shows what they leave out (about 30 %: the Qt window, the OpenGL renderer, the hardware decoders and the process entry points, which are checked by hand on a desktop).
 - `git config core.hooksPath .githooks` enables the pre-commit guard against committed credentials.
 
 ## License

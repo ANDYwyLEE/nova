@@ -1,3 +1,5 @@
+"""Mouse handling of the camera window: drag to move, edges and corners to resize, the wheel and
+Ctrl-drag to zoom."""
 import os
 import math
 from PySide6.QtCore import Qt, QPoint

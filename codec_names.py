@@ -1,7 +1,5 @@
-# codec_names.py
-# FFmpeg/PyAV에서 나오는 raw codec_name → 사용자 친화적 이름 매핑
-# IP 카메라/RTSP 스트림에서 자주 나오는 코덱 위주로 정리
-# 출처: FFmpeg codec list + 실제 카메라 경험
+"""Display names for the codec ids FFmpeg reports ('hevc' -> 'H.265 (HEVC)'), for the overlay and the
+logs; the codecs IP cameras and RTSP streams actually use."""
 
 CODEC_FRIENDLY_NAMES = {
     # 가장 흔한 현대 코덱
