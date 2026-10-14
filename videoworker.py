@@ -22,7 +22,7 @@ import logsync  # installs logging.verbose / logging.trace
 from mytools import Skipper, FrameRator, Clock
 from util import LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI, mask_url, display_url
 from codec_names import get_friendly_codec_name
-from ffparser import FFmpegParser
+from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS
 
 import av
@@ -130,8 +130,7 @@ def _build_conn_options(url):
     if not url: return options
     if url.startswith('rtsp'):
         options['rtsp_transport'] = 'tcp'
-        options['timeout'] = s      # FFmpeg >= 5: socket I/O timeout (us)
-        options['stimeout'] = s     # FFmpeg <  5: same option, old name (ignored by new builds)
+        options['timeout'] = s      # rtsp demuxer: socket I/O timeout (us), passed on to its TCP connection
         options['rw_timeout'] = s
     elif url.startswith(('rtmp', 'srt', 'http', 'tcp', 'udp')):
         options['rw_timeout'] = s
@@ -244,11 +243,12 @@ class _VideoDecode:
         if b.is_open:
             b.flush_buffers()           # used before a hardware decoder took over
         else:
-            b.options.update(self.w.dec_opts)
+            opts = _dec_opts_for(b, self.w.dec_opts)
+            b.options.update(opts)
             logging.debug(f"[VideoWorker] software decoder {self.codec_name} options={b.options}")
             try:
                 b.open()
-                _report_unused_dec(b, self.w.dec_opts)
+                _report_unused_dec(b, opts)
             except Exception as e:
                 logging.debug(f"[VideoWorker] explicit open of {self.codec_name} failed, decoding lazily: {_short_err(e)}")
         self._use(b, False, self.codec_name)
@@ -375,9 +375,10 @@ class VideoWorker(QThread):
         self._resolve_failed = False    # the last resolution attempt failed (log the next one quietly)
 
         self.ffopts = FFmpegParser.parse(ffmpeg)
-        if self.ffopts.ignored:
-            logging.warning(f"[VideoWorker] --ffmpeg: {' '.join(self.ffopts.ignored)} are ffmpeg command-line options "
-                            f"without a library equivalent; ignored. (-vf, -r, -s, -pix_fmt, -ar, -ac, -metadata are supported.)")
+        for msg in self.ffopts.warnings:
+            logging.warning(f"[VideoWorker] --ffmpeg {msg}")
+        for msg in self.ffopts.notes:
+            logging.info(f"[VideoWorker] --ffmpeg {msg}")
         self.hw_opts = self.ffopts.hw
         self.open_opts = self.ffopts.open
         self.dec_opts = self.ffopts.dec
@@ -554,7 +555,7 @@ class VideoWorker(QThread):
         return self._resolved
 
     def _hw_device(self, accel):
-        if 'hwaccel_device' in self.dec_opts: return str(self.dec_opts['hwaccel_device'])
+        if self.ffopts.hw_device: return str(self.ffopts.hw_device)
         if accel in ("cuda", "nvdec"): return str(self.gpu_idx)
         if accel == "vaapi": return f"/dev/dri/renderD{128 + self.gpu_idx}"
         # adapter index; only when asked for, so a single-GPU setup keeps FFmpeg's default adapter
@@ -581,11 +582,14 @@ class VideoWorker(QThread):
         open_opts = _build_conn_options(src)
         open_opts.update(self.open_opts)
         kwargs = {"options": open_opts}
+        device = bool(fmt)                      # a capture device: no host to probe, no I/O deadline
+        if not fmt and self.ffopts.in_fmt:
+            fmt = self.ffopts.in_fmt            # --ffmpeg "-f mjpeg -i": the input format, as on an ffmpeg command line
         if fmt: kwargs["format"] = fmt
         # PyAV's interrupt callback: a blocking open()/read() gives up after NOVA_TIMEOUT so that
         # stop() and reconnects never hang forever (UDP sources, dead cameras, ...)
         t_s = _timeout_seconds()
-        if t_s > 0 and not fmt:
+        if t_s > 0 and not device:
             kwargs["timeout"] = (t_s, t_s)
         # No hwaccel here: a hardware context given to av.open() is created for the standard decoder
         # even when a dedicated one (h264_cuvid) decodes, and any hardware problem fails the whole open.
@@ -593,7 +597,7 @@ class VideoWorker(QThread):
 
         # av.open() cannot be interrupted before its timeout, so a camera that is down would hold
         # stop() for up to NOVA_TIMEOUT.  Probe the host first in 0.5 s slices that honour run_flag.
-        if not fmt and t_s > 0:
+        if not device and t_s > 0:
             reason = self._probe_host(file, t_s)
             if not self.run_flag:
                 return None
@@ -782,10 +786,11 @@ class VideoWorker(QThread):
             else:
                 # h264_qsv / _amf / _rkmpp / _v4l2m2m / _mediacodec have no device option
                 self._warn_gpu_ignored(name)
-            ctx.options.update(self.dec_opts)
+            opts = _dec_opts_for(ctx, self.dec_opts)
+            ctx.options.update(opts)
             logging.debug(f"[VideoWorker] trying decoder {name} options={ctx.options}")
             ctx.open()
-            _report_unused_dec(ctx, self.dec_opts)
+            _report_unused_dec(ctx, opts)
             return ctx, None
         except Exception as e:
             logging.debug(f"[VideoWorker] decoder {name} unavailable: {_short_err(e)}")
@@ -805,10 +810,11 @@ class VideoWorker(QThread):
             return None, f"{self.accel} cannot decode {base.codec.name}"
         try:
             _copy_codec_params(ctx, base)
-            ctx.options.update(self.dec_opts)
+            opts = _dec_opts_for(ctx, self.dec_opts)
+            ctx.options.update(opts)
             logging.debug(f"[VideoWorker] trying {base.codec.name} + {self.accel} device={device} options={ctx.options}")
             ctx.open()
-            _report_unused_dec(ctx, self.dec_opts)
+            _report_unused_dec(ctx, opts)
             return ctx, None
         except Exception as e:
             logging.debug(f"[VideoWorker] {self.accel} hwaccel failed for {base.codec.name}: {_short_err(e)}")
@@ -1034,6 +1040,15 @@ def _copy_frame(frame):
     c.pts = frame.pts
     c.time_base = frame.time_base
     return c
+
+
+def _dec_opts_for(ctx, user_opts):
+    """The user's decoder options this decoder defines; those of other decoders (cuvid's -resize
+    for a software decoder, say) are meant for them and left out quietly."""
+    opts, skipped = for_codec(ctx, user_opts)
+    if skipped:
+        logging.debug(f"[VideoWorker] {ctx.codec.name}: --ffmpeg options of other decoders left out: {skipped}")
+    return opts
 
 
 def _report_unused_dec(ctx, user_opts):

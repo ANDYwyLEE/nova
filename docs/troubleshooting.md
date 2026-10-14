@@ -25,7 +25,8 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 | `non-existing PPS 0 referenced` / `no frame!` (once) | joined the stream mid-GOP | normal; decoding starts at the next keyframe |
 | `Stream error:` in the window, `[VideoWorker] Stream exception:` in the log, every few seconds | the camera drops the connection | try `--ffmpeg "-rtsp_transport udp"` (or `tcp` if you set udp); lower the camera's bitrate |
 | `Failed: URI resolve` in the window, `[ONVIF] ❌ All attempts failed for IP` in the log, with `onvif://` | ONVIF port not found or credentials rejected | give the port explicitly (`onvif://user:pw@ip:8080`), check with `-l TRACE` which SOAP calls fail |
-| decoder `ignored unknown --ffmpeg options: {…}` | option not valid for that decoder | `-resize` is cuvid-only, `-skip_frame` is software-only; see [ffmpeg-options.md](ffmpeg-options.md) |
+| decoder `ignored unknown --ffmpeg options: {…}` | no decoder has an option of that name (a typo?) | options of *other* decoders (`-resize` is cuvid's) are left out quietly for the one in use; `-skip_frame` is accepted by cuvid but has no effect there; see [ffmpeg-options.md](ffmpeg-options.md) |
+| `--ffmpeg -x is an option of the ffmpeg program, not of the FFmpeg libraries` at start | `-t`, `-map`, `-re`, `-fps_mode`, `-q`, … exist in the `ffmpeg` executable only | the message names Nova's equivalent when there is one (`--record-interval`, `-r N`, `-crf`/`-cq`) |
 
 ## Display
 
@@ -51,7 +52,7 @@ Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and 
 | `⚠️ -e hevc_nvenc: flv carries h264 only` | the forced encoder's codec does not fit the target (RTMP is H.264) | drop `-e` for that camera, or use HLS for HEVC |
 | `audio encoder … does not open at N Hz …; no audio track` | the camera's audio format cannot be encoded as set (`-ar`/`-ac`) | change or drop `-ar`/`-ac`; video is unaffected |
 | `EncoderManager ⚠️ h264_nvenc rejects your --ffmpeg options {…}` | option names differ per encoder | NVENC: `-preset p1…p7 -tune hq/ll/ull -cq N`; libx264: `-preset ultrafast…veryslow -crf N -tune zerolatency` |
-| `video encoder … ignored unknown --ffmpeg options` | the key is not an option of that encoder | see the tables in [ffmpeg-options.md](ffmpeg-options.md) |
+| `video encoder … ignored unknown --ffmpeg options` | no encoder has an option of that name (a typo?); options of other encoders (`-cq` with libx264) are left out quietly | see the tables in [ffmpeg-options.md](ffmpeg-options.md) |
 | `… are ffmpeg command-line options without a library equivalent; ignored` | `-t -ss -map -re -vsync …` only exist in the `ffmpeg` program | use `--record-interval`, `-r`, `-vf` instead |
 | `-vf: filter 'drawtext' is not available in this FFmpeg build` | the PyPI wheel has no libfreetype | custom build, or burn text in later with ffmpeg |
 | `empty segment discarded` | nothing was written during the segment (no frame arrived, or the file could not be started) | the camera was down, or see the error before it; nothing lost |

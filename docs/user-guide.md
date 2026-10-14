@@ -131,7 +131,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 | `--output-dir` | Base directory for snapshots and recordings. |
 | `--snapshot-dir` | Directory for snapshots (overrides --output-dir for snapshots). |
 | `--recording-dir` | Directory for recorded videos (overrides --output-dir for recordings). |
-| `--ffmpeg` | Direct FFmpeg options, e.g. "-rtsp_transport udp -b:v 4M -g 60 -movflags +faststart". |
+| `--ffmpeg` | FFmpeg options as on an ffmpeg command line, e.g. "-rtsp_transport udp -b:v 4M -g 60 -movflags +faststart"; an -i may separate input from output options (docs/ffmpeg-options.md). |
 | `-t, --target` | Live stream URL (e.g. YouTube, Twitch) or output path. |
 | `-l, --log-level` | Logging level (NAME or NUMBER; e.g., DEBUG, INFO, 5, 10). Default: INFO. |
 | `--camera` | Read URL, name and options of camera ID from cameras.ini (what the nova launcher passes). |

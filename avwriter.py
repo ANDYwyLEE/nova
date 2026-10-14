@@ -11,6 +11,7 @@ from fractions import Fraction
 
 import av
 import logsync  # installs logging.verbose / logging.trace
+from ffparser import for_codec
 from util import LINUX, WINDOWS, MAC, WSL, IS_PI, MSYS, get_os_type
 
 try: from filelock import FileLock, Timeout
@@ -449,6 +450,8 @@ class AVWriter:
         self.graph = None               # libavfilter graph for -vf, built on the first frame
         self._v_opts_checked = False
         self._a_opts_checked = False
+        self._applied_v = dict(self.enc_v_opts)   # what reached the encoders (ffparser.for_codec)
+        self._applied_a = dict(self.enc_a_opts)
         self._video_started = False
         self._held_audio = []
         # sample_rate 0: the decoder has not seen an audio frame yet (a writer opened at the first video
@@ -579,12 +582,15 @@ class AVWriter:
             except Exception: pass
 
         final_v_opts = {}
-        gpu = str(self.gpu_idx)
-        if "nvenc" in c_name: final_v_opts['gpu'] = gpu
-        elif "qsv" in c_name: final_v_opts['qsv_device'] = gpu
-        elif "vaapi" in c_name: final_v_opts['vaapi_device'] = f"/dev/dri/renderD{128 + self.gpu_idx}"
-        elif "amf" in c_name or "_mf" in c_name: final_v_opts['hwaccel_device'] = gpu
-        for k, v in self.enc_v_opts.items():
+        if "nvenc" in c_name:
+            # the one encoder with a device option; qsv, amf, vaapi and mf take theirs from a hardware
+            # context (-qsv_device / -vaapi_device / -hwaccel_device are options of the ffmpeg program)
+            final_v_opts['gpu'] = str(self.gpu_idx)
+        # options of other encoders (-cq for libx264, -crf for nvenc) are meant for them, not for this one
+        self._applied_v, skipped = for_codec(v_ctx, self.enc_v_opts)
+        if skipped:
+            logging.debug(f"[AVWriter] {c_name}: --ffmpeg options of other encoders left out: {skipped}")
+        for k, v in self._applied_v.items():
             if k == 'pix_fmt': continue
             if k in ('gop_size',):
                 try: v_ctx.gop_size = int(v)
@@ -633,7 +639,10 @@ class AVWriter:
         layout = {1: "mono", 2: "stereo"}.get(self.channels, f"{self.channels}c")
         try: a_ctx.layout = layout
         except Exception as e: logging.debug(f"[AVWriter] layout {layout} rejected: {e}")
-        a_ctx.options.update({k: v for k, v in self.enc_a_opts.items() if k not in ('ar', 'ac')})
+        self._applied_a, skipped = for_codec(a_ctx, {k: v for k, v in self.enc_a_opts.items() if k not in ('ar', 'ac')})
+        if skipped and not quiet:
+            logging.debug(f"[AVWriter] {self.a_codec}: --ffmpeg options of other encoders left out: {skipped}")
+        a_ctx.options.update(self._applied_a)
         if self.a_codec == "aac":
             self._cap_aac_bitrate(a_ctx, layout, quiet)
         return stream
@@ -787,7 +796,7 @@ class AVWriter:
         self.v_frames += 1
         if not self._v_opts_checked:
             self._v_opts_checked = True
-            self._report_unused(self.v_stream.codec_context, "video encoder", self.enc_v_opts)
+            self._report_unused(self.v_stream.codec_context, "video encoder", self._applied_v)
 
     def _next_video_encoder(self, e):
         """The video encoder opens at its first frame, at the real size; the probe ran at 640x360 and
@@ -906,7 +915,7 @@ class AVWriter:
         self.a_frames += 1
         if not self._a_opts_checked:
             self._a_opts_checked = True
-            self._report_unused(self.a_stream.codec_context, "audio encoder", self.enc_a_opts)
+            self._report_unused(self.a_stream.codec_context, "audio encoder", self._applied_a)
 
     def _convert(self, frame):
         """Camera audio in the encoder's own format, layout and rate. PyAV's encoder-side resampler

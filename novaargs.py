@@ -126,7 +126,8 @@ def build_parser():
         '--ffmpeg',
         type=str,
         default='',
-        help='Direct FFmpeg options, e.g. "-rtsp_transport udp -b:v 4M -g 60 -movflags +faststart"'
+        help='FFmpeg options as on an ffmpeg command line, e.g. "-rtsp_transport udp -b:v 4M -g 60 -movflags +faststart"; '
+             'an -i may separate input from output options (docs/ffmpeg-options.md)'
     )
     parser.add_argument(
         "-t", "--target",
