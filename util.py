@@ -190,11 +190,8 @@ def window_title(name):
 
 
 def settings_dir():
-    """Where Nova keeps its per-window files: $NOVA_SETTINGS_DIR, else the folder Qt gives user settings
-    (~/.config/nova on Linux and macOS, %APPDATA%\\nova on Windows); None without PySide6."""
-    d = os.environ.get("NOVA_SETTINGS_DIR")
-    if d:
-        return os.path.expanduser(d)
+    """Where Nova keeps its per-window files: the folder Qt gives user settings (~/.config/nova on Linux
+    and macOS, %APPDATA%\\nova on Windows); None without PySide6."""
     try:
         from PySide6.QtCore import QSettings
     except ImportError:

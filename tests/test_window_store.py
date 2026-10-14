@@ -13,9 +13,8 @@ from util import WindowStore, settings_dir
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("NOVA_SETTINGS_DIR", str(tmp_path))
-    return WindowStore()
+def store(tmp_path):
+    return WindowStore(str(tmp_path))
 
 
 def test_write_read_remove(store, tmp_path):
@@ -39,18 +38,18 @@ def test_former_shared_file_is_read_until_the_window_has_its_own(store):
     legacy.remove("geom_old1"); legacy.remove("zoom_old1"); legacy.sync()
 
 
-def test_settings_dir_follows_the_environment(monkeypatch, tmp_path):
-    monkeypatch.setenv("NOVA_SETTINGS_DIR", str(tmp_path / "here"))
-    assert settings_dir() == str(tmp_path / "here")
-    monkeypatch.delenv("NOVA_SETTINGS_DIR")
-    assert settings_dir() and os.path.basename(settings_dir()) == "nova"
+def test_settings_dir_is_qts_user_settings_folder():
+    """Under the tests conftest points Qt's user settings at a temp dir; the store's folder follows it."""
+    d = settings_dir()
+    assert d and os.path.basename(d) == "nova" and not d.startswith(os.path.expanduser("~/.config"))
+    assert WindowStore().dir == os.path.join(d, "windows")
 
 
 WRITER = """
 import sys, time
 from util import WindowStore
 t0 = time.monotonic()
-WindowStore().write(sys.argv[1], "1,2,3,4", "0,0,1,1")
+WindowStore(sys.argv[2]).write(sys.argv[1], "1,2,3,4", "0,0,1,1")
 print(f"{time.monotonic() - t0:.3f}")
 """
 
@@ -58,9 +57,9 @@ print(f"{time.monotonic() - t0:.3f}")
 def test_thirteen_windows_closing_at_once_do_not_wait_for_each_other(tmp_path):
     """Each window has its own file: thirteen simultaneous writers all finish at once (the shared
     QSettings file made the last of them wait seconds, the lock being retried with growing sleeps)."""
-    env = dict(os.environ, NOVA_SETTINGS_DIR=str(tmp_path), PYTHONPATH=os.path.dirname(os.path.dirname(__file__)))
-    procs = [subprocess.Popen([sys.executable, "-c", WRITER, f"w{i}"], env=env, stdout=subprocess.PIPE, text=True)
-             for i in range(13)]
+    env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(__file__)))
+    procs = [subprocess.Popen([sys.executable, "-c", WRITER, f"w{i}", str(tmp_path)], env=env,
+                              stdout=subprocess.PIPE, text=True) for i in range(13)]
     times = [float(p.communicate(timeout=60)[0].strip()) for p in procs]
     assert all(p.returncode == 0 for p in procs)
     assert max(times) < 1.0, times
