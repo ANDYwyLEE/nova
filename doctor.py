@@ -350,7 +350,15 @@ def log_lines(limit=5):
 
 
 # ------------------------------------------------------------------ the checks
-def checks(gl, ffmpeg, gpu, cfg, free, config_path):
+def _can_import(python, name):
+    """Can the camera interpreter import `name`?"""
+    try:
+        return subprocess.run([python or sys.executable, "-c", f"import {name}"], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
     """[(mark, text)]: ✓ fine, ⚠ worth fixing, ℹ good to know."""
     out = []
     # PyAV version against requirements.txt
@@ -406,6 +414,13 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path):
                                          f"software decoding (docs/install.md)"))
             except Exception as e:
                 out.append(("ℹ", f"--accel {' '.join(sorted(accels))}: could not check ({e})"))
+        xm = [c for c in cs if c.enabled and c.url.lower().startswith("xmeye://")]
+        if xm:
+            if _can_import(python, "dvrip"):
+                out.append(("✓", f"python-dvr is installed for the {len(xm)} xmeye:// camera(s)"))
+            else:
+                out.append(("⚠", f"{len(xm)} xmeye:// camera(s) but python-dvr is not installed: "
+                                 f"{python or sys.executable} -m pip install python-dvr"))
     # disk
     if free is not None:
         if free < LOW_DISK_GB * 1e9:
@@ -438,7 +453,7 @@ def report(config=None, gl=True, python=None):
     rows.extend(log_lines())
     import cams
     config_path = config or cams.INI
-    verdicts = checks(gl_text, " ".join(t for _, t in ff), " ".join(t for _, t in gpu), cfg, free, config_path)
+    verdicts = checks(gl_text, " ".join(t for _, t in ff), " ".join(t for _, t in gpu), cfg, free, config_path, python)
 
     width = 11
     lines = [f"Nova doctor, {datetime.datetime.now():%Y-%m-%d %H:%M} (paste this into a bug report; passwords and stream keys are masked)", ""]

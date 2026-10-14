@@ -360,6 +360,28 @@ def test_bad_shortcut_uri_is_explained(caplog):
     with caplog.at_level(logging.ERROR):
         assert auth.resolve_input_uri("reolink://admin:pw@10.0.0.9/x/y") is None
     assert "@host[:port][/CHANNEL][/STREAM]" in caplog.text and "0|main, 1|sub or 2|third" in caplog.text
+    assert auth.last_failure().startswith("Resolve: cannot parse the reolink:// URI")
+
+
+def test_missing_python_dvr_is_said_at_critical(monkeypatch, caplog):
+    monkeypatch.setitem(sys.modules, "dvrip", None)               # `import dvrip` raises ImportError
+    with caplog.at_level(logging.DEBUG):
+        assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1") is None
+    rec = [r for r in caplog.records if "python-dvr" in r.getMessage()]
+    assert rec and rec[0].levelno == logging.CRITICAL                # visible even at -l CRITICAL
+    assert auth.last_failure() == "XMeye: python-dvr is not installed: pip install python-dvr (xmeye:// needs it)"
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        assert auth.resolve_input_uri("xmeye://admin:pw@127.0.0.1", quiet=True) is None
+    assert all(r.levelno == logging.DEBUG for r in caplog.records if "python-dvr" in r.getMessage())
+
+
+def test_last_failure_is_short_and_tagged(device):
+    d = hik_device(device, ids=(101, 102))
+    assert auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}/3/0") is None
+    assert auth.last_failure() == "Hikvision: 127.0.0.1 has no stream 301 (channel 3, stream 0); it lists 101, 102"
+    assert auth.resolve_input_uri(f"hik://admin:pw@127.0.0.1:{d.port}") is not None
+    assert auth.last_failure() is None
 
 
 # ---------------------------------------------------------------- ONVIF

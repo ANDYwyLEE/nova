@@ -9,6 +9,7 @@ A check of every vendor URL format against the makers' documentation and the ref
 - `hik://` checks that the stream exists in the device's channel list and lists the ones it has; `xmeye://` builds the path the device itself shows (`…stream=0.sdp?real_stream`).
 - A malformed shortcut URI is explained in the log with the expected form.
 - `xmeye://` reads the channel count from `SystemInfo` (analog + IP channels) and refuses a channel the recorder does not have instead of building a URL that never plays. python-dvr's DVRIP packet dumps (login hash and config dumps, masked) show at `-l TRACE` only, like the ONVIF SOAP bodies.
+- A missing `python-dvr` is no longer a silent `Failed: URI resolve` retried every 10 s: the window shows the reason, the log says it at CRITICAL (visible with the default `-l CRITICAL`), `nova start` / `nova run` refuse the camera and name the interpreter and the pip command, and `nova doctor` has a check. In general the window now shows why a shortcut failed (`XMeye: Login failed at …`, `Hikvision: … has no stream 301 …`) instead of only `URI resolve`.
 - Verified live on an XMeye camera (firmware 2017) and a 16-channel XMeye NVR (firmware 2020): `NetWork.RTSP.Server.Port`, resolution in 0.05 s, main and sub streams decode. Observed on the NVR: its RTSP server refused every new connection for about 90 s after 17 sessions were opened within a minute (`stagger` in `cameras.ini` matters when many windows point at one recorder).
 
 ### Added

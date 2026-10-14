@@ -91,6 +91,24 @@ def wait_gone(pid, timeout=10):
     return False
 
 
+def test_start_refuses_xmeye_without_python_dvr(home, capsys, monkeypatch):
+    (home / "cameras.ini").write_text(INI + "\n[x]\nurl = xmeye://admin:S3cretX@10.0.0.9\n")
+    monkeypatch.setattr(cams, "has_module", lambda python, name: name != "dvrip")
+    assert run(home, "start", "x") == 1
+    out = capsys.readouterr().out
+    assert "x: refused - xmeye:// needs python-dvr" in out and "-m pip install python-dvr" in out
+    assert "S3cretX" not in out and not cams.read_pids()
+    with pytest.raises(SystemExit) as e:
+        run(home, "run", "x")
+    assert "refused - xmeye:// needs python-dvr" in str(e.value)
+
+
+def test_has_module_asks_the_interpreter():
+    assert cams.has_module(sys.executable, "sys")
+    assert not cams.has_module(sys.executable, "no_such_module_for_nova")
+    assert not cams.has_module(os.path.join(os.sep, "no", "such", "python"), "sys")
+
+
 @posix_only
 def test_start_status_stop_through_the_control_channel(home, capsys):
     assert run(home, "start", "a", "b") == 0

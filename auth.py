@@ -61,9 +61,27 @@ class ResolveStopped(BaseException):
 
 _tls = threading.local()
 
-def _fail(msg):
-    """A resolution failure: ERROR, or DEBUG when the caller already reported the same failure."""
-    (logging.debug if getattr(_tls, "quiet", False) else logging.error)(msg)
+def _fail(msg, level=logging.ERROR):
+    """A resolution failure: ERROR (CRITICAL for a missing package), or DEBUG when the caller already
+    reported the same failure.  The message is kept for last_failure()."""
+    _tls.last = msg
+    if getattr(_tls, "quiet", False):
+        logging.debug(msg)
+    else:
+        logging.log(level, msg)
+
+def last_failure():
+    """The last failure of resolve_input_uri() on this thread, in a form short enough for the window
+    ('XMeye: Login failed at 10.0.0.5:34567'), or None."""
+    msg = getattr(_tls, "last", None)
+    if not msg:
+        return None
+    m = re.match(r'^\[([^\]]+)\]\s*(.*)$', msg, re.S)
+    tag, rest = (m.group(1), m.group(2)) if m else ("", msg)
+    rest = re.sub(r'^[^\w(]+', '', rest).split("\n")[0].strip()
+    return f"{tag}: {rest}" if tag else rest
+
+MISSING_DVRIP = "python-dvr is not installed: pip install python-dvr (xmeye:// needs it)"
 
 def _call(should_stop, fn, *args, **kwargs):
     """Run a blocking network call.  With should_stop it runs on a helper thread that is abandoned as
@@ -451,13 +469,15 @@ def resolve_input_uri(uri, use_cache=True, should_stop=None, quiet=False):
     scheme = shortcut_scheme(uri)
     if scheme is None:
         return uri
+    _tls.last = None
+    _tls.quiet = quiet
     written = uri.split("://", 1)[0].lower()
     info = parse_uri(uri, SHORTCUT_DEFAULT_PORTS[scheme])
     if not info:
-        (logging.debug if quiet else logging.error)(
-            f"[Resolve] ❌ cannot parse the {written}:// URI; expected {written}://user:password@host[:port]"
-            f"[/CHANNEL][/STREAM] with STREAM 0|main, 1|sub or 2|third (a ':' in the user name must be written %3A; "
-            f"the password shows as *** here)")
+        _fail(f"[Resolve] ❌ cannot parse the {written}:// URI; expected {written}://user:password@host[:port]"
+              f"[/CHANNEL][/STREAM] with STREAM 0|main, 1|sub or 2|third (a ':' in the user name must be written %3A; "
+              f"the password shows as *** here)")
+        _tls.quiet = False
         return None
     key = _cache_key(uri)
     if use_cache:
@@ -691,7 +711,7 @@ def _resolve_xmeye(info, should_stop=None):
     the stream /user=***&password=***&channel=N&stream=S.sdp?real_stream as the device shows it."""
     try: from dvrip import DVRIPCam
     except ImportError:
-        logging.error("python-dvr is required for xmeye:// URIs. Run 'pip install python-dvr'")
+        _fail(f"[XMeye] ❌ {MISSING_DVRIP}", logging.CRITICAL)
         return None, False
     _quiet_dvrip()
     if info['stream_idx'] > 1:

@@ -136,6 +136,27 @@ def load(path, quiet=False):
     return defaults, env, cams
 
 
+_has_module = {}
+
+def has_module(python, name):
+    """Can the camera interpreter import `name`?  (python-dvr for xmeye:// lives outside requirements.txt.)"""
+    key = (python, name)
+    if key not in _has_module:
+        try:
+            _has_module[key] = subprocess.run([python, "-c", f"import {name}"], capture_output=True, timeout=30).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _has_module[key] = False
+    return _has_module[key]
+
+def refusal(cam, defaults):
+    """Why this camera cannot be started as configured, or None."""
+    if cam.url.lower().startswith("xmeye://"):
+        python = python_exe(defaults)
+        if not has_module(python, "dvrip"):
+            return (f"xmeye:// needs python-dvr, which {python} does not have:\n"
+                    f"    {python} -m pip install python-dvr")
+    return None
+
 def python_exe(defaults):
     """`[defaults] python` if set, else the project venv next to this file, else whatever runs cams.py."""
     p = defaults.get("python") if defaults else None
@@ -677,6 +698,11 @@ def cmd_start(defaults, env, cams, args, record=False):
                   f"(use `nova record`, or add -t URL)")
             failed += 1
             continue
+        why = refusal(cam, defaults)
+        if why:
+            print(f"{cam.id}: refused - {why}")
+            failed += 1
+            continue
         gpu = assign_gpu(cam, cams, env, argv)
         address = control_address(cam.id)
         run = launch_argv(cam, defaults, args.extra, args.config, address, record, layout)
@@ -800,6 +826,9 @@ def cmd_run(defaults, env, cams, args):
             sys.exit("no enabled camera in cameras.ini")
         cam = enabled[0]
     layout = load_layout(args.layout) if args.layout else None
+    why = refusal(cam, defaults)
+    if why:
+        sys.exit(f"{cam.id}: refused - {why}")
     argv = command(cam, defaults, args.extra, layout=layout)
     gpu = assign_gpu(cam, cams, env, argv)
     address = control_address(cam.id)

@@ -69,3 +69,15 @@ def test_launcher_verb(monkeypatch, capsys, tmp_path):
     assert (cams.main(["doctor"]) or 0) == 0
     out = capsys.readouterr().out
     assert "Nova doctor" in out and "not found" in out and "n/a (test)" in out
+
+
+def test_xmeye_cameras_need_python_dvr(tmp_path, monkeypatch):
+    p = tmp_path / "cameras.ini"
+    p.write_text(INI + "\n[gate]\nurl = xmeye://admin:S3cretC@10.0.0.3\n")
+    if os.name != "nt":
+        os.chmod(p, 0o600)
+    monkeypatch.setattr(doctor, "_can_import", lambda python, name: False)
+    out = doctor.report(config=str(p), gl=False)
+    assert "⚠ 1 xmeye:// camera(s) but python-dvr is not installed" in out and "S3cretC" not in out
+    monkeypatch.setattr(doctor, "_can_import", lambda python, name: True)
+    assert "✓ python-dvr is installed for the 1 xmeye:// camera(s)" in doctor.report(config=str(p), gl=False)

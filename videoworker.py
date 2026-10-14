@@ -373,6 +373,7 @@ class VideoWorker(QThread):
         self._resolved = None           # resolved av.open() source
         self._resolve_t = 0.0           # when it was resolved (monotonic)
         self._resolve_failed = False    # the last resolution attempt failed (log the next one quietly)
+        self._resolve_reason = None     # why, for the window ('XMeye: python-dvr is not installed: ...')
 
         self.ffopts = FFmpegParser.parse(ffmpeg)
         for msg in self.ffopts.warnings:
@@ -457,7 +458,7 @@ class VideoWorker(QThread):
             src = self._resolve_source()
             if not self.run_flag: break
             if src is None:
-                self.stat_sig.emit(f"Failed:\nURI resolve\n{display_url(self.url)}")
+                self.stat_sig.emit(f"Failed:\n{self._resolve_reason or 'URI resolve'}\n{display_url(self.url)}")
                 self.clock.sleep(10000)
                 continue
 
@@ -522,7 +523,7 @@ class VideoWorker(QThread):
         resolved here, on the worker thread.  The result is kept; after RERESOLVE_AFTER attempts in a row
         without a picture it is resolved again, bypassing the disk cache (the camera may have moved to
         another port, or the first answer was a fallback)."""
-        from auth import shortcut_scheme, resolve_input_uri
+        from auth import shortcut_scheme, resolve_input_uri, last_failure
         if shortcut_scheme(self.url) is None:
             self._resolved = self.url
             return self._resolved
@@ -553,6 +554,7 @@ class VideoWorker(QThread):
             self._log_fail("resolve", f"[VideoWorker] URI resolve failed for {display_url(self.url)}; retrying every 10 s",
                            logging.ERROR)
             self._resolve_failed = True
+            self._resolve_reason = _mask(last_failure() or "")[:80] or None     # shown in the window
         return self._resolved
 
     def _hw_device(self, accel):
