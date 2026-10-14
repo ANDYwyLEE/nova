@@ -1,0 +1,27 @@
+name: Feature request
+description: Something Nova should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nova is a viewer first: cameras as windows on your desktop, placed and zoomed the way you work; recording and streaming are its companions.
+        Event recording, motion detection and multi-user servers are an NVR's job and are out of scope. Everything else is worth asking.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do, and what stops you today?
+      placeholder: I watch one 4K camera at 1:1 on a second monitor and want the window to follow the moving zoom region I set with the keyboard...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Nova to do?
+      description: A key, an option, a launcher command, a line in cameras.ini. If you have seen it elsewhere, say where.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What do you do instead right now?

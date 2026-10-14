@@ -46,6 +46,7 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # one [section] pe
 ./nova status                           # what every camera is doing now (recording, stream, picture)
 ./nova restart                          # stop and start again, each camera the way it was launched
 ./nova stop
+./nova doctor                           # versions, drivers, FFmpeg build, masked config: what a bug report needs
 ```
 
 ## Why Nova
@@ -100,6 +101,7 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 | `nova`, `nova.bat`, `cams.py`, `cameras.example.ini` | the launcher (`nova start / record / run / stop / restart / status / list / layout`), its implementation and the camera-list template (`cameras.ini` is git-ignored) |
 | `novacore.py` | per-camera controller: worker, recorder, streamer, audio, snapshots |
 | `control.py` | the camera's control channel (`nova stop / status / layout apply` talk to a running camera through it) |
+| `doctor.py` | `nova doctor`: versions, GPU and OpenGL driver, the FFmpeg build, audio devices, a masked summary of the configuration, checks |
 | `videoworker.py` | connect / decode thread, HW decoder selection, URI resolution, frame fan-out |
 | `view.py`, `novagl.py` | frameless window, OSD, geometry, zoom; OpenGL shader renderer |
 | `avwriter.py` | encoder selection, timestamps, `-vf` graph, muxing to files and live targets |

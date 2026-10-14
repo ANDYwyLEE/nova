@@ -50,6 +50,7 @@ nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.
   nova restart [ID ...] [nova.py options]  stop, then start again as launched (record stays record, layout stays)
   nova status                              launched cameras: running or exited, uptime, recording/stream state
   nova list                                cameras, enabled state and options (passwords masked)
+  nova doctor                              versions, drivers, FFmpeg build, masked config: paste it into a bug report
   nova layout save NAME                    remember which cameras are open and where (layouts/NAME.json)
   nova layout list                         saved layouts
   nova start --layout NAME                 open exactly those cameras where they were saved
@@ -942,6 +943,10 @@ def main(argv=None):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(USAGE.rstrip()); return 0
     cmd, tokens = argv[0], argv[1:]
+    if cmd == "doctor":
+        import doctor                                # works without cameras.ini, so before load()
+        sys.stdout.write(doctor.report(config if config != INI or os.path.exists(INI) else INI))
+        return 0
     if cmd not in COMMANDS:
         sys.exit(f"unknown command '{cmd}'\n\n{USAGE.rstrip()}")
 

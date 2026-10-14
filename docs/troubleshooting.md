@@ -10,6 +10,8 @@
 
 ## Reading the log
 
+Start with `./nova doctor` (Windows: `nova doctor`): one screen with the versions, the FFmpeg build inside PyAV, the OpenGL driver, hardware decoders, GPUs, audio devices, a masked summary of `cameras.ini`, the last warnings in the logs and a few verdicts (software OpenGL, an NVIDIA driver too old for the wheel's NVENC, a readable `cameras.ini`, low disk space). It is the first thing a bug report should contain.
+
 Run one camera in the foreground with `-l DEBUG` (`./nova run ID -l DEBUG`) and read the lines in this order: `[VideoWorker] av.open(…)` (connection), `HW decoder:` / `software decoder` (decoder choice), `First frame (…)` (pixel format and size), then `[AVWriter]` lines when recording or streaming starts. Passwords are masked in all log output, so logs can be shared.
 
 ## Connection and decoding

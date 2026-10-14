@@ -1,0 +1,52 @@
+name: Bug report
+description: Something does not work the way the manual says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Three things make a report fixable: what you did, what Nova said, and what your machine runs.
+        Nova masks passwords and stream keys in its own output; please still look over everything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect instead?
+      placeholder: 'The window stays black after "HW decoder: h264_cuvid" although the same camera plays in VLC.'
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How was the camera started?
+      description: The exact command line, or the camera's `cameras.ini` section without the password or stream key.
+      render: shell
+      placeholder: ./nova run gate --opengl --accel cuda -l DEBUG
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `nova doctor`
+      description: Run `./nova doctor` (Windows `nova doctor`) in the Nova folder and paste the whole output. It lists versions, drivers, the FFmpeg build and your settings with secrets masked.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: "`./nova run ID -l DEBUG` reproduces the problem in the terminal; `logs/ID.log` holds a launched camera's log. The lines around the problem are enough."
+      render: text
+  - type: input
+    id: camera
+    attributes:
+      label: Camera
+      description: Brand, model, codec and resolution of the stream (`nova doctor` cannot know these).
+      placeholder: Hikvision DS-2CD2143, H.265 2688x1520; sub stream H.264 640x360
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Before posting
+      options:
+        - label: No password, stream key or public address of mine is in the text above.
+          required: true

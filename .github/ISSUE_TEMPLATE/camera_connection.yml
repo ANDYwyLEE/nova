@@ -1,0 +1,66 @@
+name: Camera does not connect
+description: No picture, "Unreachable", "Failed", or discovery (onvif://, xmeye://, hik://, dahua://) finds nothing
+labels: [camera]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most connection problems are settled by the first `[VideoWorker]` lines of a `-l DEBUG` log and by whether another player opens the same URL.
+  - type: dropdown
+    id: scheme
+    attributes:
+      label: How is the camera addressed?
+      options:
+        - rtsp:// with the URL typed by hand
+        - onvif:// (discovery)
+        - xmeye:// / hik:// / dahua:// (vendor discovery)
+        - http:// (MJPEG or HLS)
+        - srt:// / udp:// / rtmp://
+        - a capture device (-i 0, dshow://, v4l2://)
+    validations:
+      required: true
+  - type: input
+    id: url
+    attributes:
+      label: The URL, with the password replaced by ***
+      placeholder: rtsp://admin:***@192.168.1.22:554/Streaming/Channels/101
+    validations:
+      required: true
+  - type: dropdown
+    id: others
+    attributes:
+      label: Does another player open the same URL?
+      options:
+        - "Yes: VLC or ffplay plays it"
+        - "No: it fails there too"
+        - Not tried
+    validations:
+      required: true
+  - type: input
+    id: camera
+    attributes:
+      label: Camera
+      description: Brand, model, firmware if known, and the stream's codec and resolution.
+      placeholder: Reolink RLC-810A, firmware v3.1.0, H.265 3840x2160
+  - type: textarea
+    id: log
+    attributes:
+      label: Log of `./nova run ID -l DEBUG`
+      description: From the start until the failure repeats once. Discovery problems need `-l DEBUG` too (the device's replies are logged with credentials masked).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `nova doctor`
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Before posting
+      options:
+        - label: No password, stream key or public address of mine is in the text above.
+          required: true

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User guide
+    url: https://github.com/ANDYwyLEE/nova/blob/main/docs/user-guide.md
+    about: cameras.ini, the launcher, every option, every key and mouse control, layouts, zoom.
+  - name: Troubleshooting
+    url: https://github.com/ANDYwyLEE/nova/blob/main/docs/troubleshooting.md
+    about: Log messages explained, performance tips, known limitations. Read before filing a bug.
+  - name: FFmpeg options
+    url: https://github.com/ANDYwyLEE/nova/blob/main/docs/ffmpeg-options.md
+    about: What --ffmpeg "..." can and cannot do, measured per encoder.

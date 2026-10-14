@@ -64,6 +64,7 @@ nova stop   [ID ...] [--timeout S]   stop cameras started by start/record (saves
 nova restart [ID ...] [options]      stop, then start again as launched (record stays record, layout stays)
 nova status                          launched cameras: running or exited, uptime, and what each is doing now
 nova list                            cameras, enabled state and options (passwords masked)
+nova doctor                          versions, drivers, the FFmpeg build, cameras.ini summary: paste it into a bug report
 nova -h                              help; `python nova.py --help` lists the camera options
 nova -c FILE <command>               use FILE instead of cameras.ini
 ```
@@ -78,6 +79,7 @@ nova -c FILE <command>               use FILE instead of cameras.ini
 - `stop` only touches processes it started and waits for them to exit cleanly (window geometry, zoom and open recordings are saved); `--timeout` defaults to 2 × `NOVA_TIMEOUT` + 5 s (25 s with the example config), the longest a camera needs while its stream is stalled, and 30 s more for cameras with a stream target (one caught in the stream's connect).
 - `restart` stops the launched cameras (or the given ids) and starts them again the way they were launched: a camera from `record` stays headless, a window keeps its layout (`--layout NAME` switches), and the options from `cameras.ini` apply as always. Options typed after `start` are not remembered, so give them again. A camera that is not running is simply started; a missing layout ends the command before anything is stopped.
 - `status` lists every camera the launcher started: pid, running or exited, uptime, mode as launched (window / headless, rec, stream), GPU and layout, and below it what the camera reports right now: video size, recording and stream `on` / `waiting` (reconnecting) / `off`, and the overlay message while it has no picture (`Unreachable: …`).
+- `doctor` prints what this machine runs Nova with, on one screen: Nova, Python, Qt and PyAV versions, the FFmpeg build inside PyAV and what it was built with, the desktop session and the OpenGL driver Nova's windows get, hardware decoders and encoders, GPUs, audio devices, a summary of `cameras.ini` (passwords and stream keys masked), where settings and recordings live and how much space is left, the last warnings in `logs/`, and a few checks with a verdict. It is what a bug report needs; `python doctor.py` does the same without the launcher.
 - `run` keeps one camera in the foreground: the log appears in the terminal (`nova run ID -l DEBUG` for diagnosis) and Ctrl-C quits. Without an id it runs `[defaults] camera`, or the first enabled camera.
 
 ## Layouts
