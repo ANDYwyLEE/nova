@@ -180,12 +180,13 @@ def url_hash(url):
 
 
 def window_settings():
-    """Nova's per-window settings store (QSettings 'judvi' / 'Nova'), or None without PySide6."""
+    """Nova's per-window settings store (QSettings 'nova' / 'nova': ~/.config/nova/nova.conf on Linux),
+    or None without PySide6."""
     try:
         from PySide6.QtCore import QSettings
     except ImportError:
         return None
-    return QSettings("judvi", "Nova")
+    return QSettings("nova", "nova")
 
 
 def layout_names():

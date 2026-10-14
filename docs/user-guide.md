@@ -255,9 +255,9 @@ Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom regio
 
 | OS | Location |
 |---|---|
-| Linux | `~/.config/judvi/Nova.conf` |
-| Windows | registry `HKEY_CURRENT_USER\Software\judvi\Nova` |
-| macOS | `~/Library/Preferences/com.judvi.Nova.plist` |
+| Linux | `~/.config/nova/nova.conf` |
+| Windows | registry `HKEY_CURRENT_USER\Software\nova\nova` |
+| macOS | `~/Library/Preferences/com.nova.nova.plist` |
 
 Resolved shortcut URLs (`onvif://`, `hik://`, `dahua://`, `xmeye://`, `reolink://`, `axis://`: [Camera brands](#camera-brands)) are cached for one day in `.uri_cache.json` next to `nova.py`, without the password. Only URLs built from the device's own answer are cached (`tapo://` and `unv://` need no cache), and a camera that gives no picture three times in a row is asked again. A password may contain `@` (`user:pa@ss@ip` works) or be percent-encoded.
 

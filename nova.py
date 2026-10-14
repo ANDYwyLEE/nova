@@ -117,8 +117,8 @@ if __name__ == "__main__":
     # Qt must not see Nova's options: on X11 it would consume --geometry (as an X geometry string,
     # overriding the window size), -display, -title, ...  Use QT_* environment variables instead.
     app = QGuiApplication([sys.argv[0]])
-    app.setOrganizationName("judvi")
-    app.setApplicationName("Nova")
+    app.setOrganizationName("nova")        # settings: ~/.config/nova/nova.conf (cams.window_settings)
+    app.setApplicationName("nova")
     app.setDesktopFileName("nova")      # the app id Wayland compositors see (else the python binary's name)
 
     if app.platformName().startswith("wayland"):      # "wayland" or "wayland-egl"
