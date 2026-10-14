@@ -258,7 +258,7 @@ Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom regio
 | Linux, macOS | `~/.config/nova/windows/<hash>.conf`, one file per camera window |
 | Windows | `%APPDATA%\nova\windows\<hash>.conf` |
 
-One file per window, because windows that close at the same moment (`nova stop`, a logout) must not wait for one another: Qt retries a shared settings file's lock with sleeps doubling from 0.1 s to 5 s, and thirteen windows closing on one file took up to 45 s to exit. A window without a file of its own is looked up once in the former shared store (`~/.config/nova/nova.conf`, before that `~/.config/judvi/Nova.conf`; the registry on Windows), so places survive the change.
+One file per window, because windows that close at the same moment (`nova stop`, a logout) must not wait for one another: Qt retries a shared settings file's lock with sleeps doubling from 0.1 s to 5 s, and thirteen windows closing on one file took up to 45 s to exit.
 
 Resolved shortcut URLs (`onvif://`, `hik://`, `dahua://`, `xmeye://`, `reolink://`, `axis://`: [Camera brands](#camera-brands)) are cached for one day in `.uri_cache.json` next to `nova.py`, without the password. Only URLs built from the device's own answer are cached (`tapo://` and `unv://` need no cache), and a camera that gives no picture three times in a row is asked again. A password may contain `@` (`user:pa@ss@ip` works) or be percent-encoded.
 

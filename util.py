@@ -203,9 +203,7 @@ class WindowStore:
     """A camera window's place and zoom on record: one small INI file per window, named by the hash of the
     camera URL, under <settings_dir>/windows.  One file per window because processes that close at the
     same moment must not wait for one another: QSettings locks its file and retries with sleeps doubling
-    from 0.1 s to 5 s, and thirteen windows closing on one shared file took up to 45 s to exit.  A window
-    without a file of its own is looked up in the former shared file (QSettings 'nova'/'nova': nova.conf,
-    keys geom_<hash> / zoom_<hash>), so places survive the change."""
+    from 0.1 s to 5 s, and thirteen windows closing on one shared file took up to 45 s to exit."""
     def __init__(self, base=None):
         self.base = base or settings_dir()
         self.dir = os.path.join(self.base, "windows") if self.base else None
@@ -221,11 +219,10 @@ class WindowStore:
         """(geometry, zoom) as 'x,y,w,h' / 'rx,ry,rw,rh' strings, each None when not on record."""
         from PySide6.QtCore import QSettings
         p = self.path(h)
-        if os.path.exists(p):
-            s = QSettings(p, QSettings.IniFormat)
-            return self._text(s.value("geometry")), self._text(s.value("zoom"))
-        legacy = QSettings("nova", "nova")
-        return self._text(legacy.value(f"geom_{h}")), self._text(legacy.value(f"zoom_{h}"))
+        if not os.path.exists(p):
+            return None, None
+        s = QSettings(p, QSettings.IniFormat)
+        return self._text(s.value("geometry")), self._text(s.value("zoom"))
 
     def write(self, h, geometry, zoom):
         """Write both values (a None removes that value); the file is created on first use."""

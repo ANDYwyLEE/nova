@@ -1,13 +1,10 @@
-"""The per-window settings files: one file per camera window, read of the former shared file, and no
-waiting between windows that close at the same moment."""
+"""The per-window settings files: one file per camera window, and no waiting between windows that close
+at the same moment."""
 import os
 import subprocess
 import sys
-import time
 
 import pytest
-
-from PySide6.QtCore import QSettings
 
 from util import WindowStore, settings_dir
 
@@ -27,15 +24,6 @@ def test_write_read_remove(store, tmp_path):
     assert store.read("abc") == ("5,6,300,200", None)
     store.remove("abc")
     assert store.read("abc") == (None, None) and store.hashes() == []
-
-
-def test_former_shared_file_is_read_until_the_window_has_its_own(store):
-    legacy = QSettings("nova", "nova")                           # conftest points QSettings at a temp dir
-    legacy.setValue("geom_old1", "10,20,320,180"); legacy.setValue("zoom_old1", "0,0,0.5,0.5"); legacy.sync()
-    assert store.read("old1") == ("10,20,320,180", "0,0,0.5,0.5")
-    store.write("old1", "11,21,320,180", "0,0,1,1")
-    assert store.read("old1") == ("11,21,320,180", "0,0,1,1")
-    legacy.remove("geom_old1"); legacy.remove("zoom_old1"); legacy.sync()
 
 
 def test_settings_dir_is_qts_user_settings_folder():
