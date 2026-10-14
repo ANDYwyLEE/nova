@@ -181,6 +181,7 @@ def _index_from_pyav():
     """The codec tables of the PyAV build in use, or None when it cannot list them."""
     try:
         import av
+        import av.logging
         from av.codec.context import CodecContext
         if not hasattr(CodecContext, "supported_options"):
             return None
@@ -189,32 +190,62 @@ def _index_from_pyav():
         return None
     generic, dec, enc = {}, {}, {}
     dec_names, enc_names = _candidate_codecs()
-    for names, mode, dst in ((dec_names, 'r', dec), (enc_names, 'w', enc)):
-        for name in names:
-            if name not in available:
-                continue
-            try:
-                so = CodecContext.create(name, mode).supported_options
-            except Exception:
-                continue
-            if not generic:
-                generic = {o.name: _flags_str(o.flags) for o in so.generic}
-            for o in so.private:
-                _merge(dst, o.name, _flags_str(o.flags), name)
+    # Reading an option's default makes FFmpeg warn about every deprecated option ("The "dc" option
+    # is deprecated", dozens of lines): keep its log quiet while the tables are read.  get_level()
+    # is None by default (no threshold), which set_level() takes back.
+    try:
+        level, quiet = av.logging.get_level(), True
+        av.logging.set_level(av.logging.FATAL)
+    except Exception:
+        level, quiet = None, False
+    try:
+        for names, mode, dst in ((dec_names, 'r', dec), (enc_names, 'w', enc)):
+            for name in names:
+                if name not in available:
+                    continue
+                try:
+                    so = CodecContext.create(name, mode).supported_options
+                except Exception:
+                    continue
+                if not generic:
+                    generic = {o.name: _flags_str(o.flags) for o in so.generic}
+                for o in so.private:
+                    _merge(dst, o.name, _flags_str(o.flags), name)
+    finally:
+        if quiet:
+            try: av.logging.set_level(level)
+            except Exception: pass
     if not generic:
         return None
     v = ".".join(str(x) for x in av.library_versions.get("libavcodec", ()))
     return _Index(generic, dec, enc, f"PyAV {av.__version__} (libavcodec {v})")
 
 
+def _static_index() -> _Index:
+    return _Index(dict(T.CODEC_GENERIC), dict(T.DECODER_PRIVATE), dict(T.ENCODER_PRIVATE),
+                  f"tables of FFmpeg {T.FFMPEG_VERSION}")
+
+
 _index = None
 
 
 def codec_index() -> _Index:
+    """The generated tables with the PyAV build's own on top: the tables know the codecs of every
+    platform (cuvid's -resize is a decoder option on a Mac too, where it is then left out for the
+    decoder in use), the build adds what its FFmpeg has beyond them."""
     global _index
     if _index is None:
-        _index = _index_from_pyav() or _Index(T.CODEC_GENERIC, T.DECODER_PRIVATE, T.ENCODER_PRIVATE,
-                                              f"tables of FFmpeg {T.FFMPEG_VERSION}")
+        idx = _static_index()
+        live = _index_from_pyav()
+        if live is not None:
+            for name, fl in live.generic.items():
+                idx.generic[name] = "".join(c for c in "EDVA" if c in idx.generic.get(name, "") or c in fl)
+            for src, dst in ((live.dec, idx.dec), (live.enc, idx.enc)):
+                for name, (fl, owners_) in src.items():
+                    for o in owners_:
+                        _merge(dst, name, fl, o)
+            idx.source = f"{live.source} + {idx.source}"
+        _index = idx
     return _index
 
 

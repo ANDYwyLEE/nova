@@ -154,7 +154,7 @@ def cli_options(full_text):
 
 
 _ENTRY = re.compile(r'\{\s*"([A-Za-z0-9_\-]+)"\s*,\s*(?:"(?:[^"\\]|\\.)*"|NULL|[A-Z_]+\([^)]*\))\s*,'
-                    r'\s*[^,]*,\s*AV_OPT_TYPE_(\w+)')
+                    r'\s*[^{};]*?AV_OPT_TYPE_(\w+)')          # the offset may be offsetof(a, b)
 
 
 def source_table(root, files):

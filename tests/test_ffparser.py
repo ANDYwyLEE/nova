@@ -13,8 +13,7 @@ def static_tables(request, monkeypatch):
     if "pyav_build" in request.keywords:
         monkeypatch.setattr(ffparser, "_index", None)
         return
-    monkeypatch.setattr(ffparser, "_index", ffparser._Index(T.CODEC_GENERIC, T.DECODER_PRIVATE, T.ENCODER_PRIVATE,
-                                                            f"tables of FFmpeg {T.FFMPEG_VERSION}"))
+    monkeypatch.setattr(ffparser, "_index", ffparser._static_index())
 
 
 def test_empty():
@@ -165,14 +164,17 @@ def test_static_codec_tables_match_the_pyav_build():
     av = pytest.importorskip("av")
     if tuple(av.library_versions.get("libavcodec", ())) != tuple(T.LIBAVCODEC):
         pytest.skip(f"PyAV has libavcodec {av.library_versions.get('libavcodec')}, the tables {T.LIBAVCODEC}")
-    idx = codec_index()
-    assert "PyAV" in idx.source
+    idx = ffparser._index_from_pyav()
+    assert idx is not None and "PyAV" in idx.source
     # ffmpeg -h lists only options flagged for encoding or decoding; the rest are never routed
     assert {k: f for k, f in idx.generic.items() if f} == {k: f for k, f in T.CODEC_GENERIC.items() if f}
     for table, static in ((idx.dec, T.DECODER_PRIVATE), (idx.enc, T.ENCODER_PRIVATE)):
         for name, (flags, owners_) in table.items():
             if 'E' in flags or 'D' in flags:            # export-only options are not listed by ffmpeg -h
                 assert name in static, f"{name} ({owners_}) is missing from ffopts_tables.py"
+    merged = codec_index()
+    assert "PyAV" in merged.source and "tables of FFmpeg" in merged.source
+    assert "resize" in merged.dec                        # cuvid's, from the tables, on every platform
 
 
 @pytest.mark.pyav_build
