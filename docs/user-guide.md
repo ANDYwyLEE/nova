@@ -271,8 +271,11 @@ Everything Nova and the launcher write (recordings, snapshots, logs, layouts, th
 | `NOVA_WHEEL_INVERT` | `1` reverses the wheel's zoom direction (default: pushing the wheel away zooms in) |
 | `NOVA_MIN_RECORD_INTERVAL` | the shortest `--record-interval` in seconds (default 60; the test suite lowers it) |
 | `NOVA_UMASK` | permissions for new files, octal (default `077`: this user only; `022` lets other accounts read recordings and logs) |
+| `NOVA_AV_LOG` | FFmpeg's own log threshold, raw: `panic fatal error warning info verbose debug trace quiet` (default: matched to `-l`, with known noise demoted; see Logs) |
 | `QT_QPA_PLATFORM` | `offscreen` is set automatically for `--headless`; on a Wayland session Nova sets `xcb` (XWayland) itself, `wayland` asks for a native window |
 
 ## Logs
 
-`-l` sets the level: `CRITICAL ERROR WARNING INFO VERBOSE DEBUG TRACE` (or a number). `INFO` shows connections, decoder/encoder choices and saved files; `DEBUG` adds the FFmpeg negotiation; `TRACE` adds ONVIF SOAP bodies, XMeye DVRIP packets and audio device lists. Passwords and stream keys are masked in every log line, traceback and launcher output (`user:***@`, `password=***`, the last part of an `rtmp://` URL, SRT passphrase and streamid). `nova start` and `nova record` write each camera to `logs/ID.log`.
+`-l` sets the level: `CRITICAL ERROR WARNING INFO VERBOSE DEBUG TRACE` (or a number). `INFO` shows connections, decoder/encoder choices and saved files; `DEBUG` adds the FFmpeg negotiation; `TRACE` adds ONVIF SOAP bodies, XMeye DVRIP packets and audio device lists.
+
+FFmpeg's own messages come through at the matching level: its FATAL at `CRITICAL`, ERROR at `ERROR`, WARNING at `WARNING`, INFO at `INFO` and `VERBOSE`, VERBOSE at `DEBUG`, DEBUG at `TRACE`. A few that FFmpeg writes for every live camera are demoted to `DEBUG` (the errors of joining a stream between two keyframes, `non-existing PPS` / `no frame!` and their H.265 equivalents; the private NAL units some cameras send; the AAC encoder's statistics and FLV's header warnings on close) and the one-line-per-NAL-unit output is dropped; the list, with the source of each, is `AV_NOISE` in `logsync.py`. `NOVA_AV_LOG=verbose` (or `panic … trace`, `quiet`) sets FFmpeg's threshold directly and switches those rules off, for a bug report. Passwords and stream keys are masked in every log line, traceback and launcher output (`user:***@`, `password=***`, the last part of an `rtmp://` URL, SRT passphrase and streamid). `nova start` and `nova record` write each camera to `logs/ID.log`.

@@ -207,6 +207,13 @@ class _VideoDecode:
         self.w = worker
         self.base = stream.codec_context
         self.codec_name = self.base.codec.name
+        # PyAV leaves the demuxer's decoder context without a packet time base; cuvid / qsv rescale
+        # timestamps with it and warn at every start ("Invalid pkt_timebase, passing timestamps as-is")
+        try:
+            if not self.base.pkt_timebase and stream.time_base:
+                self.base.pkt_timebase = stream.time_base
+        except Exception as e:
+            logging.debug(f"[VideoWorker] pkt_timebase not set: {_short_err(e)}")
         self.ctx = None
         self.is_hw = False
         self.name = ""

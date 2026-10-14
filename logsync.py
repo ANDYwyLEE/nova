@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import traceback
+import contextlib
 from util import mask_url
 
 
@@ -79,89 +80,118 @@ def install_excepthooks():
     threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
 
 
-class GlobalSingleWarningFilter(logging.Filter):
-    def __init__(self, targets):
-        super().__init__()
-        self.targets = targets
-        self.shown_keys = set()
+# ---------------------------------------------------------------- FFmpeg's log, through PyAV
+# PyAV hands every FFmpeg line at or above a threshold to Python logging (logger "libav.<context>",
+# e.g. libav.h264, libav.rtsp) with the level translated: PANIC/FATAL -> CRITICAL, ERROR -> ERROR,
+# WARNING -> WARNING, INFO -> INFO, VERBOSE -> DEBUG (10), DEBUG -> 5, TRACE -> 1.  Below the
+# threshold nothing is even formatted; above it every line costs a vsnprintf and the GIL (one line
+# per NAL unit at FFmpeg DEBUG).  The threshold is therefore the most verbose FFmpeg level whose
+# lines the Nova level would still show.  PyAV collapses identical consecutive lines by itself
+# ("... (repeated N more times)").
+AV_THRESHOLDS = (                              # (Nova level, FFmpeg threshold), most severe first
+    (logging.CRITICAL, av.logging.FATAL),
+    (logging.ERROR, av.logging.ERROR),
+    (logging.WARNING, av.logging.WARNING),
+    (logging.INFO, av.logging.INFO),
+    (VERBOSE_LEVEL, av.logging.INFO),          # FFmpeg VERBOSE arrives as Python DEBUG: hidden at 15 anyway
+    (logging.DEBUG, av.logging.VERBOSE),
+    (TRACE_LEVEL, av.logging.DEBUG),           # FFmpeg TRACE (bit level) only through NOVA_AV_LOG
+)
+AV_LEVEL_NAMES = {"quiet": None, "panic": av.logging.PANIC, "fatal": av.logging.FATAL, "error": av.logging.ERROR,
+                  "warning": av.logging.WARNING, "info": av.logging.INFO, "verbose": av.logging.VERBOSE,
+                  "debug": av.logging.DEBUG, "trace": av.logging.TRACE}
 
+
+def av_threshold(level):
+    """The FFmpeg threshold for a Nova log level (any number: 25 is treated like WARNING)."""
+    chosen = av.logging.FATAL
+    for nova_level, threshold in AV_THRESHOLDS:
+        if level <= nova_level:
+            chosen = threshold
+    return chosen
+
+
+DEMOTE, DROP = "demote", "drop"
+# FFmpeg lines Nova knows to be noise for a live camera viewer: demoted to DEBUG (still there with
+# -l DEBUG) or dropped.  Each with its source file and FFmpeg level, so the list can be checked
+# against a new FFmpeg.  What matters is reported by Nova itself: packets that keep failing to
+# decode, a stream that stops, an encoder that does not open.
+AV_NOISE = (
+    # joining a live H.264 stream between two keyframes: errors until the first keyframe arrives
+    # (h264_slice.c, h264dec.c, h264_sei.c; AV_LOG_ERROR)
+    ("non-existing PPS", DEMOTE),
+    ("non-existing SPS", DEMOTE),
+    ("no frame!", DEMOTE),
+    ("decode_slice_header error", DEMOTE),
+    # the same for H.265 (hevc/refs.c, hevc/hevcdec.c; AV_LOG_ERROR)
+    ("Could not find ref with POC", DEMOTE),
+    ("Error constructing the frame RPS", DEMOTE),
+    ("Invalid number of merging MVP candidates", DEMOTE),
+    # cameras put private NAL units into H.265 streams (hevc/hevcdec.c; AV_LOG_WARNING, every packet)
+    ("Skipping invalid undecodable NALU", DEMOTE),
+    # camera SEI padded with extra bits (h264_sei.c; AV_LOG_WARNING, every keyframe)
+    ("overread by", DEMOTE),
+    # the AAC encoder's statistics when it closes (aacenc.c; AV_LOG_INFO)
+    ("Qavg:", DEMOTE),
+    # FLV to an RTMP server cannot rewrite its header on close; a file could (flvenc.c; AV_LOG_WARNING)
+    ("Failed to update header with correct", DEMOTE),
+    # one line per NAL unit (h2645_parse.c; AV_LOG_DEBUG): 30+ a second per camera at -l TRACE
+    ("nal_unit_type:", DROP),
+)
+
+
+class AVNoiseFilter(logging.Filter):
+    """AV_NOISE applied to PyAV's libav.* records.  A handler filter: a filter on the "libav" logger
+    never sees the records of its children (libav.h264, ...)."""
     def filter(self, record):
+        if not record.name.startswith("libav"):
+            return True
         msg = record.getMessage()
-        for target in self.targets:
-            if target in msg:
-                if target in self.shown_keys:
+        for needle, action in AV_NOISE:
+            if needle in msg:
+                if action == DROP:
                     return False
-                self.shown_keys.add(target)
-                return True
+                if record.levelno > logging.DEBUG:
+                    record.levelno = logging.DEBUG
+                    record.levelname = logging.getLevelName(logging.DEBUG)
+                return logging.getLogger().isEnabledFor(logging.DEBUG)
         return True
 
+
+@contextlib.contextmanager
+def av_quiet(level=av.logging.FATAL):
+    """FFmpeg's log held at `level` for a block: probes that are expected to fail, throw-away
+    contexts.  The threshold is global, so other threads' FFmpeg lines are held too, briefly."""
+    old = av.logging.get_level()
+    av.logging.set_level(level)
+    try:
+        yield
+    finally:
+        av.logging.set_level(old)
+
+
 def setup_av_logging():
-    # Map Python logging levels to PyAV (libav) logging levels
-    # PyAV levels: PANIC(0), FATAL(8), ERROR(16), WARNING(32), INFO(40), VERBOSE(48), DEBUG(56), TRACE(64)
-    LOG_LEVEL_MAP = {
-        logging.CRITICAL: av.logging.PANIC,    # 50 -> 0
-        logging.ERROR:    av.logging.ERROR,    # 40 -> 16
-        logging.WARNING:  av.logging.WARNING,  # 30 -> 32
-        logging.INFO:     av.logging.INFO,     # 20 -> 40
-        VERBOSE_LEVEL:    av.logging.VERBOSE,  # 15 (VERBO) -> 48
-        logging.DEBUG:    av.logging.DEBUG,    # 10 -> 56
-        TRACE_LEVEL:      av.logging.TRACE,    # 5  (TRACE) -> 64
-    }
-
-    targets = [
-        "deprecated pixel format used",
-        "Could not find ref with POC",
-        "Error constructing the frame RPS",
-        "Skipping invalid undecodable NALU",
-        "More data is required to decode header",
-        "Invalid number of merging MVP candidates",
-        "(Coded slice of a non-IDR picture)",
-        "(IDR), nal_ref_idc",
-        "overread 8",
-        # joining a live stream mid-GOP: libavcodec complains until the first keyframe arrives
-        "non-existing PPS",
-        "non-existing SPS",
-        "no frame!",
-        "decode_slice_header error",
-        "Invalid pkt_timebase",
-        # libavfilter: the buffer source template carries no colour range; harmless
-        "Changing video frame properties on the fly",
-        # the AAC encoder AVWriter opens once to test the audio settings reports on close
-        "Qavg: nan",
-        "filter context - w:",
-    ]
-
-    root_logger = logging.getLogger()
-    current_level = root_logger.getEffectiveLevel()
-
-    # Synchronize PyAV log level with the system log level
-    # If the level is 5 or below, it will naturally map to av.logging.TRACE (64)
-    av_level = LOG_LEVEL_MAP.get(current_level, av.logging.WARNING)
-
-    # Manage GlobalSingleWarningFilter to prevent duplicate log messages
-    for f in root_logger.filters[:]:
-        if isinstance(f, GlobalSingleWarningFilter):
-            root_logger.removeFilter(f)
-
-    global_filter = GlobalSingleWarningFilter(targets)
-    root_logger.addFilter(global_filter)
-
-    # handler filters see every record, including those propagated from child loggers (libav, ...)
-    mask_filter = CredentialMaskFilter()
-    for handler in root_logger.handlers:
-        handler.addFilter(global_filter)
-        if not any(isinstance(f, CredentialMaskFilter) for f in handler.filters):
-            handler.addFilter(mask_filter)
-
-    # Apply the synchronized log level to PyAV
-    av.logging.set_level(av_level)
-
-    libav_logger = logging.getLogger('libav')
-    libav_logger.addFilter(global_filter)
-    libav_logger.setLevel(current_level)
-
-    # Ensure logs are passed to the root handler
-    libav_logger.propagate = True
-
-    logging.debug(f"[LogSync] Global filter active. PyAV level: {av_level}")
-    logging.debug(f"[LogSync] PyAV log level synchronized to {av_level} (SysLevel: {current_level})")
+    """FFmpeg's log follows -l: the threshold from AV_THRESHOLDS, the libav logger at the Nova level
+    (PyAV pins it to WARNING at import), AVNoiseFilter and CredentialMaskFilter on every root
+    handler.  NOVA_AV_LOG=panic|fatal|error|warning|info|verbose|debug|trace|quiet sets the FFmpeg
+    threshold directly and switches the noise rules off: FFmpeg raw, for a bug report."""
+    root = logging.getLogger()
+    level = root.getEffectiveLevel()
+    raw = os.environ.get("NOVA_AV_LOG", "").strip().lower()
+    if raw and raw not in AV_LEVEL_NAMES:
+        logging.warning(f"[LogSync] ⚠️ NOVA_AV_LOG={raw!r} is not one of {' '.join(AV_LEVEL_NAMES)}; ignored")
+        raw = ""
+    threshold = AV_LEVEL_NAMES[raw] if raw else av_threshold(level)
+    for handler in root.handlers:
+        for f in handler.filters[:]:
+            if isinstance(f, (AVNoiseFilter, CredentialMaskFilter)):
+                handler.removeFilter(f)
+        if not raw:
+            handler.addFilter(AVNoiseFilter())
+        handler.addFilter(CredentialMaskFilter())     # masks every record, PyAV's included
+    av.logging.set_level(threshold)
+    libav = logging.getLogger("libav")
+    libav.setLevel(1 if raw else level)
+    libav.propagate = True
+    logging.debug(f"[LogSync] FFmpeg log threshold {threshold} for level {level}"
+                  + (f" (NOVA_AV_LOG={raw}: raw)" if raw else ""))

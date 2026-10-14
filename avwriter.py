@@ -183,12 +183,8 @@ class EncoderManager:
                 self._lock_broken = True
                 logging.warning(f"[EncoderManager] ⚠️ probe lock {path} unusable ({e or 'busy for 15 s'}); probing without it")
         try:
-            old_level = av.logging.get_level()
-            av.logging.set_level(av.logging.PANIC)
-            try:
+            with logsync.av_quiet():                   # candidates are expected to fail
                 return self._perform_hw_test(*args)
-            finally:
-                av.logging.set_level(old_level)
         finally:
             if lock is not None:
                 lock.release()
@@ -653,17 +649,18 @@ class AVWriter:
         segfaults (AAC at an unsupported -ar, say). The settings are tried on a throw-away stream
         first; an audio track that cannot open is left out rather than costing the video."""
         self.a_stream = None
-        scratch = av.open(self.path, mode="w", format=self.fmt)    # never started: nothing is written
-        try:
-            self._audio_stream(scratch, quiet=True).codec_context.open()
-        except Exception as e:
-            logging.warning(f"[AVWriter] ⚠️ audio encoder {self.a_codec} does not open at {self.sample_rate} Hz, "
-                            f"{self.channels} ch ({_short_err(e)}); no audio track")
-            self.silence = False
-            return
-        finally:
-            try: scratch.close()
-            except Exception: pass
+        with logsync.av_quiet():                       # a throw-away context: its complaints are ours to report
+            scratch = av.open(self.path, mode="w", format=self.fmt)    # never started: nothing is written
+            try:
+                self._audio_stream(scratch, quiet=True).codec_context.open()
+            except Exception as e:
+                logging.warning(f"[AVWriter] ⚠️ audio encoder {self.a_codec} does not open at {self.sample_rate} Hz, "
+                                f"{self.channels} ch ({_short_err(e)}); no audio track")
+                self.silence = False
+                return
+            finally:
+                try: scratch.close()
+                except Exception: pass
         stream = self._audio_stream(self.container)
         try:
             stream.codec_context.open()
@@ -854,7 +851,12 @@ class AVWriter:
         if frame.time_base is None:
             frame.time_base = self.v_time_base
         g = av.filter.Graph()
-        last = g.add_buffer(template=frame)
+        # the buffer source is given the frame's colour space and range as well: PyAV's add_buffer()
+        # leaves them unspecified, and libavfilter then warns at every frame that the properties change
+        tb = frame.time_base
+        last = g.add("buffer", f"video_size={frame.width}x{frame.height}:pix_fmt={frame.format.name}"
+                               f":time_base={tb.numerator}/{tb.denominator}"
+                               f":colorspace={int(frame.colorspace)}:range={int(frame.color_range)}")
         for name, args in _parse_filtergraph(self.vf):
             try:
                 f = g.add(name, args) if args else g.add(name)
