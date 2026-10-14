@@ -122,7 +122,7 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 
 ## Built with Claude
 
-Nova's design and its original code are ANDYwyLEE's: it began in June 2023 as an OpenCV + PySide2 viewer (the first `nova.py` is dated 2023-07-10), moved to PySide6 in 2024, and the PyAV-based sources of 2026-01-30 are what this repository started from. Since 2026-10-11 the work on this repository has been done together with Claude, Anthropic's AI model (Claude Opus 5.5, then Claude Fable 5.1), in Claude Code sessions on the author's machine: as of 2026-10-14, 93 of the 97 commits carry a `Co-Authored-By: Claude` line. The author set the goals and made the design decisions; Claude read the code, proposed, measured and implemented; everything went through the test suite, CI on three platforms and, where it mattered, the author's own camera wall.
+Nova's design and its original code are Andy (Wonyoung) Lee's: it began in June 2023 as an OpenCV + PySide2 viewer (the first `nova.py` is dated 2023-07-10), moved to PySide6 in 2024, and the PyAV-based sources of 2026-01-30 are what this repository started from. Since 2026-10-11 the work on this repository has been done together with Claude, Anthropic's AI model (Claude Opus 5.5, then Claude Fable 5.1), in Claude Code sessions on the author's machine: as of 2026-10-14, 93 of the 97 commits carry a `Co-Authored-By: Claude` line. The author set the goals and made the design decisions; Claude read the code, proposed, measured and implemented; everything went through the test suite, CI on three platforms and, where it mattered, the author's own camera wall.
 
 What Claude did in that time:
 
@@ -134,6 +134,6 @@ What Claude could not verify is said so in the documentation: the Windows and ma
 
 ## License
 
-Nova is released under the [BSD Zero Clause License](LICENSE) (0BSD): use, copy, modify and redistribute it for any purpose, with or without attribution. © 2026 ANDYwyLEE.
+Nova is released under the [BSD Zero Clause License](LICENSE) (0BSD): use, copy, modify and redistribute it for any purpose, with or without attribution. © 2026 Andy (Wonyoung) Lee, ANDYwyLEE@gmail.com.
 
 The licence covers Nova's own source. Its dependencies keep their own terms: PySide6/Qt (LGPL), PyAV, PyOpenGL, NumPy (BSD), PyAudio (MIT). The FFmpeg bundled in the PyPI `av` wheel is built with GPL components (libx264, libx265), so if you ever redistribute Nova *together with* that wheel as a packaged binary, the GPL applies to that bundle.
