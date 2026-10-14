@@ -334,6 +334,7 @@ ENCODER_PRIVATE = {
     'max_qp_b': ('EV', ('av1_amf', 'av1_qsv', 'h264_qsv', 'hevc_qsv', 'mjpeg_qsv')),
     'max_qp_i': ('EV', ('av1_amf', 'av1_qsv', 'h264_qsv', 'hevc_amf', 'hevc_qsv', 'mjpeg_qsv')),
     'max_qp_p': ('EV', ('av1_amf', 'av1_qsv', 'h264_qsv', 'hevc_amf', 'hevc_qsv', 'mjpeg_qsv')),
+    'max_ref_frames': ('EV', ('h264_videotoolbox',)),
     'max_slice_bytes': ('EV', ('h264_videotoolbox',)),
     'max_slice_size': ('EV', ('av1_qsv', 'h264_nvenc', 'h264_qsv', 'hevc_nvenc', 'hevc_qsv', 'mjpeg_qsv')),
     'maxsection-pct': ('EV', ('libaom-av1',)),

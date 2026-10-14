@@ -167,6 +167,7 @@ def source_table(root, files):
         except OSError:
             continue
         found = True
+        text = text.replace("\\\n", " ")          # entries inside #define macros continue lines with '\'
         for m in _ENTRY.finditer(text):
             if m.group(2) != "CONST":
                 names.append(m.group(1))
