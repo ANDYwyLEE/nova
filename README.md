@@ -1,6 +1,6 @@
 # Nova
 
-**One window per camera.** Nova is a lightweight, GPU-accelerated viewer for RTSP/ONVIF cameras that also records, live-streams and plays audio. It is built for people who keep a wall of IP cameras open on an ordinary desktop all day: every camera is an independent, frameless, always-sharp window you can drag, snap to a grid, zoom into, record and push to YouTube with one keystroke.
+**One window per camera.** Nova is a lightweight, GPU-accelerated viewer for RTSP/ONVIF cameras that also records, live-streams and plays audio. It is built for people who keep IP cameras open on an ordinary desktop all day, next to their work: every camera is an independent, frameless, always-sharp window you can drag, snap to a grid, zoom into the part that matters, record and push to YouTube with one keystroke, and a layout brings the whole wall back tomorrow.
 
 ![Nova camera windows spread over a desktop next to a browser and terminals](docs/images/wall.jpg)
 *Part of a 14-camera wall on one PC: every camera is its own frameless window, placed where you want it between your other windows.*
@@ -50,16 +50,19 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # one [section] pe
 
 ## Why Nova
 
-- **Independent windows, independent processes.** Each camera is its own OS process and frameless window. A camera that dies, reconnects or decodes garbage never touches the others; fifteen 1080p cameras on one PC is the normal case.
-- **Hardware decoding that is honest.** `--accel cuda|qsv|vaapi|videotoolbox|d3d11va|dxva2` uses the dedicated decoder or the platform hwaccel; if it cannot deliver frames, Nova falls back to multi-threaded software decoding and says so in the log.
+- **Cameras that live beside your work.** Each camera is a plain frameless window on your normal desktop: drag it between the browser and the terminal, snap it to the grid, move and resize it from the keyboard, park it on the second monitor, go full-screen for a moment and come back to the exact same place. The fixed grid of whole frames that NVR clients give you is the one layout Nova does not impose.
+- **Watch the part that matters.** The zoom is a *region* of the picture, not a magnification: wheel or `I`/`O` into the gate, the till or the nest box, pan it with Ctrl-drag or Shift+arrows, and a right click gives the window the region's own shape. Resizing the window keeps the region and reveals the picture around it instead of black bars; the region survives reconnects and restarts. A 4K camera can show just its door in a 300-pixel window all day.
+- **Layouts.** `nova layout save work` remembers which cameras are open, where every window sits and which part of the picture each one shows; `nova start --layout work` brings the wall back, `nova layout apply work` moves the open windows there without a restart, and `nova layout export` turns it into window rules for sway, KWin or Hyprland. Every window remembers its own place by itself too, monitor changes included.
+- **Independent windows, independent processes.** Each camera is its own OS process. A camera that dies, reconnects or decodes garbage never touches the others; fifteen 1080p cameras on one PC is the normal case. A control channel per camera lets `nova status` show what each one is doing right now and `nova stop` end it cleanly, geometry, zoom and open recordings saved.
+- **Hardware decoding that is honest.** `--accel cuda|qsv|vaapi|videotoolbox|d3d11va|dxva2` uses the dedicated decoder or the platform hwaccel, one hardware context per camera (about 410 MiB of VRAM for a decoding 1080p camera on NVIDIA). If it cannot deliver frames, Nova falls back to multi-threaded software decoding, says so in the log, and tries the hardware again later.
 - **Zero-copy OpenGL rendering.** NV12/YUV planes go straight into textures and are converted in a shader (BT.601/BT.709 per stream); overlays are cached. The CPU never touches pixels on the display path.
-- **Recordings you can trust.** Fragmented MP4 segments survive crashes; timestamps come from the camera clock, so audio and video stay in sync even when a camera lies about its frame rate, and outages become gaps instead of fast-forward.
-- **Streaming that matches the target.** H.264 for RTMP (what YouTube accepts), H.264/HEVC for HLS, 2-second keyframes, a silent audio track when the camera has none.
-- **Encoders chosen for you.** With `--accel`, the matching hardware encoder (NVENC, Quick Sync, AMF, VideoToolbox), else libx264; probed once per process under a cross-process lock.
-- **Real FFmpeg option pass-through.** `--ffmpeg "-rtsp_transport udp -b:v 4M -vf transpose=1 -r 10"` is routed to the right place, and anything the library cannot honour is reported instead of silently dropped.
+- **Recordings you can trust.** Fragmented MP4 segments aligned to your local clock survive crashes, and a segment cut short by a crash or a power cut is kept as a `_recovered` file. Timestamps come from the camera clock, so audio and video stay in sync even when a camera lies about its frame rate, and outages become gaps instead of fast-forward. A full disk or a failed encoder is retried, not given up on.
+- **Streaming that matches the target.** H.264 for RTMP (what YouTube accepts), H.264/HEVC for HLS, 2-second keyframes, a silent audio track when the camera has none, and reconnection with backoff when the server drops the connection. A night of 1080p25 to YouTube with recording on the side ran at a flat 1 GB of memory and a fifth of a core.
+- **Encoders chosen for you.** With `--accel`, the matching hardware encoder (NVENC, Quick Sync, AMF, VideoToolbox), else libx264; probed once per process under a cross-process lock, and swapped for the next candidate if it fails at the real size.
+- **Real FFmpeg option pass-through.** `--ffmpeg "-rtsp_transport udp -i -b:v 4M -vf transpose=1 -r 10"` is routed by FFmpeg's own option tables: every option goes to the demuxer, decoder, encoder or muxer that defines it, `-i` splits input from output options as on an `ffmpeg` command line, and options that only the `ffmpeg` program has are reported with what to use instead.
 - **Camera discovery.** `onvif://`, `xmeye://`, `hik://`, `dahua://` resolve the RTSP URL for you; results are cached without the password.
-- **Built for camera walls.** Grid snapping, keyboard move/resize, wheel zoom with remembered regions, fullscreen, per-camera geometry restored on the next start, multi-monitor aware.
-- **Small and transparent.** About 5k lines of Python; no ffmpeg binary, no GStreamer, no database. The PyPI `av` wheel already bundles FFmpeg with NVENC/NVDEC, Quick Sync and AMF.
+- **Your secrets stay yours.** `cameras.ini` is git-ignored and read by each camera process itself, so a password or stream key never appears on a command line (`ps`), in a log (masked) or in a file others can read: recordings, snapshots, logs, layouts and settings are created private. A pre-commit guard refuses to commit credentials.
+- **Small and transparent.** Under 10k lines of Python in 28 files; no ffmpeg binary, no GStreamer, no database, no daemon. The PyPI `av` wheel already bundles FFmpeg with NVENC/NVDEC, Quick Sync and AMF.
 
 ## Feature overview
 
@@ -72,7 +75,7 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # one [section] pe
 | Streaming | RTMP (YouTube, Twitch), HLS (YouTube HLS ingest incl. HEVC), SRT*, MPEG-TS; silent-audio synthesis |
 | Audio | PortAudio playback with device selection and resampling fallback |
 | Discovery | ONVIF (port probing, vendor-agnostic SOAP), XMeye DVRIP, Hikvision ISAPI, Dahua CGI |
-| Operations | `nova` launcher (`start`, `record`, `stop`) with a git-ignored camera list, auto-reconnect, bounded I/O timeouts, clean SIGINT/SIGTERM shutdown, masked passwords, pre-commit secret guard |
+| Operations | `nova` launcher (`start`, `record`, `run`, `stop`, `restart`, `status`, `layout`) with a git-ignored camera list and a control channel per camera, layouts (save / apply to running windows / export to Wayland window rules), auto-reconnect, bounded I/O timeouts, clean SIGINT/SIGTERM shutdown, masked passwords, private files, pre-commit secret guard |
 
 \* SRT and VAAPI need a [custom FFmpeg build](docs/custom-ffmpeg.md); everything else works with the PyPI wheel.
 
@@ -103,7 +106,7 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 | `recorder.py`, `streamer.py`, `recworker.py` | segment rotation, stream lifecycle, encoder threads |
 | `audioworker.py`, `audioplayer.py` | PortAudio playback |
 | `auth.py` | ONVIF / XMeye / Hikvision / Dahua URL resolution |
-| `ffparser.py` | `--ffmpeg` string → input / decoder / encoder / muxer options |
+| `ffparser.py`, `ffopts_tables.py`, `tools/gen_ffopts.py` | `--ffmpeg` string → input / decoder / encoder / muxer options, routed by FFmpeg's own option tables (generated from `ffmpeg -h`, the codec tables read from the PyAV build) |
 | `util.py`, `logsync.py` | platform checks, password/stream-key masking (logs, launcher output, the pre-commit hook), log setup |
 | `dispframe.py`, `zoomer.py`, `mousehandler.py`, `keyhandler.py`, `helper.py` | display frame container, zoom math, input handling, help overlay (`docs/gen_keys.py` builds the manual's tables from it) |
 
@@ -111,7 +114,7 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 
 - Any file FFmpeg can open works as `-i`, so a test clip replaces a camera. For realistic timing feed it at real time: `ffmpeg -re -stream_loop -1 -i clip.mp4 -c copy -f mpegts udp://127.0.0.1:5004` and `-i udp://127.0.0.1:5004`.
 - GUI tests without a desktop: `Xvfb :99 -screen 0 1280x800x24 &` then `DISPLAY=:99 python nova.py --opengl …`. `--headless` runs the full decode/record/stream pipeline with no window.
-- After editing the help table in `helper.py`, run `python docs/gen_keys.py` to refresh the manual (`--check` only verifies; CI runs it).
+- After editing the key descriptions in `helper.py` or the command-line options in `novaargs.py`, run `python docs/gen_keys.py` to refresh the manual (`--check` only verifies; CI runs it). `python tools/gen_ffopts.py --ffmpeg PATH --source FFMPEG_SRC > ffopts_tables.py` regenerates the `--ffmpeg` routing tables from another FFmpeg.
 - Tests: `pip install -r requirements-dev.txt` then `pytest`. They need no camera and no GPU: option parsing, URL masking, the launcher's logic, the timestamp mapper, and a headless decode → libx264 → fragmented-MP4 recording of a generated clip. GitHub Actions runs them on Linux for every push and on Windows and macOS weekly (`.github/workflows/`).
 - `git config core.hooksPath .githooks` enables the pre-commit guard against committed credentials.
 
