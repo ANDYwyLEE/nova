@@ -738,3 +738,29 @@ def test_wheel_direction_follows_the_hand_on_natural_scrolling_and_pinch_zooms_b
     assert w.zoomer.width() == pytest.approx(start[2] / 1.25)       # 25 % bigger picture = region 1/1.25
     w.mouse_hdlr.pinch(SimpleNamespace(value=lambda: -0.2, position=lambda: QPointF(300, 170)))
     assert w.zoomer.width() == pytest.approx(start[2] / 1.25 / 0.8)
+
+
+def test_a_minimized_window_is_not_painted_until_it_is_back(make, monkeypatch):
+    """Frames keep coming (decoding goes on for the recorder and the streamer) but a minimized or hidden
+    window is not repainted; the newest frame is painted once when it is back."""
+    from PySide6.QtGui import QWindow
+    w, core = make("200,100,320,180")
+    paints = []
+    vis = [QWindow.Visibility.Windowed]
+    monkeypatch.setattr(w, "update", lambda: paints.append(1))
+    monkeypatch.setattr(w, "visibility", lambda: vis[0])
+    core.fq.append(object()); w.update_img()
+    assert paints == [1] and not w._paint_pending
+
+    vis[0] = QWindow.Visibility.Minimized
+    for _ in range(3):
+        core.fq.append(object()); w.update_img()
+    assert paints == [1] and w._paint_pending          # frames taken, nothing painted
+    w._on_visibility(QWindow.Visibility.Minimized)      # still away: nothing
+    assert paints == [1]
+
+    vis[0] = QWindow.Visibility.Windowed
+    w._on_visibility(vis[0])
+    assert paints == [1, 1] and not w._paint_pending    # one paint, the newest frame
+    w._on_visibility(vis[0])
+    assert paints == [1, 1]                             # nothing pending: no extra paint

@@ -5,7 +5,7 @@ import sys
 import logging
 
 from PySide6.QtCore import Qt, QTimer, Slot, QEvent, QSize, QRect
-from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont
+from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont, QWindow
 
 try: from PySide6.QtOpenGL import QOpenGLWindow
 except ImportError:
@@ -157,6 +157,12 @@ class Nova(QOpenGLWindow):
         for scr in app.screens():
             scr.geometryChanged.connect(self._on_screens_changed)
 
+        # A minimized window, or one on another workspace, is not painted: decoding goes on for the
+        # recorder and the streamer, the picture waits for the window to come back.  (A window merely
+        # covered by another is still painted: X11 with a compositor reports no occlusion.)
+        self._paint_pending = False
+        self.visibilityChanged.connect(self._on_visibility)
+
         self.core.img_sig.connect(self.update_img)
         self.core.stat_sig.connect(self.update_stat)
         self.core.sz_sig.connect(self.set_vid_sz)
@@ -243,7 +249,18 @@ class Nova(QOpenGLWindow):
         if not self.osd_txt.isNull():
             self.curr_txt = None
             self.osd_txt = QImage()
+        if self._hidden():
+            self._paint_pending = True      # painted when the window is back, with the newest frame
+            return
         self.update()
+
+    def _hidden(self):
+        return self.visibility() in (QWindow.Visibility.Minimized, QWindow.Visibility.Hidden)
+
+    def _on_visibility(self, vis):
+        if self._paint_pending and not self._hidden():
+            self._paint_pending = False
+            self.update()
 
     def show_render_error(self, text):
         """The renderer gave up: show text instead of the video until the window is closed."""

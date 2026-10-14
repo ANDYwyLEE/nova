@@ -174,7 +174,7 @@ Notes:
 
 ## The window
 
-Each camera is a frameless window titled `Nova - NAME` (its name in `cameras.ini`, or the one given with `-n`). The border colour (with `-b`) shows focus: orange = focused, green = not focused. The control strip appears when the mouse enters the top-left corner:
+Each camera is a frameless window titled `Nova - NAME` (its name in `cameras.ini`, or the one given with `-n`). The border colour (with `-b`) shows focus: orange = focused, green = not focused. A minimized window, or one on another workspace, is not painted until it is back; decoding, recording and streaming go on meanwhile. The control strip appears when the mouse enters the top-left corner:
 
 ![Control strip](images/nova-window.jpg)
 
