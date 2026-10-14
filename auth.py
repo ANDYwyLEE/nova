@@ -678,6 +678,14 @@ def _no_such_stream(tag, info, have):
     return None, False
 
 
+def _quiet_dvrip():
+    """python-dvr logs every DVRIP packet at DEBUG (login hash and config dumps included; the masking
+    filter hides the secrets).  Like the ONVIF SOAP bodies, show them at TRACE only."""
+    lg = logging.getLogger("dvrip")
+    if not getattr(lg, "_nova_filtered", False):
+        lg.addFilter(lambda r: r.levelno > logging.DEBUG or logging.getLogger().getEffectiveLevel() <= 5)
+        lg._nova_filtered = True
+
 def _resolve_xmeye(info, should_stop=None):
     """XMeye / XiongMai (DVRIP on 34567): the RTSP port and on/off switch from the NetWork.RTSP config,
     the stream /user=***&password=***&channel=N&stream=S.sdp?real_stream as the device shows it."""
@@ -685,6 +693,7 @@ def _resolve_xmeye(info, should_stop=None):
     except ImportError:
         logging.error("python-dvr is required for xmeye:// URIs. Run 'pip install python-dvr'")
         return None, False
+    _quiet_dvrip()
     if info['stream_idx'] > 1:
         return _no_such_stream("[XMeye]", info, "streams 0 (main) and 1 (sub)")
     ip, user, pwd, mgmt_port = info['ip'], info['user'], info['pwd'], info['port']

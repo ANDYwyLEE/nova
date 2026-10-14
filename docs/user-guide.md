@@ -275,4 +275,4 @@ Everything Nova and the launcher write (recordings, snapshots, logs, layouts, th
 
 ## Logs
 
-`-l` sets the level: `CRITICAL ERROR WARNING INFO VERBOSE DEBUG TRACE` (or a number). `INFO` shows connections, decoder/encoder choices and saved files; `DEBUG` adds the FFmpeg negotiation; `TRACE` adds ONVIF SOAP bodies and audio device lists. Passwords and stream keys are masked in every log line, traceback and launcher output (`user:***@`, `password=***`, the last part of an `rtmp://` URL, SRT passphrase and streamid). `nova start` and `nova record` write each camera to `logs/ID.log`.
+`-l` sets the level: `CRITICAL ERROR WARNING INFO VERBOSE DEBUG TRACE` (or a number). `INFO` shows connections, decoder/encoder choices and saved files; `DEBUG` adds the FFmpeg negotiation; `TRACE` adds ONVIF SOAP bodies, XMeye DVRIP packets and audio device lists. Passwords and stream keys are masked in every log line, traceback and launcher output (`user:***@`, `password=***`, the last part of an `rtmp://` URL, SRT passphrase and streamid). `nova start` and `nova record` write each camera to `logs/ID.log`.
