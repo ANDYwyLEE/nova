@@ -6,6 +6,7 @@ import sys
 import stat
 import time
 import threading
+import gc
 import tempfile
 import logging
 from fractions import Fraction
@@ -982,4 +983,18 @@ class AVWriter:
         finally:
             try: self.container.close()
             except Exception as e: logging.debug(f"[AVWriter] container close: {e}")
+            self._release()
         logging.debug(f"[AVWriter] closed ({self.v_frames} video / {self.a_frames} audio frames)")
+
+    def _release(self):
+        """Free the codecs, filter graphs and resamplers now, not hours later.  PyAV's AudioResampler
+        (ours, and the one its audio encoders keep inside) runs a libavfilter graph with a thread pool
+        of one thread per core, and a Graph and its filter contexts refer to each other: only the cyclic
+        garbage collector frees them, and in a long-running process it may not run a full collection for
+        hours.  A stream that reconnected 20 times in a morning kept 315 idle threads and 85 MB."""
+        self.container = self.v_stream = self.a_stream = None
+        self._a_conv = self.graph = None
+        self._pending, self._held_audio = [], []
+        t = time.monotonic()
+        n = gc.collect()
+        logging.debug(f"[AVWriter] released: {n} objects collected in {1000 * (time.monotonic() - t):.0f} ms")

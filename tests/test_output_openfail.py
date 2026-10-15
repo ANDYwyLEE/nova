@@ -63,5 +63,6 @@ def test_failed_open_is_remembered_and_close_skips_the_flush():
         with pytest.raises(avwriter.OutputOpenError, match="No space left"):
             w._write("p")
     assert w.container.muxed == 1                   # only the first attempt reached the muxer
+    c = w.container
     w.close()                                       # would call v_stream.encode() (an object()) if it flushed
-    assert w.container.closed and w.container.muxed == 1
+    assert c.closed and c.muxed == 1 and w.container is None     # and lets go of it

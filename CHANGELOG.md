@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-15 — idle threads after a stream reconnect
+
+Found by a multi-day soak of the camera wall: a camera streaming to YouTube was switched off for a morning; YouTube closed the idle connection and the stream reconnected 20 times.
+
+### Fixed
+- **A closed writer frees its encoders and resamplers at once.** PyAV's `AudioResampler`, Nova's own and the one inside PyAV's audio encoders, runs a libavfilter graph with a pool of one thread per CPU core. A graph and its filter contexts refer to each other, so only Python's cyclic garbage collector freed them, and in a long-running process that can take hours. Every stream reconnect and every recording segment with audio left about 30 idle threads behind: the streaming camera above reached 374 threads and 85 MB extra until a collection at night released them all at once. `AVWriter.close()` now drops its codecs and graphs and runs one collection (11–15 ms, on the writer's thread). Measured with a camera switched off and an RTMP server killed, twice each: the thread count stays where it was.
+
 ## 2026-10-14 — brand shortcuts: the RTSP port asked from the right place, recorder channels, four more brands
 
 A check of every vendor URL format against the makers' documentation and the reference clients (Home Assistant's `hikvision_next`, `reolink_aio` and `icsee-ptz`, `python-amcrest`).

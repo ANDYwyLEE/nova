@@ -123,3 +123,31 @@ def test_a_long_outage_is_not_backfilled_with_silence(tmp_path):
     w.write_video(video(26 + 36000 * FPS))
     w.close()
     assert took < 1.0 and w.a_frames - before < 10, (took, w.a_frames - before)
+
+
+def test_closing_frees_the_resampler_graphs_and_their_threads(tmp_path):
+    """PyAV's AudioResampler (ours, and the one inside its audio encoders) runs a libavfilter graph with
+    a thread per core; a Graph and its filter contexts form a reference cycle that only the cyclic GC
+    frees.  A stream reconnecting 20 times kept 315 idle threads for hours: close() frees them now."""
+    import gc
+    import os
+    def graphs():
+        return sum(isinstance(o, av.filter.Graph) for o in gc.get_objects())
+    gc.collect()
+    before = graphs()
+    gc.disable()                                      # only close() may collect here
+    try:
+        for r in range(2):
+            w = writer(tmp_path / f"seg{r}.mp4", sample_rate=8000, channels=1)
+            for i in range(30):
+                w.write_video(video(i))
+                w.write_audio(audio(i, rate=8000, layout="mono", fmt="s16", samples=320))
+            assert graphs() > before                  # camera audio -> AAC went through resamplers
+            threads = len(os.listdir("/proc/self/task")) if os.path.isdir("/proc/self/task") else None
+            w.close()
+            del w
+            assert graphs() == before
+            if threads is not None:
+                assert len(os.listdir("/proc/self/task")) < threads
+    finally:
+        gc.enable()
