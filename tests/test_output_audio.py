@@ -75,8 +75,9 @@ def test_a_camera_without_audio_records_video_only_after_the_wait(tmp_path, capl
     assert any("no camera audio within" in r.getMessage() for r in caplog.records)
 
 
-def test_late_camera_audio_replaces_the_silent_live_track(tmp_path, caplog):
+def test_late_camera_audio_replaces_the_silent_live_track(tmp_path, caplog, monkeypatch):
     caplog.set_level(logging.INFO)
+    monkeypatch.setattr(avwriter, "LIVE_MAX_LEAD", None)   # seconds of frames written at once on purpose
     out = tmp_path / "live.flv"
     w = writer(out, live=True)
     n_silent = int(FPS * (avwriter.AUDIO_WAIT + 0.5))

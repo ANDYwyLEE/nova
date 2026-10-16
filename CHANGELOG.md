@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-16 — a live stream never runs ahead of the clock
+
+YouTube Studio showed "Your encoder is sending data faster than realtime" for a camera streaming to YouTube while that camera kept dropping and reconnecting (every one to two minutes, for half an hour).
+
+### Fixed
+- **A live stream stays within 1 s of the clock.** Within a connection Nova keeps the camera's own timestamps, so a camera that delivers seconds of picture at once, or whose timestamps advance faster than time, put the stream that far ahead for good, and each burst reached the server faster than real time. Live writers now hold such frames until the clock has caught up and go on from there (`LIVE_MAX_LEAD`, 1 s); the log says `source ran ahead of real time: N frame(s) dropped` when it happens. Recordings keep every frame and the camera's timing as before. Which of the two the camera above did is not known yet: a measurement of Nova's own connection to it, after it had settled, showed no lead. The log line is there to tell next time.
+
 ## 2026-10-15 — idle threads after a stream reconnect
 
 Found by a multi-day soak of the camera wall: a camera streaming to YouTube was switched off for a morning; YouTube closed the idle connection and the stream reconnected 20 times.

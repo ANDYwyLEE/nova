@@ -35,6 +35,7 @@ def _family(name: str) -> str:
     return "h264"
 
 LIVE_FORMATS = ("flv", "mpegts", "hls", "rtsp", "rtp_mpegts")
+LIVE_MAX_LEAD = 1.0 # s a live stream may run ahead of the clock (YouTube: ~1 s of video per second)
 AUDIO_WAIT = 2.0    # s of video a writer waits for the camera's first audio frame before deciding the track
 
 # Codec families each container can carry (and that typical ingest servers accept).
@@ -335,15 +336,19 @@ class _Timeline:
     outages show up as gaps instead of speeding up the recording."""
     MAX_JUMP = 5.0
 
-    def __init__(self, origin):
+    def __init__(self, origin, max_lead=None):
         self.origin = origin
+        self.max_lead = max_lead        # live output: never more than this many seconds ahead of the clock
         self.src0 = None
         self.out0 = 0.0
         self.last_src = None
         self.last_out = 0.0
+        self.held = False               # the last frame was held back to the clock (see map): drop it
+        self.catching = False
 
     def map(self, src_t):
         now = time.monotonic() - self.origin
+        self.held = False
         if src_t is None:
             self.src0 = None
             out = max(now, self.last_out)
@@ -355,6 +360,18 @@ class _Timeline:
                 self.src0, self.out0 = src_t, max(now, self.last_out)
             self.last_src = src_t
             out = self.out0 + (src_t - self.src0)
+            if self.max_lead is not None and (self.catching or out - now > self.max_lead):
+                # the source runs ahead of the clock: seconds of picture delivered at once, or timestamps
+                # that advance faster than time (jumps shorter than MAX_JUMP are kept as gaps).  Written
+                # as they are, the stream would stay that far ahead for good, and YouTube warns "sending
+                # data faster than realtime".  Hold every frame until the clock has caught up with what
+                # was written, then go on from the clock; the caller drops the held frames.
+                if now < self.last_out:
+                    self.catching = self.held = True
+                    return self.last_out
+                self.catching = False
+                self.src0, self.out0 = src_t, now
+                out = now
         self.last_out = out
         return out
 
@@ -521,8 +538,10 @@ class AVWriter:
             raise
 
         self.origin = time.monotonic()
-        self.v_tl = _Timeline(self.origin)
-        self.a_tl = _Timeline(self.origin)
+        lead = LIVE_MAX_LEAD if live else None
+        self.v_tl = _Timeline(self.origin, lead)
+        self.a_tl = _Timeline(self.origin, lead)
+        self._held_v = 0                # video frames dropped to stay real time (live), for the log
         logging.info(f"[AVWriter] {self.v_encoder} {self.width}x{self.height}@{self.fps} -> {fmt} "
                      f"audio={'silence' if self.silence else (self.a_stream.codec_context.codec.name if self.a_stream else 'none')}"
                      f"{' (waiting for camera audio)' if self._audio_pending else ''}")
@@ -749,6 +768,12 @@ class AVWriter:
         if frame is None or not self.run_flag: return
         if self.open_failed: self._refuse()
         out_t = self.v_tl.map(_src_time(frame))
+        if self.v_tl.held:
+            self._held_v += 1               # part of a burst beyond LIVE_MAX_LEAD
+            return
+        if self._held_v:
+            logging.info(f"[AVWriter] source ran ahead of real time: {self._held_v} frame(s) dropped")
+            self._held_v = 0
 
         if self.out_fps:                      # -r: keep at most out_fps frames per second
             if out_t + 1e-6 < self._next_frame_t:
@@ -912,6 +937,8 @@ class AVWriter:
             self.silence = False
             logging.info("[AVWriter] camera audio arrived; it replaces the silent track")
         out_t = self.a_tl.map(_src_time(frame))
+        if self.a_tl.held:
+            return                                # a burst beyond LIVE_MAX_LEAD (see write_video)
         pts = max(int(round(out_t * self.sample_rate)), self.last_a_end)
         frame.pts = None                          # timestamps are set on the converted frames below
         for f in self._convert(frame):
