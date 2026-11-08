@@ -9,6 +9,9 @@ Tested by logging into the Ubuntu (GNOME 50, Wayland) session on the two-monitor
 - **A failed OpenGL start is reported.** The window closed and the process exited with code 0, logging the cause only at ERROR, so `nova start` (cameras run at CRITICAL) said "exited with code 0" and the log held nothing. Now the cause is logged at CRITICAL and the exit code is 1.
 - **A native Wayland window keeps its saved place.** It cannot learn its own position, and Qt reported a made-up one, which was saved over the place the camera had under XWayland; the next start put the window there. A native window now keeps the saved x,y on record and remembers only its size (a layout's `place` still sets the x,y).
 
+### Checked
+- **KDE Plasma 6.6, a real Wayland login** (LightDM, two monitors, NVIDIA): the XWayland wall of 14 opens at its saved places without any rule; a native window under the rules from `nova layout export NAME kwin` opens at its saved place, draws, moves and resizes. Those rules match XWayland windows too (by title), so a window moved afterwards opened at the rule's old place again; the export header and the user guide now say to import them only for native windows and to export again after moving windows.
+
 ## 2026-10-16 — a live stream never runs ahead of the clock
 
 YouTube Studio showed "Your encoder is sending data faster than realtime" for a camera streaming to YouTube while that camera kept dropping and reconnecting (every one to two minutes, for half an hour).

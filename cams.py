@@ -623,7 +623,10 @@ def export_rules(layout, name, cams, fmt):
                      "later use Lua (`hyprland`).  `move` is monitor-local in Hyprland: with more than one",
                      "monitor subtract the monitor's position (hyprctl monitors)."],
         "kwin": ["Import in System Settings > Window Management > Window Rules > Import.  Positions apply",
-                 "when a window opens (positionrule=3); you can still drag the windows afterwards."],
+                 "when a window opens (positionrule=3); you can still drag the windows afterwards.",
+                 "Only for native Wayland windows: KDE places Nova's default XWayland windows itself, and these",
+                 "rules match XWayland windows too (by title), so after you move a window its next start goes",
+                 "back to the rule's place.  Export and import again after moving windows."],
     }[fmt]
     out = [f"{c} {stamp}"] + [f"{c} {n}" for n in notes] + [""]
     byid = {cam.id: cam for cam in cams}
