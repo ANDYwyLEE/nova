@@ -124,18 +124,51 @@ class _Hyprland:
         self.command(f"movewindowpixel exact {x} {y},pid:{pid}")
 
 
+UNKNOWN_PEER = -1           # the socket answers, but this OS cannot say which process serves it
+
+
+def _peer_pid(path):
+    """The pid of the process serving the Unix socket at path, UNKNOWN_PEER without SO_PEERCRED (BSDs),
+    None when nothing answers there."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect(path)
+            opt = getattr(socket, "SO_PEERCRED", None)
+            if opt is None:
+                return UNKNOWN_PEER
+            pid, _uid, _gid = struct.unpack("3i", s.getsockopt(socket.SOL_SOCKET, opt, struct.calcsize("3i")))
+            return pid
+    except OSError:
+        return None
+
+
+def _serves_this_session(ipc_path):
+    """True when the compositor IPC socket answers and belongs to the compositor of this session's Wayland
+    display. sway imports SWAYSOCK into systemd's user environment, where it outlives the sway login: a
+    GNOME login afterwards had it, and a socket left behind by a crash, or a sway on another VT, must not
+    take over the placement of windows on another desktop."""
+    ipc = _peer_pid(ipc_path)
+    wl = os.environ.get("WAYLAND_DISPLAY")
+    if ipc is None or not wl:
+        return False
+    runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    display = _peer_pid(wl if os.path.isabs(wl) else os.path.join(runtime, wl))
+    return display is not None and (ipc == display or UNKNOWN_PEER in (ipc, display))
+
+
 def _backend():
     if os.environ.get("NOVA_WM_IPC", "1") == "0":
         return None
     sway = os.environ.get("SWAYSOCK")
-    if sway and os.path.exists(sway):
+    if sway and os.path.exists(sway) and _serves_this_session(sway):
         return _Sway(sway)
     sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
     if sig:
         runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
         for base in (os.path.join(runtime, "hypr"), "/tmp/hypr"):
             path = os.path.join(base, sig, ".socket.sock")
-            if os.path.exists(path):
+            if os.path.exists(path) and _serves_this_session(path):
                 return _Hyprland(path)
     return None
 

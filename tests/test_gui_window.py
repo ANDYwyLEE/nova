@@ -873,3 +873,18 @@ def test_a_window_the_compositor_maximizes_keeps_its_place_on_record(make, app, 
     assert stored(core)[0] == "150,120,400,225"
     w.wm.max, w.wm.now = False, (150, 120, 400, 225)
     assert w._is_normal_state()
+
+
+def test_a_compositor_that_never_shows_the_window_is_left_alone(make, app, monkeypatch, caplog):
+    """When the compositor never reports the window (IPC broken, a stale socket), Nova falls back to Qt's own
+    geometry and window state for good: Qt's maximized state counts again."""
+    w, core = make("100,100,640,360")
+    w.wm = FakePlacer(ready=False)
+    w.wm.try_attach = lambda: True                 # IPC failed: nothing more to wait for
+    w._wm_attach_t0 = 0
+    w._wm_timer = type("T", (), {"stop": lambda self: None})()
+    w._wm_attach()
+    assert w.wm is None
+    assert sum("never showed this window" in r.message for r in caplog.records) == 1
+    monkeypatch.setattr(w, "windowState", lambda: Qt.WindowMaximized)
+    assert not w._is_normal_state()

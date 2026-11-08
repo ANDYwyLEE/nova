@@ -105,23 +105,65 @@ def test_hyprland_rect_and_commands(tmp_path):
                          f"dispatch movewindowpixel exact 3660 60,pid:{pid}"]
 
 
+def _listening(path):
+    """A Unix socket that accepts connections (this process serves it), closed by the caller."""
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(path))
+    srv.listen(8)
+    return srv
+
+
 def test_backend_selection(tmp_path, monkeypatch):
-    for k in ("SWAYSOCK", "HYPRLAND_INSTANCE_SIGNATURE", "NOVA_WM_IPC"):
+    for k in ("SWAYSOCK", "HYPRLAND_INSTANCE_SIGNATURE", "NOVA_WM_IPC", "WAYLAND_DISPLAY"):
         monkeypatch.delenv(k, raising=False)
-    assert wmipc.Placer.for_session() is None
-    sock = tmp_path / "sway.sock"
-    sock.touch()
-    monkeypatch.setenv("SWAYSOCK", str(sock))
-    assert isinstance(wmipc.Placer.for_session().b, wmipc._Sway)
-    monkeypatch.setenv("NOVA_WM_IPC", "0")
-    assert wmipc.Placer.for_session() is None
-    monkeypatch.delenv("NOVA_WM_IPC")
-    monkeypatch.delenv("SWAYSOCK")
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "abc")
-    (tmp_path / "hypr" / "abc").mkdir(parents=True)
-    (tmp_path / "hypr" / "abc" / ".socket.sock").touch()
-    assert isinstance(wmipc.Placer.for_session().b, wmipc._Hyprland)
+    assert wmipc.Placer.for_session() is None
+    wl, sway = _listening(tmp_path / "wayland-1"), _listening(tmp_path / "sway.sock")
+    try:
+        monkeypatch.setenv("SWAYSOCK", str(tmp_path / "sway.sock"))
+        assert wmipc.Placer.for_session() is None          # no Wayland display: not a sway session
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+        assert isinstance(wmipc.Placer.for_session().b, wmipc._Sway)   # one process serves both sockets
+        monkeypatch.setenv("NOVA_WM_IPC", "0")
+        assert wmipc.Placer.for_session() is None
+        monkeypatch.delenv("NOVA_WM_IPC")
+        monkeypatch.delenv("SWAYSOCK")
+        monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "abc")
+        (tmp_path / "hypr" / "abc").mkdir(parents=True)
+        hypr = _listening(tmp_path / "hypr" / "abc" / ".socket.sock")
+        assert isinstance(wmipc.Placer.for_session().b, wmipc._Hyprland)
+        hypr.close()
+    finally:
+        wl.close()
+        sway.close()
+
+
+def test_a_compositor_ipc_left_over_from_another_session_is_not_used(tmp_path, monkeypatch):
+    """A GNOME login after a sway one still had SWAYSOCK (sway imports it into systemd's user environment):
+    a dead socket file, or a sway alive on another VT, must not place this session's windows."""
+    for k in ("HYPRLAND_INSTANCE_SIGNATURE", "NOVA_WM_IPC"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("SWAYSOCK", str(tmp_path / "sway.sock"))
+    wl = _listening(tmp_path / "wayland-0")
+    try:
+        dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        dead.bind(str(tmp_path / "sway.sock"))
+        dead.close()                                       # the file stays, nobody answers
+        assert os.path.exists(tmp_path / "sway.sock")
+        assert wmipc.Placer.for_session() is None
+        os.unlink(tmp_path / "sway.sock")
+        other = _listening(tmp_path / "sway.sock")
+        real = wmipc._peer_pid
+        monkeypatch.setattr(wmipc, "_peer_pid", lambda p: 4242 if p.endswith("sway.sock") else real(p))
+        assert wmipc.Placer.for_session() is None          # a sway, but not this session's compositor
+        monkeypatch.setattr(wmipc, "_peer_pid", lambda p: wmipc.UNKNOWN_PEER if p.endswith("sway.sock") else real(p))
+        assert isinstance(wmipc.Placer.for_session().b, wmipc._Sway)   # an OS without SO_PEERCRED: it answers
+        other.close()
+    finally:
+        wl.close()
+
 
 
 def test_placer_keeps_the_last_normal_rect_and_fails_quietly(caplog, monkeypatch):

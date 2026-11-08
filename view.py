@@ -202,6 +202,7 @@ class Nova(QOpenGLWindow):
             self._wm_timer.stop()
             if not self.wm.ready:
                 logging.warning(f"[Nova] {self.wm.name} never showed this window; placement is the compositor's")
+                self.wm = None          # from now on Qt's own geometry and window state, as anywhere else
 
     def _set_geometry(self, x, y, w, h):
         """setGeometry, or where the compositor ignores the window's own request, the request through its
