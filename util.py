@@ -35,6 +35,26 @@ WSL = is_wsl()
 # themselves (their remembered place, or the layout's with --layout) and a rule would override that.
 NATIVE_APP_ID = "nova.wayland"
 
+
+def window_platform(env):
+    """(the Qt platform for a camera window, a line for the log) on a Linux Wayland session that has XWayland;
+    (None, None) anywhere else, where QT_QPA_PLATFORM is left as it is.
+
+    A Wayland compositor does not let a window place itself; under XWayland GNOME, KDE and labwc (Xfce) put it
+    where Nova asks, and on sway and Hyprland Nova places it through their IPC. So the platform is Nova's
+    choice: XWayland. A QT_QPA_PLATFORM the desktop exports for every application (startxfce4 --wayland sets
+    "wayland") is ignored, or every camera opened native, wherever the compositor liked. Another platform is
+    asked for with NOVA_QT_PLATFORM, which the launcher sets from QT_QPA_PLATFORM in cameras.ini [env]."""
+    if not LINUX or not env.get("WAYLAND_DISPLAY") or not env.get("DISPLAY"):
+        return None, None
+    want = env.get("NOVA_QT_PLATFORM", "").strip()
+    if want:
+        return want, f"Wayland session: Qt platform {want} (NOVA_QT_PLATFORM)"
+    session = env.get("QT_QPA_PLATFORM", "").strip()
+    note = (f"; the desktop's QT_QPA_PLATFORM={session} is for other applications" if session and session != "xcb"
+            else "")
+    return "xcb", f"Wayland session: running under XWayland{note} (QT_QPA_PLATFORM = wayland in [env] for a native window)"
+
 def is_msys():
     # MSYS2, Cygwin, Git Bash 등을 탐지
     term = os.environ.get("MSYSTEM", "").lower()

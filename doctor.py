@@ -101,6 +101,8 @@ def desktop_line():
     parts = [f"{session} session", e.get("XDG_CURRENT_DESKTOP") or e.get("DESKTOP_SESSION") or "unknown desktop",
              f"DISPLAY={e.get('DISPLAY') or '-'}", f"WAYLAND_DISPLAY={e.get('WAYLAND_DISPLAY') or '-'}",
              f"QT_QPA_PLATFORM={e.get('QT_QPA_PLATFORM') or '-'}"]
+    if e.get("NOVA_QT_PLATFORM"):
+        parts.append(f"NOVA_QT_PLATFORM={e['NOVA_QT_PLATFORM']}")
     return ", ".join(parts)
 
 
@@ -388,8 +390,9 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         out.append(("✓", "OpenGL comes from a GPU driver"))
     # desktop
     if LINUX and (os.environ.get("XDG_SESSION_TYPE") == "wayland" or os.environ.get("WAYLAND_DISPLAY")):
-        out.append(("ℹ", "Wayland session: windows run through XWayland unless QT_QPA_PLATFORM=wayland; placement differs "
-                         "per compositor (docs/user-guide.md, Layouts)"))
+        out.append(("ℹ", "Wayland session: windows run through XWayland, whatever QT_QPA_PLATFORM the desktop exports "
+                         "(QT_QPA_PLATFORM = wayland in [env] for native windows); placement differs per compositor "
+                         "(docs/user-guide.md, Layouts)"))
     # cameras.ini
     if cfg is not None:
         if not WINDOWS and config_path and os.path.exists(config_path) and os.stat(config_path).st_mode & 0o077:

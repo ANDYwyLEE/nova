@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QMetaObject, QTimer
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
-from util import parse_time, mask_url, NATIVE_APP_ID
+from util import parse_time, mask_url, NATIVE_APP_ID, window_platform
 from novaargs import build_parser
 
 
@@ -98,12 +98,11 @@ if __name__ == "__main__":
         # no window: never depend on a display or compositor ([env] or the session may name one), or
         # `nova record` dies with the desktop session and cannot start from ssh or cron
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-    elif sys.platform.startswith("linux") and "QT_QPA_PLATFORM" not in os.environ \
-            and os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
-        # A Wayland compositor does not let a window place itself, XWayland does (GNOME and KDE
-        # honour X11 positions). QT_QPA_PLATFORM=wayland (e.g. in [env]) still gives a native window.
-        os.environ["QT_QPA_PLATFORM"] = "xcb"
-        logging.info("Wayland session: running under XWayland (QT_QPA_PLATFORM=wayland for a native window)")
+    else:
+        platform, note = window_platform(os.environ)     # XWayland on a Wayland session, whatever the desktop exports
+        if platform:
+            os.environ["QT_QPA_PLATFORM"] = platform
+            logging.info(note)
 
     fmt = QSurfaceFormat()
     fmt.setAlphaBufferSize(8)

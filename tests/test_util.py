@@ -54,3 +54,20 @@ def test_mask_url_none():
 def test_display_url_drops_credentials():
     assert display_url("rtsp://u:pw@h:554/x") == "h:554/x"
     assert display_url("0") == "camera 0"
+
+
+def test_window_platform_is_novas_choice_on_a_wayland_session(monkeypatch):
+    """startxfce4 --wayland exports QT_QPA_PLATFORM=wayland for every application: Nova's windows opened native
+    and labwc stacked them top left. On a Wayland session with XWayland the platform is XWayland unless
+    NOVA_QT_PLATFORM (cameras.ini [env] QT_QPA_PLATFORM, through the launcher) asks for another."""
+    import util
+    monkeypatch.setattr(util, "LINUX", True)
+    wl = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}
+    assert util.window_platform(wl)[0] == "xcb"
+    p, note = util.window_platform(dict(wl, QT_QPA_PLATFORM="wayland"))
+    assert p == "xcb" and "QT_QPA_PLATFORM=wayland is for other applications" in note
+    assert util.window_platform(dict(wl, QT_QPA_PLATFORM="wayland", NOVA_QT_PLATFORM="wayland"))[0] == "wayland"
+    assert util.window_platform({"WAYLAND_DISPLAY": "wayland-0", "QT_QPA_PLATFORM": "wayland"}) == (None, None)  # no XWayland
+    assert util.window_platform({"DISPLAY": ":0", "QT_QPA_PLATFORM": "wayland"}) == (None, None)       # X11 session
+    monkeypatch.setattr(util, "LINUX", False)
+    assert util.window_platform(wl) == (None, None)

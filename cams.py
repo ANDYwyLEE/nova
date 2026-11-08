@@ -332,6 +332,10 @@ def mode_of(argv):
 def child_env(env):
     e = os.environ.copy()
     e.update({k: str(v) for k, v in env.items()})
+    # On a Wayland session nova.py picks the window's Qt platform itself and ignores a QT_QPA_PLATFORM the
+    # desktop exports for every application (util.window_platform); one set in cameras.ini [env] is the user's.
+    if "QT_QPA_PLATFORM" in env and "NOVA_QT_PLATFORM" not in env:
+        e["NOVA_QT_PLATFORM"] = str(env["QT_QPA_PLATFORM"])
     e.setdefault("PYTHONPATH", HERE)
     return e
 

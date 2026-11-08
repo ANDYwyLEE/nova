@@ -7,7 +7,9 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")     # no display on CI runners
+# Never a real display, on CI runners or in a desktop session: a session can export QT_QPA_PLATFORM itself
+# (Xfce's Wayland session sets wayland), and setdefault then put the GUI tests' windows on the screen.
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 # Window settings (geometry/zoom per camera) must never reach the user's real Nova.conf: on Linux
 # QSettings follows XDG_CONFIG_HOME, elsewhere the ini format below is pointed at a temp dir.

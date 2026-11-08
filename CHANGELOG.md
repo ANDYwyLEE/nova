@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-08 — Xfce's Wayland session
+
+Tested in a real Xfce 4.20 Wayland login (labwc 0.9.3) on the NVIDIA machine, left monitor only.
+
+### Changed
+- **On a Wayland session the window's Qt platform is Nova's choice.** Xfce's Wayland session exports `QT_QPA_PLATFORM=wayland` for every application, and Nova kept any value it found, so every camera opened as a native window that labwc stacked in the top left corner instead of at its place. Nova now runs under XWayland on a Wayland session (`WAYLAND_DISPLAY` and `DISPLAY` set) whatever the desktop exports, and says so in the log. Native windows are still there for whoever wants them: `QT_QPA_PLATFORM = wayland` in `cameras.ini` `[env]` (the launcher hands it on as `NOVA_QT_PLATFORM`), or `NOVA_QT_PLATFORM=wayland` when running `nova.py` directly. A `QT_QPA_PLATFORM` typed in the shell before `./nova start` no longer counts. Checked in the Xfce login with the session's variable in place: XWayland windows at their saved places to the pixel, 40 layout moves without a miss, arrow/Ctrl/Alt keys, F and Esc, labwc's maximize keeping the place on record, the wall of 13; `[env]` and `NOVA_QT_PLATFORM` still give native windows.
+
+### Fixed
+- **The test suite never uses a real display.** `tests/conftest.py` set `QT_QPA_PLATFORM=offscreen` only when the variable was unset, so inside a desktop session that exports it the GUI tests opened windows on the screen and failed.
+
+### Notes
+- The Xfce Wayland session needs the `labwc` package; without it, it returns to the login screen. wlroots compositors (sway, labwc; Hyprland likewise) cannot show one desktop on monitors attached to two different NVIDIA GPUs: the copy between the GPUs fails with the EGL renderer (`EGL_BAD_ALLOC`) and the Vulkan one (`no valid memory type index`). GNOME, KDE and the X11 desktops drive both.
+
 ## 2026-11-08 — sway and Hyprland: Nova places its own windows
 
 Tested in real sway 1.11 and Hyprland 0.53 logins on the NVIDIA machine (wlroots and Aquamarine drive only one of its two monitors, each on its own GPU).

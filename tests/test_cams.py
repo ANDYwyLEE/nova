@@ -197,3 +197,14 @@ def test_log_tail(tmp_path, monkeypatch):
     (tmp_path / "x.log").write_text("a\n\nb\nc\nd\ne\nf\n")
     assert cams.log_tail("x", 3) == ["d", "e", "f"]
     assert cams.log_tail("missing") == []
+
+
+def test_a_qt_platform_in_env_reaches_nova_py_as_novas_own(monkeypatch):
+    """nova.py ignores a QT_QPA_PLATFORM the desktop exports on a Wayland session; one in cameras.ini [env] is the
+    user's choice and is handed on as NOVA_QT_PLATFORM."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "wayland")            # the desktop's
+    monkeypatch.delenv("NOVA_QT_PLATFORM", raising=False)
+    assert "NOVA_QT_PLATFORM" not in cams.child_env({})
+    e = cams.child_env({"QT_QPA_PLATFORM": "wayland"})
+    assert e["NOVA_QT_PLATFORM"] == "wayland" and e["QT_QPA_PLATFORM"] == "wayland"
+    assert cams.child_env({"QT_QPA_PLATFORM": "wayland", "NOVA_QT_PLATFORM": "xcb"})["NOVA_QT_PLATFORM"] == "xcb"
