@@ -10,7 +10,10 @@ Tested by logging into the Ubuntu (GNOME 50, Wayland) session on the two-monitor
 - **A native Wayland window keeps its saved place.** It cannot learn its own position, and Qt reported a made-up one, which was saved over the place the camera had under XWayland; the next start put the window there. A native window now keeps the saved x,y on record and remembers only its size (a layout's `place` still sets the x,y).
 
 ### Checked
-- **KDE Plasma 6.6, a real Wayland login** (LightDM, two monitors, NVIDIA): the XWayland wall of 14 opens at its saved places without any rule; a native window under the rules from `nova layout export NAME kwin` opens at its saved place, draws, moves and resizes. Those rules match XWayland windows too (by title), so a window moved afterwards opened at the rule's old place again; the export header and the user guide now say to import them only for native windows and to export again after moving windows.
+- **KDE Plasma 6.6, a real Wayland login** (LightDM, two monitors, NVIDIA): the XWayland wall of 14 opens at its saved places without any rule; a native window under the rules from `nova layout export NAME kwin` opens at its saved place, draws, moves and resizes. Those rules matched XWayland windows too (by title), so a window moved afterwards opened at the rule's old place again instead of its remembered one.
+
+### Changed
+- **KWin rules place native windows only.** A native Wayland window's app id is now `nova.wayland` (an XWayland window's class stays `nova`), and the rules from `nova layout export NAME kwin` also match that class. XWayland windows keep placing themselves: `nova start` opens them at their remembered place, `nova start --layout NAME` at the layout's, with the rules imported or not. sway and Hyprland rules still match every Nova window, since those compositors tile XWayland windows too.
 
 ## 2026-10-16 — a live stream never runs ahead of the clock
 

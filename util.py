@@ -30,6 +30,11 @@ def is_wsl():
     return False
 WSL = is_wsl()
 
+# The app id of a native Wayland window. Distinct from the XWayland window's class ("nova") so that
+# window rules from `nova layout export NAME kwin` place native windows only: XWayland windows place
+# themselves (their remembered place, or the layout's with --layout) and a rule would override that.
+NATIVE_APP_ID = "nova.wayland"
+
 def is_msys():
     # MSYS2, Cygwin, Git Bash 등을 탐지
     term = os.environ.get("MSYSTEM", "").lower()

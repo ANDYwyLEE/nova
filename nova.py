@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QMetaObject, QTimer
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
-from util import parse_time, mask_url
+from util import parse_time, mask_url, NATIVE_APP_ID
 from novaargs import build_parser
 
 
@@ -126,6 +126,7 @@ if __name__ == "__main__":
     # XWayland window, whose context is GLX unless QT_XCB_GL_INTEGRATION=xcb_egl.
     if app.platformName().startswith("wayland"):      # "wayland" or "wayland-egl"
         os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+        app.setDesktopFileName(NATIVE_APP_ID)         # KWin rules from `nova layout export` match it
     elif app.platformName() == "xcb":
         egl = os.environ.get("QT_XCB_GL_INTEGRATION", "") == "xcb_egl"
         os.environ.setdefault("PYOPENGL_PLATFORM", "egl" if egl else "glx")

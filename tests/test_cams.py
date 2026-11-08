@@ -143,7 +143,8 @@ def test_window_title_and_export(cfg):
     assert 'for_window [title="^Nova - Camera B$"]' in sway and sway.count("for_window") == 2
     assert "zzz" not in sway and "junk" not in sway and sway.startswith("# Nova layout 'work'")
     kwin = cams.export_rules(lay, "work", cs, "kwin")
-    assert ("[nova-a]\nDescription=Nova - a\ntitle=Nova - a\ntitlematch=1\nposition=300,760\npositionrule=3\n"
+    assert ("[nova-a]\nDescription=Nova - a\ntitle=Nova - a\ntitlematch=1\nwmclass=nova.wayland\nwmclassmatch=1\n"
+            "position=300,760\npositionrule=3\n"
             "size=391,220\nsizerule=3\nnoborder=true\nnoborderrule=2\n") in kwin
     hypr = cams.export_rules(lay, "work", cs, "hyprland")
     assert hypr.startswith("-- Nova layout")

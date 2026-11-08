@@ -608,7 +608,9 @@ def parse_geometry(s):
 
 def export_rules(layout, name, cams, fmt):
     """Window rules that give a Wayland compositor the layout's placement, since there Nova cannot place
-    its own windows.  The rules match the window title, 'Nova - NAME'."""
+    its own windows.  The rules match the window title, 'Nova - NAME'; KWin's also the class of a native
+    window (util.NATIVE_APP_ID), since KDE honours the places XWayland windows give themselves."""
+    from util import NATIVE_APP_ID
     if fmt not in EXPORT_FORMATS:
         sys.exit(f"unknown format {fmt!r}; one of: {', '.join(EXPORT_FORMATS)}")
     stamp = f"Nova layout '{name}', exported {time.strftime('%Y-%m-%d %H:%M')} by `nova layout export`."
@@ -624,9 +626,8 @@ def export_rules(layout, name, cams, fmt):
                      "monitor subtract the monitor's position (hyprctl monitors)."],
         "kwin": ["Import in System Settings > Window Management > Window Rules > Import.  Positions apply",
                  "when a window opens (positionrule=3); you can still drag the windows afterwards.",
-                 "Only for native Wayland windows: KDE places Nova's default XWayland windows itself, and these",
-                 "rules match XWayland windows too (by title), so after you move a window its next start goes",
-                 "back to the rule's place.  Export and import again after moving windows."],
+                 f"The rules match native Wayland windows only (window class {NATIVE_APP_ID}): KDE lets Nova's",
+                 "default XWayland windows place themselves, at their remembered place or the layout's."],
     }[fmt]
     out = [f"{c} {stamp}"] + [f"{c} {n}" for n in notes] + [""]
     byid = {cam.id: cam for cam in cams}
@@ -653,6 +654,7 @@ def export_rules(layout, name, cams, fmt):
                     "    float = yes", f"    move = {x} {y}", f"    size = {w} {h}", "    border_size = 0", "}", ""]
         else:
             out += [f"[nova-{cid}]", f"Description={title}", f"title={title}", "titlematch=1",
+                    f"wmclass={NATIVE_APP_ID}", "wmclassmatch=1",
                     f"position={x},{y}", "positionrule=3", f"size={w},{h}", "sizerule=3",
                     "noborder=true", "noborderrule=2", ""]
     return "\n".join(out).rstrip() + "\n"
