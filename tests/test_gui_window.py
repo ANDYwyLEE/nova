@@ -773,13 +773,21 @@ class FakePlacer:
     name = "fake"
 
     def __init__(self, ready=True):
-        self.ready, self.placed = ready, []
+        self.ready, self.placed, self.max = ready, [], False
+        self.now = self.normal = None              # the compositor's rect now / when last neither max nor fullscreen
 
     def place(self, x, y, w, h):
         self.placed.append((int(x), int(y), int(w), int(h)))
+        self.now = self.normal = self.placed[-1]
 
     def rect(self):
-        return self.placed[-1] if self.ready and self.placed else None
+        return self.now if self.ready else None
+
+    def normal_rect(self):
+        return self.normal if self.ready else None
+
+    def maximized(self):
+        return self.ready and self.max
 
 
 def test_offscreen_windows_leave_the_compositor_alone(make, monkeypatch, tmp_path):
@@ -813,3 +821,55 @@ def test_a_mapped_window_is_placed_through_the_ipc_alone(make, app, monkeypatch)
     assert qt == []
     w._persist_if_changed()
     assert stored(core)[0] == "150,120,400,225"
+
+
+def test_hyprland_saying_maximized_does_not_make_the_window_maximized(make, app, monkeypatch):
+    """Hyprland reports every native window maximized, floating or not, and maximizes it for real on the
+    unset_maximized that showNormal()/showFullScreen() send. Where Nova places the window the compositor says
+    whether it is maximized, and fullscreen on and off keep the flag Qt holds, so only (un)set_fullscreen goes out."""
+    w, core = make("100,100,640,360", None, grid=20)
+    core.connected(1920, 1080)
+    states = [Qt.WindowMaximized]                  # what Qt believes after Hyprland's configure
+    asked = []
+
+    def set_states(st):
+        asked.append(st)
+        states[0] = st
+    monkeypatch.setattr(w, "windowStates", lambda: states[0])
+    monkeypatch.setattr(w, "windowState", lambda: Qt.WindowFullScreen if states[0] & Qt.WindowFullScreen else states[0])
+    monkeypatch.setattr(w, "setWindowStates", set_states)
+    monkeypatch.setattr(w, "showNormal", lambda: asked.append("showNormal"))
+    monkeypatch.setattr(w, "showFullScreen", lambda: asked.append("showFullScreen"))
+    monkeypatch.setattr(w, "setGeometry", lambda *a: None)
+    w.wm = FakePlacer()
+    assert w._is_normal_state()
+    w.place("150,120,400,225")                     # nova layout apply: no showNormal, the IPC moves it
+    assert asked == [] and w.wm.placed[-1] == (150, 120, 400, 225)
+    w._persist_if_changed()
+    assert stored(core)[0] == "150,120,400,225"
+    key(w, Qt.Key_F)
+    assert asked == [Qt.WindowFullScreen | Qt.WindowMaximized]
+    key(w, Qt.Key_Escape)
+    assert asked[-1] == Qt.WindowMaximized and not w.is_fullscreen()
+    w._persist_if_changed()
+    assert stored(core)[0] == "150,120,400,225"
+    w.wm.max = True                                # maximized for real (the compositor's own keys)
+    asked.clear()
+    w.place("150,120,400,225")
+    assert asked == ["showNormal"]
+
+
+def test_a_window_the_compositor_maximizes_keeps_its_place_on_record(make, app, monkeypatch):
+    """Hyprland never tells an XWayland window it maximized it, and Qt makes up a native window's position:
+    the place saved is where the compositor had the window when it was last normal."""
+    w, core = make("100,100,640,360", None, grid=20)
+    core.connected(1920, 1080)
+    monkeypatch.setattr(w, "setGeometry", lambda *a: None)
+    w.wm = FakePlacer()
+    w.place("150,120,400,225")
+    w.wm.max, w.wm.now = True, (20, 20, 3400, 1400)
+    assert not w._is_normal_state()
+    w._persist_if_changed()
+    assert stored(core)[0] == "150,120,400,225"
+    w.wm.max, w.wm.now = False, (150, 120, 400, 225)
+    assert w._is_normal_state()

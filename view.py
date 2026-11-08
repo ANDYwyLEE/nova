@@ -674,9 +674,12 @@ class Nova(QOpenGLWindow):
     def _normal_geometry(self) -> QRect:
         """Geometry outside fullscreen / maximized: exiting in those states (nova stop, Ctrl-C, closing the
         window) used to write the screen-sized rectangle over the window's place."""
+        if self.wm:          # where the compositor had it when last normal: Qt may not know, or may be wrong
+            r = self.wm.normal_rect()
+            if r:
+                return QRect(*r)
         if self._is_normal_state():
-            r = self.wm.rect() if self.wm else None     # where the compositor has it (Qt may not know)
-            return QRect(*r) if r else self.geometry()
+            return self.geometry()
         return QRect(self._normal_geom)
 
     def moveEvent(self, e):
@@ -771,9 +774,17 @@ class Nova(QOpenGLWindow):
     def _isFullScreen(self):
         return bool(self.windowState() & Qt.WindowFullScreen)
     def _isMaximized(self):
+        if self.wm:     # Hyprland tells every native window it is maximized, and never tells an XWayland one
+            return self.wm.maximized()
         return bool(self.windowState() & Qt.WindowMaximized)
     def is_fullscreen(self):
         return self._isFullScreen() or self._fullscrn_flag
+
+    def _kept_max(self):
+        """The maximized flag Qt holds, to request again with fullscreen on and off where Nova places the window:
+        Hyprland reports every native window maximized, and on the unset_maximized that showFullScreen() and
+        showNormal() send for it, it maximized the window for real (3400x1400 instead of its place)."""
+        return self.windowStates() & Qt.WindowMaximized
 
 
     def fullscreen(self):
@@ -782,11 +793,18 @@ class Nova(QOpenGLWindow):
             self._normal_geom = self._normal_geometry()
         self._fullscrn_flag = True
         self.set_bg("none")
-        self.showFullScreen()
+        if self.wm:
+            self.setWindowStates(Qt.WindowFullScreen | self._kept_max())
+        else:
+            self.showFullScreen()
 
     def show_normal(self):
         if not self.is_fullscreen(): return
-        if self._isFullScreen(): self.showNormal()
+        if self._isFullScreen():
+            if self.wm:
+                self.setWindowStates(self._kept_max())
+            else:
+                self.showNormal()
         self._fullscrn_flag = False
         self.set_bg(self._border_color())
 

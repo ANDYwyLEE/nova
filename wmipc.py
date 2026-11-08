@@ -16,6 +16,7 @@ import logging
 
 FIND_TIMEOUT_S = 5.0        # how long to wait for the compositor to map the window after show()
 RECT_TTL_S = 1.0            # a rect read from the compositor is reused this long
+NORMAL, MAXIMIZED, FULLSCREEN = 0, 1, 2     # the window's mode as the compositor has it
 
 
 class _Sway:
@@ -52,14 +53,15 @@ class _Sway:
         if bad:
             raise RuntimeError("; ".join(bad))
 
-    def rect(self, pid):
-        """(x, y, w, h) of the process's window in layout coordinates, or None while it is not mapped."""
+    def state(self, pid):
+        """(x, y, w, h, mode) of the process's window in layout coordinates, or None while it is not mapped.
+        sway has no maximized state, only fullscreen."""
         stack = [self._request(self.GET_TREE)]
         while stack:
             n = stack.pop()
             if n.get("pid") == pid and n.get("type") in ("con", "floating_con"):
                 r = n["rect"]
-                return r["x"], r["y"], r["width"], r["height"]
+                return r["x"], r["y"], r["width"], r["height"], FULLSCREEN if n.get("fullscreen_mode") else NORMAL
             stack += n.get("nodes", []) + n.get("floating_nodes", [])
         return None
 
@@ -95,12 +97,21 @@ class _Hyprland:
         if reply != "ok":
             raise RuntimeError(reply or "no reply")
 
-    def rect(self, pid):
+    def _client(self, pid):
         for c in json.loads(self._request("j/clients") or "[]"):
             if c.get("pid") == pid and c.get("mapped", True):
-                (x, y), (w, h) = c["at"], c["size"]
-                return x, y, w, h
+                return c
         return None
+
+    def state(self, pid):
+        """(x, y, w, h, mode) from Hyprland's own state (fullscreen 0 none, 1 maximized, 2 fullscreen, 3 both).
+        What it tells a native window is no guide: it reports every one of them maximized, floating or not."""
+        c = self._client(pid)
+        if c is None:
+            return None
+        (x, y), (w, h) = c["at"], c["size"]
+        fs = c.get("fullscreen", 0)
+        return x, y, w, h, FULLSCREEN if fs & 2 else MAXIMIZED if fs & 1 else NORMAL
 
     def float_frameless(self, pid):
         for c in json.loads(self._request("j/clients") or "[]"):
@@ -138,8 +149,10 @@ class Placer:
         self.pid = os.getpid()
         self.ready = False
         self._pending = None
-        self._rect = None
-        self._rect_at = 0.0
+        self._rect = None           # (x, y, w, h) now, from the compositor or the last place()
+        self._mode = NORMAL
+        self._normal = None         # the rect it had when last neither maximized nor fullscreen
+        self._read_at = None
         self._failed = False
 
     @classmethod
@@ -155,7 +168,7 @@ class Placer:
         """Called from a timer after show(): True once the window is mapped and floating (then the pending
         geometry is applied), False to be called again."""
         try:
-            if self.b.rect(self.pid) is None:
+            if self.b.state(self.pid) is None:
                 return False
             self.b.float_frameless(self.pid)
             self.ready = True
@@ -177,24 +190,46 @@ class Placer:
     def _apply(self, x, y, w, h):
         try:
             self.b.place(self.pid, x, y, w, h)
-            self._rect, self._rect_at = (x, y, w, h), time.monotonic()
+            self._rect = self._normal = (x, y, w, h)
+            self._mode, self._read_at = NORMAL, time.monotonic()
         except Exception as e:
             self._fail(e)
 
-    def rect(self):
-        """The window's (x, y, w, h) as the compositor has it, or None (not mapped, IPC failed)."""
+    def _read(self):
+        """Refresh rect and mode from the compositor at most every RECT_TTL_S; False if it has no answer."""
         if not self.ready:
-            return None
+            return False
         now = time.monotonic()
-        if self._rect is None or now - self._rect_at > RECT_TTL_S:
+        if self._read_at is None or now - self._read_at > RECT_TTL_S:
+            self._read_at = now
             try:
-                r = self.b.rect(self.pid)
+                st = self.b.state(self.pid)
             except Exception as e:
                 self._fail(e)
-                return None
-            if r is not None:
-                self._rect, self._rect_at = r, now
-        return self._rect
+                st = None
+            if st is None:
+                self._rect, self._mode = None, NORMAL
+            else:
+                self._rect, self._mode = st[:4], st[4]
+                if self._mode == NORMAL:
+                    self._normal = self._rect
+        return self._rect is not None
+
+    def rect(self):
+        """The window's (x, y, w, h) as the compositor has it, or None (not mapped, IPC failed)."""
+        return self._rect if self._read() else None
+
+    def normal_rect(self):
+        """Where the window was when last neither maximized nor fullscreen (by the compositor's keys too):
+        the place to keep on record. None until known."""
+        self._read()
+        return self._normal
+
+    def maximized(self):
+        """True while the compositor has the window maximized; False before it is mapped or when IPC fails.
+        Where Nova places the window this, not Qt's window state, says whether it is maximized: Hyprland
+        tells every native window it is, and an XWayland window it maximizes is never told."""
+        return self._read() and self._mode == MAXIMIZED
 
     def _fail(self, e):
         if not self._failed:
