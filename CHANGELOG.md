@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-08 — sway and Hyprland: Nova places its own windows
+
+Tested in real sway 1.11 and Hyprland 0.53 logins on the NVIDIA machine (wlroots and Aquamarine drive only one of its two monitors, each on its own GPU).
+
+### Changed
+- **Windows open at their place on sway and Hyprland, without rules.** Both compositors ignore the position a window asks for, XWayland or native, so without window rules they tiled every camera, and on Hyprland the tiled rectangle was then saved over the remembered place. Nova now places its window through the compositor's IPC (`wmipc.py`: sway's i3 IPC on `$SWAYSOCK`, Hyprland's request socket), finding it by its process id: floating, borderless, at the remembered place with `nova start` and at the layout's with `--layout NAME`. The arrow keys, Ctrl/Alt+Arrow, fullscreen and `nova layout apply` work as on X11; a window whose monitor is missing is pulled onto a visible one and keeps its place on record; a native window's real place is saved. `NOVA_WM_IPC = 0` turns this off. Checked in sway: a wall of 13 cameras with the six on the driven monitor at their saved places to the pixel and the seven of the other monitor pulled onto it with their places unchanged on record; held arrow keys, fullscreen and back, a native window moved and resized. Once the compositor has the window, Nova sends only the IPC request: sway answers a floating XWayland window's own configure request by centring it, so sending both centred 3 of 16 `nova layout apply` moves in a test (0 of 30 since).
+
 ## 2026-11-08 — a real GNOME Wayland login
 
 Tested by logging into the Ubuntu (GNOME 50, Wayland) session on the two-monitor NVIDIA machine instead of a nested compositor.

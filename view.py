@@ -3,6 +3,7 @@ status strip, geometry and zoom kept in QSettings, fullscreen / maximize / snap,
 layouts and the control channel."""
 import sys
 import logging
+import time
 
 from PySide6.QtCore import Qt, QTimer, Slot, QEvent, QSize, QRect
 from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont, QWindow
@@ -17,6 +18,7 @@ from keyhandler import KeyHdlr
 from helper import Helper
 from fonts import MONO
 from util import WSL, MAC, WINDOWS, mask_url, window_title, parse_geom, parse_zoom, WindowStore
+from wmipc import Placer, FIND_TIMEOUT_S
 
 GS = 20 # default grid size
 MIN_VISIBLE = 40          # px of a window that must be on some screen for it to count as reachable
@@ -107,6 +109,11 @@ class Nova(QOpenGLWindow):
         # (_held_place) until its monitor is back or the user moves the window.
         self._geom_hold = False
         self._held_place = None
+        # sway and Hyprland ignore the positions a window asks for; there Nova places it through their IPC
+        plat = QGuiApplication.platformName()          # not for offscreen windows (tests, --headless)
+        self.wm = Placer.for_session() if plat == "xcb" or plat.startswith("wayland") else None
+        if self.wm:
+            logging.info(f"[Nova] {self.wm.name}: placing the window through the compositor's IPC")
         self.store = WindowStore()                 # this window's own file: no lock shared with other windows
         saved_geom, saved_zoom = self.store.read(self.url_hash)
         g = geometry or saved_geom                 # --geometry (a layout) wins over the remembered place
@@ -182,6 +189,30 @@ class Nova(QOpenGLWindow):
         # Before show(): Wayland compositors evaluate their window rules against the title at map time.
         self.setTitle(window_title(self.core.display_name))
         self.show()
+        if self.wm:
+            self._wm_attach_t0 = time.monotonic()
+            self._wm_timer = QTimer(self)
+            self._wm_timer.setInterval(100)
+            self._wm_timer.timeout.connect(self._wm_attach)
+            self._wm_timer.start()
+
+    def _wm_attach(self):
+        """Poll until the compositor has mapped the window; then it floats and gets its place."""
+        if self.wm.try_attach() or time.monotonic() - self._wm_attach_t0 > FIND_TIMEOUT_S:
+            self._wm_timer.stop()
+            if not self.wm.ready:
+                logging.warning(f"[Nova] {self.wm.name} never showed this window; placement is the compositor's")
+
+    def _set_geometry(self, x, y, w, h):
+        """setGeometry, or where the compositor ignores the window's own request, the request through its
+        IPC instead. Not both once the window is mapped: sway answers a floating XWayland window's own
+        configure request by centring it, and whichever of the two it handled last won."""
+        if self.wm and self.wm.ready and self._is_normal_state():
+            self.wm.place(x, y, w, h)
+            return
+        self.setGeometry(int(x), int(y), int(w), int(h))
+        if self.wm and self._is_normal_state():
+            self.wm.place(x, y, w, h)               # not mapped yet: applied when it shows up
 
 
     def _surface_format(self):
@@ -616,7 +647,7 @@ class Nova(QOpenGLWindow):
         frame size is 0 then, and again during every reconnect, which used to write 0,0,1,1 over the zoom."""
         if self._geom_hold and self._held_place:
             geom = self._held_place
-        elif self._native_wayland and self._kept_xy:
+        elif self._native_wayland and self._kept_xy and not (self.wm and self.wm.rect()):
             g = self._normal_geometry()
             geom = f"{self._kept_xy[0]},{self._kept_xy[1]},{g.width()},{g.height()}"
         else:
@@ -644,7 +675,8 @@ class Nova(QOpenGLWindow):
         """Geometry outside fullscreen / maximized: exiting in those states (nova stop, Ctrl-C, closing the
         window) used to write the screen-sized rectangle over the window's place."""
         if self._is_normal_state():
-            return self.geometry()
+            r = self.wm.rect() if self.wm else None     # where the compositor has it (Qt may not know)
+            return QRect(*r) if r else self.geometry()
         return QRect(self._normal_geom)
 
     def moveEvent(self, e):
@@ -705,12 +737,12 @@ class Nova(QOpenGLWindow):
         if place is None or self._on_screen(place):
             if place is not None and normal and self.geometry() != place:
                 logging.info(f"[Nova] screens changed: back to {self._held_place}")
-                self.setGeometry(place)
+                self._set_geometry(place.x(), place.y(), place.width(), place.height())
             self._geom_hold = False
             self._held_place = None
         elif normal and not self._on_screen(self.geometry()):
-            g = self.geometry()
-            self.setGeometry(*self._fit_on_screen(g.x(), g.y(), g.width(), g.height()))
+            g = self._normal_geometry()
+            self._set_geometry(*self._fit_on_screen(g.x(), g.y(), g.width(), g.height()))
 
     def _placed_by_user(self):
         """The user moves or resizes the window: from now on its place is where it is."""
@@ -733,7 +765,7 @@ class Nova(QOpenGLWindow):
         return self.width(), self.height()
 
     def _curr_pos(self):
-        g = self.geometry()   # global geometry
+        g = self._normal_geometry() if self._is_normal_state() else self.geometry()   # global geometry
         return g.x(), g.y()
 
     def _isFullScreen(self):
@@ -747,7 +779,7 @@ class Nova(QOpenGLWindow):
     def fullscreen(self):
         if self.is_fullscreen(): return
         if not self._isMaximized():
-            self._normal_geom = self.geometry()
+            self._normal_geom = self._normal_geometry()
         self._fullscrn_flag = True
         self.set_bg("none")
         self.showFullScreen()
@@ -860,13 +892,12 @@ class Nova(QOpenGLWindow):
         mw, mh = self.minimumWidth(), self.minimumHeight()
         w, h = min(vg.width(), max(mw, w)), min(vg.height(), max(mh, h))
         x, y = max(vg.left(), x), max(vg.top(), y)
-        self.setGeometry(int(x), int(y), int(w), int(h))
+        self._set_geometry(x, y, w, h)
 
     def _geom_d(self, dx, dy, dw, dh): # +delta
         self._placed_by_user()
-        x, y = self._curr_pos()
-        w, h = self.width(), self.height()
-        self._geom(x + dx, y + dy, w + dw, h + dh)
+        g = self._normal_geometry() if self._is_normal_state() else self.geometry()   # Qt learns a size
+        self._geom(g.x() + dx, g.y() + dy, g.width() + dw, g.height() + dh)            # set by IPC late
 
     def _move(self, x, y):
         self._placed_by_user()
@@ -874,7 +905,10 @@ class Nova(QOpenGLWindow):
         w, h = self._widget_wh()
         x = max(vg.left(), min(x, vg.left() + vg.width() - w))
         y = max(vg.top(), min(y, vg.top() + vg.height() - h))
-        self.setPosition(int(x), int(y))
+        if self.wm:
+            self._set_geometry(x, y, w, h)
+        else:
+            self.setPosition(int(x), int(y))
 
     def _move_d(self, dx, dy):
         x, y = self._curr_pos()
@@ -882,7 +916,11 @@ class Nova(QOpenGLWindow):
 
     def _resize(self, w, h):
         self._placed_by_user()
-        self.resize(int(w), int(h))
+        if self.wm:
+            x, y = self._curr_pos()
+            self._set_geometry(x, y, w, h)
+        else:
+            self.resize(int(w), int(h))
 
     def _resize_r(self, f): # ratio
         ow, oh = self._widget_wh()

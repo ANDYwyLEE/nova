@@ -764,3 +764,52 @@ def test_a_minimized_window_is_not_painted_until_it_is_back(make, monkeypatch):
     assert paints == [1, 1] and not w._paint_pending    # one paint, the newest frame
     w._on_visibility(vis[0])
     assert paints == [1, 1]                             # nothing pending: no extra paint
+
+
+# ---------------------------------------------------------------- sway / Hyprland: placed through the compositor's IPC
+
+class FakePlacer:
+    """wmipc.Placer as the window uses it: the places asked for, and the compositor's rect of the window."""
+    name = "fake"
+
+    def __init__(self, ready=True):
+        self.ready, self.placed = ready, []
+
+    def place(self, x, y, w, h):
+        self.placed.append((int(x), int(y), int(w), int(h)))
+
+    def rect(self):
+        return self.placed[-1] if self.ready and self.placed else None
+
+
+def test_offscreen_windows_leave_the_compositor_alone(make, monkeypatch, tmp_path):
+    sock = tmp_path / "sway.sock"
+    sock.touch()
+    monkeypatch.setenv("SWAYSOCK", str(sock))
+    monkeypatch.delenv("NOVA_WM_IPC", raising=False)
+    w, _ = make("100,100,640,360")
+    assert w.wm is None
+
+
+def test_a_mapped_window_is_placed_through_the_ipc_alone(make, app, monkeypatch):
+    """sway centres a floating XWayland window when the window asks for a place itself, so once the compositor
+    has the window only its IPC is asked; sizes come from the compositor's rect, Qt learns them late."""
+    w, core = make("100,100,640,360", None, grid=20)
+    core.connected(1920, 1080)
+    qt = []
+    monkeypatch.setattr(w, "setGeometry", lambda *a: qt.append(a))
+    w.wm = FakePlacer(ready=False)
+    w._set_geometry(110, 100, 640, 360)          # not mapped yet: Qt's own request, and the IPC's kept for later
+    assert qt == [(110, 100, 640, 360)] and w.wm.placed == [(110, 100, 640, 360)]
+    qt.clear()
+    w.wm.ready = True
+    key(w, Qt.Key_Right)
+    assert w.wm.placed[-1] == (130, 100, 640, 360)
+    key(w, Qt.Key_Right, Qt.ControlModifier)     # grow from the compositor's rect, not Qt's stale one
+    key(w, Qt.Key_Right, Qt.ControlModifier, repeat=True)
+    assert w.wm.placed[-1] == (130, 100, 680, 360)
+    w.place("150,120,400,225")                   # nova layout apply
+    assert w.wm.placed[-1] == (150, 120, 400, 225)
+    assert qt == []
+    w._persist_if_changed()
+    assert stored(core)[0] == "150,120,400,225"
