@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-08 — a real GNOME Wayland login
+
+Tested by logging into the Ubuntu (GNOME 50, Wayland) session on the two-monitor NVIDIA machine instead of a nested compositor.
+
+### Fixed
+- **Cameras start on a Wayland login.** Every window closed right after `nova start`: PyOpenGL chooses its platform from `XDG_SESSION_TYPE`, so in a Wayland session it used EGL, while Nova's default XWayland window has a GLX context, and the first GL call failed with "no valid context". Nested compositors never showed it because their host session was X11. Nova now sets `PYOPENGL_PLATFORM` from the platform Qt actually uses: GLX for an XWayland window (EGL with `QT_XCB_GL_INTEGRATION=xcb_egl`), EGL for a native one. Verified in the login: all 14 windows of the wall at their saved places to the pixel, NVDEC decoding; a native window shows the picture, zooms and goes fullscreen.
+- **A failed OpenGL start is reported.** The window closed and the process exited with code 0, logging the cause only at ERROR, so `nova start` (cameras run at CRITICAL) said "exited with code 0" and the log held nothing. Now the cause is logged at CRITICAL and the exit code is 1.
+- **A native Wayland window keeps its saved place.** It cannot learn its own position, and Qt reported a made-up one, which was saved over the place the camera had under XWayland; the next start put the window there. A native window now keeps the saved x,y on record and remembers only its size (a layout's `place` still sets the x,y).
+
 ## 2026-10-16 — a live stream never runs ahead of the clock
 
 YouTube Studio showed "Your encoder is sending data faster than realtime" for a camera streaming to YouTube while that camera kept dropping and reconnecting (every one to two minutes, for half an hour).

@@ -111,6 +111,10 @@ class Nova(QOpenGLWindow):
         saved_geom, saved_zoom = self.store.read(self.url_hash)
         g = geometry or saved_geom                 # --geometry (a layout) wins over the remembered place
         pg = parse_geom(g) if g else None
+        # A native Wayland window cannot learn or set its own position (the compositor places it; Qt
+        # reports a made-up one), so it keeps the remembered x,y on record and only its size changes.
+        self._native_wayland = QGuiApplication.platformName().startswith("wayland")
+        self._kept_xy = (pg[0], pg[1]) if pg else None
         if pg:
             try:
                 x, y, w, h = pg
@@ -486,6 +490,7 @@ class Nova(QOpenGLWindow):
         if self._isMaximized(): self.showNormal()
         g = _parse_geom(geometry or "")
         if g is not None:
+            self._kept_xy = (g.x(), g.y())           # a native Wayland window keeps this x,y on record
             self._geom(*self._fit_on_screen(g.x(), g.y(), g.width(), g.height()))
         if zoom:
             zr = parse_zoom(zoom)
@@ -611,6 +616,9 @@ class Nova(QOpenGLWindow):
         frame size is 0 then, and again during every reconnect, which used to write 0,0,1,1 over the zoom."""
         if self._geom_hold and self._held_place:
             geom = self._held_place
+        elif self._native_wayland and self._kept_xy:
+            g = self._normal_geometry()
+            geom = f"{self._kept_xy[0]},{self._kept_xy[1]},{g.width()},{g.height()}"
         else:
             geom = _geom_str(self._normal_geometry())
         rx, ry, rw, rh = self._zoom_ratio()

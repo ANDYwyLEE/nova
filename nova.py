@@ -121,9 +121,14 @@ if __name__ == "__main__":
     app.setApplicationName("nova")
     app.setDesktopFileName("nova")      # the app id Wayland compositors see (else the python binary's name)
 
+    # PyOpenGL must use the context API of the window Qt made, or every GL call fails ("no valid
+    # context"). It guesses from XDG_SESSION_TYPE, so in a Wayland login it picks EGL even for an
+    # XWayland window, whose context is GLX unless QT_XCB_GL_INTEGRATION=xcb_egl.
     if app.platformName().startswith("wayland"):      # "wayland" or "wayland-egl"
-        # PyOpenGL defaults to GLX; a Wayland window's context is EGL and every GL call would fail
         os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    elif app.platformName() == "xcb":
+        egl = os.environ.get("QT_XCB_GL_INTEGRATION", "") == "xcb_egl"
+        os.environ.setdefault("PYOPENGL_PLATFORM", "egl" if egl else "glx")
 
     from novacore import NovaCore
     from view import Nova
@@ -192,6 +197,8 @@ if __name__ == "__main__":
             except (ValueError, OSError): pass
 
     rt = app.exec()
+    if rt == 0 and getattr(nova, "gl_init_failed", False):
+        rt = 1                                    # the window never worked: a launcher must see a failure
     if control is not None:
         control.close()
     if not core.stop() or core.vid_worker.isRunning():

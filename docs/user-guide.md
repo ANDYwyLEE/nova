@@ -126,12 +126,12 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 - The file is plain JSON, camera id → `"geometry": "x,y,w,h"` and `"zoom": "rx,ry,rw,rh"` (fractions of the picture; `0,0,1,1` is the whole picture). Edit it by hand if you like: an entry that is not `x,y,w,h` with a positive size, or a zoom that is not inside the picture, is ignored with a warning. `layouts/` is git-ignored, like `cameras.ini`.
 - `--geometry x,y,w,h` and `--zoom rx,ry,rw,rh` also work directly on `nova.py`.
 - **Wayland**: a compositor does not let a window place itself, so on a Wayland session Nova runs under XWayland by default (it sets `QT_QPA_PLATFORM=xcb` when both `WAYLAND_DISPLAY` and `DISPLAY` are set). GNOME and KDE honour X11 positions, so there everything works as on X11 without further setup. `QT_QPA_PLATFORM = wayland` in `[env]` gives native Wayland windows; then `--geometry` sets only the size and the compositor decides the place (GNOME and KDE centre the window, sway and Hyprland tile it). Checked with nested compositors on Ubuntu 26.04:
-  - **GNOME** (Mutter 50): no window rules; XWayland, the default, places and moves windows exactly as on X11.
+  - **GNOME** (Mutter 50): no window rules; XWayland, the default, places and moves windows exactly as on X11 (also checked in a real GNOME Wayland login, two monitors, NVIDIA: every window at its saved place to the pixel).
   - **KDE Plasma** (KWin 6.6): XWayland works the same way; `nova layout export work kwin` additionally gives a `.kwinrule` file (System Settings › Window Management › Window Rules › Import) that places native Wayland windows too.
   - **sway** (i3 too): windows are tiled, XWayland or native, unless a rule floats them: `nova layout export work sway` prints `for_window` lines for `~/.config/sway/config`.
   - **Hyprland**: tiles as well; `nova layout export work hyprlang` for 0.53–0.54 (`windowrule { }` blocks; Ubuntu 26.04 ships 0.53), `hyprland` for 0.55 and later (Lua, `hl.window_rule`). Hyprland's `move` is monitor-local; with several monitors subtract the monitor's position.
 
-  The rules match the window title `Nova - NAME` (the camera's name from `cameras.ini` / `-n`), XWayland and native windows alike, so they keep working across restarts; the positions are the absolute coordinates Nova saved. Under a rule the window still remembers where you drag it, as usual.
+  The rules match the window title `Nova - NAME` (the camera's name from `cameras.ini` / `-n`), XWayland and native windows alike, so they keep working across restarts; the positions are the absolute coordinates Nova saved. Under a rule an XWayland window still remembers where you drag it, as usual. A native window cannot learn where it is, so it keeps the saved place on record and remembers only its size; in it the arrow keys cannot move the window, and Ctrl/Alt+Arrow grow or shrink it on the right or bottom edge whichever arrow is pressed.
 
 ## Command-line options
 

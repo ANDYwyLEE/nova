@@ -120,6 +120,11 @@ class NovaGL(Nova):
 
     def initializeGL(self):
         if not self._init_gl():
+            # fatal: nova.py exits non-zero, so `nova start` reports a failure, not "exited with code 0"
+            self.gl_init_failed = True
+            # CRITICAL: `nova start` runs cameras at that level, and the cause belongs in logs/ID.log
+            logging.critical(f"[NovaGL] OpenGL could not be initialised, the window closes: "
+                             f"{getattr(self, '_gl_init_error', '?')}")
             QTimer.singleShot(0, self.close)
 
     def _init_gl(self):
@@ -211,6 +216,7 @@ class NovaGL(Nova):
             return True
         except Exception:
             logging.error(f"[NovaGL] initializeGL Error: {traceback.format_exc()}")
+            self._gl_init_error = traceback.format_exc(limit=0).strip()
             return False
 
     def _set_attribs(self):
