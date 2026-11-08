@@ -1,11 +1,28 @@
 """wmipc: the sway (i3 IPC) and Hyprland request-socket clients, against fake compositor sockets."""
 import os
 import json
+import shutil
 import socket
 import struct
+import tempfile
 import threading
+from pathlib import Path
+
+import pytest
 
 import wmipc
+
+# sway and Hyprland speak over Unix sockets: nothing to test where Python has none (Windows)
+pytestmark = pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no Unix sockets on this platform")
+
+
+@pytest.fixture
+def tmp_path():
+    """A short directory for the sockets: a socket path holds at most 104 bytes on macOS, and pytest's own
+    tmp_path there (/private/var/folders/...) is longer than that."""
+    d = tempfile.mkdtemp(prefix="nv", dir="/tmp" if os.path.isdir("/tmp") else None)
+    yield Path(d)
+    shutil.rmtree(d, ignore_errors=True)
 
 
 def _serve(path, handle, requests):
@@ -155,11 +172,13 @@ def test_a_compositor_ipc_left_over_from_another_session_is_not_used(tmp_path, m
         assert wmipc.Placer.for_session() is None
         os.unlink(tmp_path / "sway.sock")
         other = _listening(tmp_path / "sway.sock")
-        real = wmipc._peer_pid
-        monkeypatch.setattr(wmipc, "_peer_pid", lambda p: 4242 if p.endswith("sway.sock") else real(p))
+        pids = {"sway.sock": 4242, "wayland-0": 1111}       # the peers as SO_PEERCRED reports them (Linux)
+        monkeypatch.setattr(wmipc, "_peer_pid", lambda p: pids[os.path.basename(p)])
         assert wmipc.Placer.for_session() is None          # a sway, but not this session's compositor
-        monkeypatch.setattr(wmipc, "_peer_pid", lambda p: wmipc.UNKNOWN_PEER if p.endswith("sway.sock") else real(p))
-        assert isinstance(wmipc.Placer.for_session().b, wmipc._Sway)   # an OS without SO_PEERCRED: it answers
+        pids["sway.sock"] = 1111
+        assert isinstance(wmipc.Placer.for_session().b, wmipc._Sway)
+        pids["sway.sock"] = wmipc.UNKNOWN_PEER             # no SO_PEERCRED (macOS, BSDs): answering is enough
+        assert isinstance(wmipc.Placer.for_session().b, wmipc._Sway)
         other.close()
     finally:
         wl.close()
