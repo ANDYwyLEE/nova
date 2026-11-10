@@ -36,7 +36,8 @@ def test_help_on_draws_text_over_a_dimming_layer():
     Nova.set_hlp(stub, "H : help\nS : snapshot")
     img = stub.osd_hlp
     assert not img.isNull() and (img.width(), img.height()) == (320, 180)
-    # two lines of small text around the middle (5 pt on Windows: a single row may fall between them)
-    assert any(img.pixelColor(x, y).lightness() > 200 for y in range(60, 121) for x in range(0, 320, 2)), \
-        "no text pixels drawn"
+    # two lines of small text around the middle (5 pt on Windows: a single row may fall between them, and
+    # MSYS2's Qt antialiases the strokes thinner than the PyPI wheel): every pixel, against the black layer
+    lightest = max(img.pixelColor(x, y).lightness() for y in range(img.height()) for x in range(img.width()))
+    assert lightest > 100, f"no text pixels drawn (lightest {lightest})"
     assert img.pixelColor(2, 2).alpha() in range(120, 200)          # the dimming layer, not opaque
