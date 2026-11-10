@@ -83,12 +83,20 @@ MSYS2's Python cannot use PyPI binary wheels, so `av` is compiled against MSYS2'
 pacman -S --needed git make pkgconf \
     mingw-w64-ucrt-x86_64-{gcc,python-pip,python-wheel,cython,python-setuptools,python-numpy,python-requests,portaudio,pyside6,python-pyopengl,ffmpeg}
 cd nova
-python -m venv --system-site-packages python3.12 && ln -s python3.12 venv && . venv/bin/activate
+python -m venv --system-site-packages venv && . venv/bin/activate
 pip install xmltodict filelock PyOpenGL_accelerate
 pip install --no-binary av av --no-cache-dir
 ```
 
-PyAudio assumes MSVC on Windows. Under MSYS2 build it by hand: `pip download pyaudio`, unpack, and in `setup.py`'s `win32` branch add `('MS_WIN64', '1')` to `defines`, `/ucrt64/include` to `include_dirs`, `/ucrt64/lib` to the library path and `portaudio` to `external_libraries`; then `python setup.py install`.
+Create the venv as `venv` itself: `./nova` runs `venv/bin/python`, and MSYS2's `ln -s` copies a directory (unless `MSYS=winsymlinks:nativestrict`), so a `venv` linked to another venv before the `pip install`s would lack everything installed after.
+
+PyAudio's `setup.py` assumes MSVC on Windows: it drops `portaudio` from the libraries and passes `/MT`, which gcc takes for an input file. Build it with both undone (MSYS2's gcc finds PortAudio in `/ucrt64` by itself):
+
+```bash
+pip download pyaudio --no-binary :all: --no-deps && tar xzf PyAudio-*.tar.gz && cd PyAudio-*/
+sed -i -e 's|external_libraries.remove("portaudio")|pass|' -e 's|extra_compile_args += \["/MT"\]|pass|' setup.py
+pip install --no-build-isolation . && cd ..
+```
 
 ## macOS
 

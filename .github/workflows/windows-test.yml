@@ -9,7 +9,9 @@ on:
 
 env:
   MEDIAMTX: v1.21.3
-  MESA: 26.2.6                   # pal1000/mesa-dist-win: llvmpipe OpenGL 4.5 in place of a GPU driver
+  # pal1000/mesa-dist-win (the mingw build has opengl32.dll): llvmpipe in place of a GPU driver. Qt sees the
+  # runner's Basic Display Adapter and picks software GL whatever opengl32.dll is, hence QT_OPENGL=desktop.
+  MESA: 26.2.6
 
 jobs:
   native:
@@ -60,23 +62,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download $env:MESA -R pal1000/mesa-dist-win -p "mesa3d-$($env:MESA)-release-msvc.7z" -D mesa
+          gh release download $env:MESA -R pal1000/mesa-dist-win -p "mesa3d-$($env:MESA)-release-mingw.7z" -D mesa
           7z x -omesa mesa\*.7z x64 | Select-Object -Last 2
           Get-ChildItem mesa\x64 | Select-Object -ExpandProperty Name
-          foreach ($d in "opengl32.dll", "libgallium_wgl.dll", "libglapi.dll") {
+          foreach ($d in "opengl32.dll", "libgallium_wgl.dll", "libglapi.dll", "libdlclose-skip.dll") {
             if (Test-Path "mesa\x64\$d") { Copy-Item "mesa\x64\$d" $env:pythonLocation; "copied $d" }
           }
       - name: OpenGL with Mesa
         if: always()
         shell: cmd
         run: |
-          venv\Scripts\python .github\wintest\gldiag.py default
+          set QT_OPENGL=desktop
+          venv\Scripts\python .github\wintest\gldiag.py desktop
           nova.bat doctor
       - name: End to end, OpenGL through Mesa
         if: always()
         timeout-minutes: 15
         shell: cmd
-        run: venv\Scripts\python .github\wintest\e2e.py --launcher "cmd /c nova.bat" --mediamtx mtx\mediamtx.exe --gl works --out e2e-mesa
+        run: venv\Scripts\python .github\wintest\e2e.py --launcher "cmd /c nova.bat" --mediamtx mtx\mediamtx.exe --gl works --env QT_OPENGL=desktop --out e2e-mesa
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -110,32 +113,17 @@ jobs:
           pacman -Q | grep -E 'python |pyside6|ffmpeg|portaudio|qt6-base'
       - name: venv, PyAV from source (Option B)
         run: |
-          python -m venv --system-site-packages python3.12 && ln -s python3.12 venv && . venv/bin/activate
+          python -m venv --system-site-packages venv && . venv/bin/activate
           pip install xmltodict filelock PyOpenGL_accelerate
           pip install --no-binary av av --no-cache-dir
           python -c "import av; print('av', av.__version__, av.ffmpeg_version_info); from av.codec.hwaccel import hwdevices_available; print(hwdevices_available())"
       - name: PyAudio by hand (Option B recipe)
         run: |
-          set -o pipefail
           . venv/bin/activate
           mkdir -p /tmp/pa && cd /tmp/pa
-          pip download pyaudio --no-binary :all: --no-deps -d . && tar xzf PyAudio-*.tar.gz && cd PyAudio-*/
-          # the docs: win32 branch gets MS_WIN64 (0.2.14 has it), /ucrt64/include, /ucrt64/lib, and keeps portaudio
-          python - <<'EOF'
-          s = open("setup.py").read()
-          old = '            external_libraries.remove("portaudio")\n'
-          assert old in s, "setup.py changed"
-          s = s.replace(old, "            include_dirs += ['/ucrt64/include']\n            external_libraries_path = ['/ucrt64/lib']\n")
-          open("setup.py", "w").write(s)
-          EOF
-          if python setup.py install > ../docs-recipe.log 2>&1; then
-              echo "docs recipe: OK"
-          else
-              tail -25 ../docs-recipe.log
-              echo "::warning::PyAudio: the docs recipe failed; retrying without the MSVC /MT flag"
-              sed -i 's|extra_compile_args += \["/MT"\]|pass|' setup.py
-              python setup.py install 2>&1 | tail -5
-          fi
+          pip download pyaudio --no-binary :all: --no-deps && tar xzf PyAudio-*.tar.gz && cd PyAudio-*/
+          sed -i -e 's|external_libraries.remove("portaudio")|pass|' -e 's|extra_compile_args += \["/MT"\]|pass|' setup.py
+          pip install --no-build-isolation . && cd ..
           cd / && python -c "import pyaudio; print(pyaudio.get_portaudio_version_text())"
       - name: test tools
         run: |
@@ -169,12 +157,12 @@ jobs:
         run: |
           for i in 1 2 3; do pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-mesa && break; [ $i = 3 ] && exit 1; sleep 20; done
           ls /ucrt64/bin | grep -i -E 'opengl32|gallium|glapi'
-          venv/bin/python .github/wintest/gldiag.py default
-          ./nova doctor | grep -E 'OpenGL'
+          venv/bin/python .github/wintest/gldiag.py desktop
+          QT_OPENGL=desktop ./nova doctor | grep -E 'OpenGL'
       - name: End to end, OpenGL through Mesa
         if: always()
         timeout-minutes: 15
-        run: venv/bin/python .github/wintest/e2e.py --launcher "sh ./nova" --mediamtx mtx/mediamtx.exe --ffmpeg ffmpeg --gl works --out e2e-mesa
+        run: venv/bin/python .github/wintest/e2e.py --launcher "sh ./nova" --mediamtx mtx/mediamtx.exe --ffmpeg ffmpeg --gl works --env QT_OPENGL=desktop --out e2e-mesa
       - uses: actions/upload-artifact@v7
         if: always()
         with:
