@@ -77,9 +77,9 @@ export LDFLAGS="-L$HOME/deps/lib -L/ucrt64/lib -lportaudio"
 make -j"$(nproc)" && make install
 export PATH=$HOME/deps/bin:$PATH
 
-# let Python find the DLLs in ~/deps/bin
-mkdir -p ~/nova/python3.12/lib/python3.12/site-packages
-cat > ~/nova/python3.12/lib/python3.12/site-packages/sitecustomize.py << 'PY'
+# let Python find the DLLs in ~/deps/bin (the venv of the install guide, Option B)
+cd ~/nova && . venv/bin/activate
+cat > "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/sitecustomize.py" << 'PY'
 import os
 home = os.getenv('HOME')
 if home:
@@ -88,7 +88,7 @@ PY
 pip install --no-binary av av --no-cache-dir
 ```
 
-PyAudio on MSYS2 must be built by hand: `pip download pyaudio`, unpack, and in `setup.py`'s `win32` branch add `('MS_WIN64', '1')` to `defines`, `/ucrt64/include` to `include_dirs`, `/ucrt64/lib` to the library path and `portaudio` to `external_libraries`; then `python setup.py install`.
+PyAudio on MSYS2 is built by hand, with the MSVC-only parts of its `setup.py` undone: see [Installation, Option B](install.md#option-b-msys2-ucrt64).
 
 ## macOS: VideoToolbox + SRT
 
