@@ -981,6 +981,8 @@ def split_ids(tokens):
 
 
 def main(argv=None):
+    import util
+    util.utf8_stdio()        # log tails and `nova doctor` print emoji and check marks, also into a file or pipe
     if not WINDOWS:
         os.umask(umask())        # logs, pid file and layouts are the user's own (nova.py does the same)
     argv = list(sys.argv[1:] if argv is None else argv)

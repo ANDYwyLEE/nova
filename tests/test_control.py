@@ -116,3 +116,17 @@ def test_second_instance_does_not_steal_the_channel(app, address):
         assert status["ok"] and status["window"] is False
     finally:
         first.close()
+
+
+def test_drop_of_a_socket_already_deleted(app):
+    """On Windows a pipe connection still open at exit is destroyed with the server, and its destructor
+    emits disconnected: _drop then met a deleted QLocalSocket and logged an uncaught RuntimeError after
+    "Nova exited gracefully" (seen in every window's log on a Windows runner)."""
+    import shiboken6
+    from PySide6.QtNetwork import QLocalSocket
+    srv = ControlServer("nova-test-unused", "cam1", Core(), None, lambda: None)
+    s = QLocalSocket()
+    srv._buffers[s] = b""
+    shiboken6.delete(s)
+    srv._drop(s)
+    assert s not in srv._buffers

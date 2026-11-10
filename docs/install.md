@@ -81,7 +81,7 @@ MSYS2's Python cannot use PyPI binary wheels, so `av` is compiled against MSYS2'
 
 ```bash
 pacman -S --needed git make pkgconf \
-    mingw-w64-ucrt-x86_64-{gcc,python-pip,python-wheel,python-cython,python-setuptools,python-numpy,python-requests,portaudio,pyside6,python-pyopengl,ffmpeg}
+    mingw-w64-ucrt-x86_64-{gcc,python-pip,python-wheel,cython,python-setuptools,python-numpy,python-requests,portaudio,pyside6,python-pyopengl,ffmpeg}
 cd nova
 python -m venv --system-site-packages python3.12 && ln -s python3.12 venv && . venv/bin/activate
 pip install xmltodict filelock PyOpenGL_accelerate

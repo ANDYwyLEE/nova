@@ -272,10 +272,13 @@ def main():
             except av.error.FFmpegError as e:
                 check(f"recording {os.path.basename(fpath)} decodes", False, str(e))
         check("a recorded segment holds >= 100 frames (5 s at 25 fps)", frames and max(frames) >= 100, str(frames))
-        if os.name == "nt":
-            r = subprocess.run(["reg", "query", r"HKCU\Software\nova", "/s"], capture_output=True, text=True)
-            print("--- saved window settings\n" + r.stdout[-4000:], flush=True)
-            check("window settings saved under HKCU\\Software\\nova", r.returncode == 0 and r.stdout.strip())
+        wdir = os.path.join(os.environ.get("APPDATA", ""), "nova", "windows") if os.name == "nt" else None
+        if wdir:
+            inis = glob.glob(os.path.join(wdir, "*.conf"))
+            for f in inis:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    print(f"--- {f}\n{fh.read().strip()}", flush=True)
+            check("window places saved in %APPDATA%\\nova\\windows", len(inis) >= 2, f"{len(inis)} files")
     finally:
         try:
             launcher("stop", timeout=60)

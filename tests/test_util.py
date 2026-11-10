@@ -71,3 +71,19 @@ def test_window_platform_is_novas_choice_on_a_wayland_session(monkeypatch):
     assert util.window_platform({"DISPLAY": ":0", "QT_QPA_PLATFORM": "wayland"}) == (None, None)       # X11 session
     monkeypatch.setattr(util, "LINUX", False)
     assert util.window_platform(wl) == (None, None)
+
+
+def test_utf8_stdio_into_a_file_or_pipe():
+    """Windows writes a redirected stdout in the ANSI code page (cp1252, cp949): under `nova start`, whose
+    stdout is logs/ID.log, every log line with an emoji was lost behind a "--- Logging error ---"
+    traceback. PYTHONIOENCODING=cp1252 stands in for that code page on every platform."""
+    import os
+    import subprocess
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = ("import logging, sys, util; util.utf8_stdio(); "
+            "logging.basicConfig(stream=sys.stdout, format='%(message)s'); logging.warning('\\u26a1 \\U0001f680 ok')")
+    env = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONPATH=root)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, env=env, cwd=root, timeout=60)
+    assert b"Logging error" not in r.stderr, r.stderr
+    assert r.stdout.decode("utf-8").strip() == "⚡ \U0001f680 ok"

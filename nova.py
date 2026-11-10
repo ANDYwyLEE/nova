@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QMetaObject, QTimer
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
-from util import parse_time, mask_url, NATIVE_APP_ID, window_platform
+from util import parse_time, mask_url, NATIVE_APP_ID, window_platform, utf8_stdio
 from novaargs import build_parser
 
 
@@ -42,6 +42,7 @@ def expand_camera(argv):
 
 
 if __name__ == "__main__":
+    utf8_stdio()             # logs/ID.log is this stdout: UTF-8 on Windows too, emoji and all
     if os.name != "nt":
         import cams
         os.umask(cams.umask())   # recordings, snapshots, logs, window settings: this user's only (NOVA_UMASK)

@@ -40,7 +40,12 @@ jobs:
       - name: nova doctor
         shell: cmd
         run: nova.bat doctor
+      - name: OpenGL as Qt and PyOpenGL see it
+        if: always()
+        shell: cmd
+        run: venv\Scripts\python .github\wintest\gldiag.py
       - name: pytest
+        if: always()
         shell: cmd
         run: venv\Scripts\python -m pytest -rs
       - name: End to end (nova.bat start/status/restart/stop, 5 windows)
@@ -68,13 +73,13 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-      - name: pacman packages (Option B, verbatim)
+      - name: pacman packages (Option B)
         run: |
           pacman -S --needed --noconfirm git make pkgconf \
-              mingw-w64-ucrt-x86_64-{gcc,python-pip,python-wheel,python-cython,python-setuptools,python-numpy,python-requests,portaudio,pyside6,python-pyopengl,ffmpeg}
+              mingw-w64-ucrt-x86_64-{gcc,python-pip,python-wheel,cython,python-setuptools,python-numpy,python-requests,portaudio,pyside6,python-pyopengl,ffmpeg}
           python --version; ffmpeg -hide_banner -version | head -1
           pacman -Q | grep -E 'python |pyside6|ffmpeg|portaudio|qt6-base'
-      - name: venv, PyAV from source (Option B, verbatim)
+      - name: venv, PyAV from source (Option B)
         run: |
           python -m venv --system-site-packages python3.12 && ln -s python3.12 venv && . venv/bin/activate
           pip install xmltodict filelock PyOpenGL_accelerate
@@ -118,8 +123,13 @@ jobs:
       - name: nova doctor
         run: ./nova doctor
       - name: launcher help
+        if: always()
         run: ./nova -h > help.txt && head -5 help.txt
+      - name: OpenGL as Qt and PyOpenGL see it
+        if: always()
+        run: venv/bin/python .github/wintest/gldiag.py
       - name: pytest
+        if: always()
         run: venv/bin/python -m pytest -rs
       - name: End to end (./nova start/status/restart/stop, 5 windows)
         if: always()

@@ -69,7 +69,12 @@ class ControlServer(QObject):
 
     def _drop(self, s):
         self._buffers.pop(s, None)
-        s.deleteLater()
+        try:
+            s.deleteLater()
+        except RuntimeError:
+            # Windows: a pipe connection still open at exit goes with the server, and its destructor
+            # emits disconnected for a socket that is already deleted
+            pass
 
     def _read(self, s):
         buf = self._buffers.get(s, b"") + bytes(s.readAll())

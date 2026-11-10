@@ -2,6 +2,7 @@
 launcher and the camera (geometry, zoom, intervals), and short forms of FFmpeg's error texts."""
 import os
 import re
+import sys
 import platform
 
 
@@ -14,6 +15,22 @@ MAC = (_system == "darwin")
 SOLARIS = (_system in ["sunos", "solaris"])
 AIX = (_system == "aix")
 HPUX = (_system == "hp-ux")
+
+def utf8_stdio():
+    """stdout and stderr in UTF-8 when they go to a file or a pipe (and on Windows always). Windows
+    writes those in the ANSI code page (cp1252, cp949), which has no emoji: under `nova start` every
+    log line with one was lost behind a "--- Logging error ---" traceback in logs/ID.log, and
+    `nova doctor > report.txt` died at its first check mark. A Windows console is UTF-8 already."""
+    for s in (sys.stdout, sys.stderr):
+        if s is None or not hasattr(s, "reconfigure"):
+            continue
+        enc = (s.encoding or "").lower().replace("-", "").replace("_", "")
+        try:
+            if enc != "utf8" and (os.name == "nt" or not s.isatty()):
+                s.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            pass
+
 
 def is_wsl():
     if "WSL_DISTRO_NAME" in os.environ or "WSL_INTEROP" in os.environ: return True
