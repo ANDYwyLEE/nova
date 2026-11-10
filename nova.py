@@ -6,12 +6,42 @@ import sys
 import signal
 import logging
 
-from PySide6.QtCore import Qt, QMetaObject, QTimer
-from PySide6.QtGui import QGuiApplication, QSurfaceFormat
+from PySide6.QtCore import Qt, QMetaObject, QTimer, QSize
+from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QIcon
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
-from util import parse_time, mask_url, NATIVE_APP_ID, window_platform, utf8_stdio
+from util import parse_time, mask_url, NATIVE_APP_ID, window_platform, utf8_stdio, MAC
 from novaargs import build_parser
+
+ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
+ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)     # icons/nova-N.png, rendered by tools/gen_icon.py
+WINDOWS_APP_ID = "ANDYwyLEE.Nova"
+
+
+def app_icon():
+    """Nova's icon for the task bar, the window switcher and the Dock. Each size is a file of its own, as
+    the small ones are simpler drawings. The Dock shows the picture as it is, so macOS gets the one
+    with the margin its own icons have."""
+    icon = QIcon()
+    if MAC:
+        icon.addFile(os.path.join(ICONS, "nova-mac.png"))
+    else:
+        for size in ICON_SIZES:
+            icon.addFile(os.path.join(ICONS, f"nova-{size}.png"), QSize(size, size))
+    return icon
+
+
+def own_taskbar_button():
+    """Windows shows python.exe's icon on the task bar for every window of a process that has not named
+    itself: with an application id of its own the button gets the window's icon, and Nova's windows
+    are grouped apart from other Python programs."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
+    except Exception as e:
+        logging.debug(f"[Nova] no application id for the task bar: {e}")
 
 
 def expand_camera(argv):
@@ -116,9 +146,11 @@ if __name__ == "__main__":
 
     # Qt must not see Nova's options: on X11 it would consume --geometry (as an X geometry string,
     # overriding the window size), -display, -title, ...  Use QT_* environment variables instead.
+    own_taskbar_button()
     app = QGuiApplication([sys.argv[0]])
     app.setOrganizationName("nova")        # settings: ~/.config/nova/nova.conf (cams.window_settings)
     app.setApplicationName("nova")
+    app.setWindowIcon(app_icon())
     app.setDesktopFileName("nova")      # the app id Wayland compositors see (else the python binary's name)
 
     # PyOpenGL must use the context API of the window Qt made, or every GL call fails ("no valid

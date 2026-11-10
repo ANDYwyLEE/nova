@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Nova</title>
+  <!-- nova.svg for 16 and 24 px: one window behind the camera. 32 units are one pixel at 16 px and
+       every straight edge lies on that grid: the window's line is one pixel wide there, the camera's two. -->
+  <rect width="512" height="512" rx="114" fill="#15171C"/>
+  <g fill="none" stroke-linejoin="round">
+    <rect x="48" y="80" width="256" height="192" rx="40" stroke="#1FA83A" stroke-width="32"/>
+    <rect x="160" y="256" width="192" height="160" rx="40" fill="#15171C" stroke="#15171C" stroke-width="128"/>
+    <rect x="160" y="256" width="192" height="160" rx="40" stroke="#F0851A" stroke-width="64"/>
+    <polygon points="424,304 472,264 472,408 424,368" fill="#F0851A" stroke="#F0851A" stroke-width="16"/>
+  </g>
+</svg>

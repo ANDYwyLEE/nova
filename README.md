@@ -1,3 +1,5 @@
+<img src="icons/nova.svg" alt="Nova's icon: two green window outlines behind an orange camera" width="96" align="right">
+
 # Nova
 
 **One window per camera.** Nova is a lightweight, GPU-accelerated viewer for RTSP/ONVIF cameras that also records, live-streams and plays audio. It is built for people who keep IP cameras open on an ordinary desktop all day, next to their work: every camera is an independent, frameless, always-sharp window you can drag, snap to a grid, zoom into the part that matters, record and push to YouTube with one keystroke, and a layout brings the whole wall back tomorrow.
