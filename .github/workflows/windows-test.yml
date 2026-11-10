@@ -1,10 +1,10 @@
 name: Windows test
 
-# Branch wintest only: Nova on Windows the two ways docs/install.md describes (Option A python.org CPython +
-# PyPI wheels, Option B MSYS2 UCRT64), each with pytest and an end-to-end run of real windows from the launcher.
+# By hand only (gh workflow run windows-test.yml, or Actions > Windows test > Run workflow): Nova on Windows the
+# two ways docs/install.md describes (Option A python.org CPython + PyPI wheels, Option B MSYS2 UCRT64), each
+# with pytest and an end-to-end run from the launcher. The runners have no GPU, no GPU driver and no audio
+# device: hardware decoding falls back to software, and MSYS2's Qt cannot open a window there (no software GL).
 on:
-  push:
-    branches: [wintest]
   workflow_dispatch:
 
 env:
