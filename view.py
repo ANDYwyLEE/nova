@@ -79,6 +79,8 @@ class Nova(QOpenGLWindow):
         app = QGuiApplication.instance()
         app.applicationStateChanged.connect(self._on_app_state)
         app.focusWindowChanged.connect(self._on_focus_window)
+        self._was_fullscreen = False
+        self.windowStateChanged.connect(self._on_window_state)
 
         self.osd_bg  = QImage()
         self.osd_bt  = QImage()
@@ -625,6 +627,14 @@ class Nova(QOpenGLWindow):
         self._set_focus(state == Qt.ApplicationActive)
     def _on_focus_window(self, win):
         self._set_focus(win is self)
+
+    def _on_window_state(self, state):
+        """macOS: fullscreen is a Space of its own, and the window that comes back from it is not the key window:
+        its process is still in front, but keys reach nothing until a click on the window. So the window asks
+        for the keyboard again when it has left fullscreen."""
+        was, self._was_fullscreen = self._was_fullscreen, state == Qt.WindowFullScreen
+        if MAC and was and not self._was_fullscreen and self.is_running:
+            QTimer.singleShot(0, self.requestActivate)
 
     def _set_focus(self, on):
         if not self.is_running: return

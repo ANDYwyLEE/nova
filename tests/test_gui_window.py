@@ -436,6 +436,32 @@ def key(w, k, mods=Qt.NoModifier, repeat=False):
     w.keyPressEvent(QKeyEvent(QEvent.KeyPress, k, mods, "", repeat))
 
 
+def test_a_window_back_from_fullscreen_asks_for_the_keyboard_on_macos(make, app, monkeypatch):
+    """macOS fullscreen is a Space of its own. Back from it the window's process is still in front, but the
+    window is not the key window: on an iMac, F then Esc (or F again) left every following key without effect
+    until a click on the window. Leaving fullscreen now asks for the keyboard; elsewhere nothing changes."""
+    import view
+    w, core = make("200,100,320,180", None, grid=20)
+    asked = []
+    monkeypatch.setattr(w, "requestActivate", lambda: asked.append(1))
+    monkeypatch.setattr(view, "MAC", True)
+    w._on_window_state(Qt.WindowNoState)                 # a normal window staying normal: nothing
+    w._on_window_state(Qt.WindowFullScreen)
+    app.processEvents()
+    assert asked == []
+    w._on_window_state(Qt.WindowNoState)                 # back from fullscreen
+    app.processEvents()
+    assert asked == [1]
+    w._on_window_state(Qt.WindowMaximized)
+    app.processEvents()
+    assert asked == [1]
+    monkeypatch.setattr(view, "MAC", False)
+    w._on_window_state(Qt.WindowFullScreen)
+    w._on_window_state(Qt.WindowNoState)
+    app.processEvents()
+    assert asked == [1]
+
+
 def test_held_keys_do_not_repeat_toggles_and_one_shot_actions(make, app):
     w, core = make("200,100,320,180", None, grid=20)
     core.connected(1920, 1080)

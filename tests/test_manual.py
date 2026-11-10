@@ -41,7 +41,8 @@ def test_the_overlay_names_the_command_key_on_a_mac():
     mac = helper.control_descriptions(mac=True)
     assert "Cmd + Arrow" in mac and "Cmd + Mouse Drag" in mac and not any(k.startswith("Ctrl +") for k in mac)
     assert "(Cmd: enlarge the window" in mac["I / + / ="] and "(Cmd: shrink the window" in mac["O / - / _"]
-    assert "Ctrl-C" in mac and len(mac) == len(helper.CONTROL_DESCRIPTIONS)
+    assert mac["Cmd-C"] == "Exit the program (Ctrl-C in the terminal)." and len(mac) == len(helper.CONTROL_DESCRIPTIONS)
+    assert not any("Ctrl" in k for k in mac) and [v for v in mac.values() if "Ctrl" in v] == [mac["Cmd-C"]]
     assert helper.control_descriptions(mac=False) is helper.CONTROL_DESCRIPTIONS
     text = helper.generate_help_text({"-x": "y"}, mac)
     assert "Cmd + Arrow" in text and "Ctrl + Arrow" not in text

@@ -40,12 +40,17 @@ CONTROL_DESCRIPTIONS = {
 
 
 def control_descriptions(mac=MAC):
-    """CONTROL_DESCRIPTIONS as this machine's overlay shows them. On a Mac the key is Command: Qt reports ⌘ as its
-    Control modifier, macOS keeps Control+Arrow for Mission Control and Spaces, and Control+click is a right click.
-    Ctrl-C stays as it is: it is the terminal's, and in the window either key works with C."""
+    """CONTROL_DESCRIPTIONS as this machine's overlay shows them. On a Mac every Ctrl is the Command key: Qt
+    reports ⌘ as its Control modifier, macOS keeps Control+Arrow for Mission Control and Spaces, and Control+click
+    is a right click. Only the terminal's own Ctrl-C keeps its name."""
     if not mac:
         return CONTROL_DESCRIPTIONS
-    return {k.replace("Ctrl +", "Cmd +"): v.replace("(Ctrl:", "(Cmd:") for k, v in CONTROL_DESCRIPTIONS.items()}
+    out = {}
+    for k, v in CONTROL_DESCRIPTIONS.items():
+        if k == "Ctrl-C":
+            k, v = "Cmd-C", "Exit the program (Ctrl-C in the terminal)."
+        out[k.replace("Ctrl", "Cmd")] = v.replace("Ctrl:", "Cmd:")
+    return out
 
 
 def generate_help_text(arg_descriptions: Dict[str, str],

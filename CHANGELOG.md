@@ -15,11 +15,12 @@ Measured there with 1080p H.264 cameras, as the share of one core:
 
 ### Fixed
 - **`nova doctor` on macOS does not list TLS as missing.** The macOS wheel has neither GnuTLS nor OpenSSL: FFmpeg uses the system's TLS there, which its configure line does not name, and the report said "not in this build: … gnutls openssl", as if https and rtmps were out of reach. doctor now asks FFmpeg itself and says "TLS from the system (SecureTransport)".
-
-- **The help overlay names the Command key on a Mac.** It said `Ctrl + Arrow` (grow the window on that edge), `Ctrl + Mouse Drag` and `Ctrl` with +/-, which do nothing there: macOS keeps Control+Arrow for Mission Control and Spaces, and Control+click is a right click. The key was there all along, since Qt reports ⌘ as its Control modifier; the overlay now says `Cmd`, and the manual's key table has a note.
+- **macOS: the keys still work after leaving fullscreen.** Fullscreen is a Space of its own there, and the window that came back from it was not the key window any more: F then Esc (or F again) left every following key without effect until a click on the window, though its process was still in front. The window now asks for the keyboard when it leaves fullscreen.
+- **The help overlay names the Command key on a Mac.** It said `Ctrl + Arrow` (grow the window on that edge), `Ctrl + Mouse Drag`, `Ctrl` with +/- and `Ctrl-C`. Control+Arrow does nothing there (macOS keeps it for Mission Control and Spaces) and Control+click is a right click; the key was there all along, since Qt reports ⌘ as its Control modifier. The overlay now says `Cmd` throughout, and the manual's key table has a note.
 
 ### Notes
-- Over ssh neither keys nor the mouse can be sent (the Accessibility permission) and no screenshot taken (the Screen Recording permission). At the iMac's own keyboard every key works, with ⌘ for Ctrl.
+- Keys and the mouse were first tried by hand at the iMac, then sent as real input events over ssh once the ssh session had the Accessibility permission (and Screen Recording for screenshots of the window): the arrows, ⌘/Alt/Shift with them, a held key's repeats, I and Esc, F and a double click for fullscreen, PgUp/PgDown, Home, H, S, R, the sound toggle, dragging, the wheel, ⌘+drag and the right click all do what the manual says.
+- Key codes are positions, not letters: on a French keyboard the key that types A is where Q is on a US one. Nova goes by the letter the key types.
 
 ## 2026-11-10 — Two monitors on one GPU
 
