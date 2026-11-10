@@ -81,3 +81,15 @@ def test_xmeye_cameras_need_python_dvr(tmp_path, monkeypatch):
     assert "⚠ 1 xmeye:// camera(s) but python-dvr is not installed" in out and "S3cretC" not in out
     monkeypatch.setattr(doctor, "_can_import", lambda python, name: True)
     assert "✓ python-dvr is installed for the 1 xmeye:// camera(s)" in doctor.report(config=str(p), gl=False)
+
+
+def test_opengl_pyopengl_cannot_reach(monkeypatch, tmp_path):
+    """A Windows machine without a GPU driver (a CI runner, a VM): Qt falls back to its opengl32sw.dll and
+    PyOpenGL, on the system opengl32.dll, has no context. The report said "OpenGL )" (the last line of a
+    multi-line GLError) and "✓ OpenGL comes from a GPU driver", and every --opengl window closed at start."""
+    line = ("windows: VMware, Inc. / Gallium 0.4 on llvmpipe (LLVM 3.6, 128 bits) / 3.0 Mesa 11.2.2 "
+            "(context 3.0, Qt's software opengl32sw.dll), PyOpenGL cannot use it (GLError 1282)")
+    monkeypatch.setattr(doctor, "gl_line", lambda python=None: line)
+    out = doctor.report(config=str(tmp_path / "none.ini"))
+    assert "--opengl cannot work here" in out
+    assert "OpenGL comes from a GPU driver" not in out and "rendered in software" not in out

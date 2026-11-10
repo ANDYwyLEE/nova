@@ -42,7 +42,7 @@ opts = --opengl --geometry 410,0,400,225
 [d3d]
 name = D3D11VA
 url = rtsp://127.0.0.1:8554/cam1
-opts = --opengl --accel d3d11va --geometry 0,240,400,225
+opts = --accel d3d11va --geometry 0,240,400,225
 
 [qsv]
 name = QSV
@@ -189,7 +189,17 @@ def main():
     ap.add_argument("--mediamtx", required=True)
     ap.add_argument("--ffmpeg", default="ffmpeg")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--gl", choices=("works", "fails"), required=True,
+                    help="fails: no usable OpenGL here, the --opengl camera must fail cleanly at start")
     a = ap.parse_args()
+    for s in (sys.stdout, sys.stderr):
+        s.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        sys.exit("CI only: this rewrites cameras.ini, logs/ and videos/ of the checkout")
+    for d in ("logs", "videos"):
+        shutil.rmtree(os.path.join(ROOT, d), ignore_errors=True)
+    gl_ok = a.gl == "works"
+    live = CAMS if gl_ok else [c for c in CAMS if c != "gl"]
     LAUNCHER = shlex.split(a.launcher)
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
@@ -224,8 +234,12 @@ def main():
         rc, txt, _ = launcher("list")
         check("nova list", rc == 0 and all(c in txt for c in CAMS))
         rc, txt, dt = launcher("start")
-        check("nova start", rc == 0 and "5 running" in txt, f"{dt:.1f}s")
-        ok, txt = wait_video(CAMS)
+        if gl_ok:
+            check("nova start: 5 running", rc == 0 and "5 running" in txt, f"{dt:.1f}s")
+        else:
+            check("nova start: 4 running, the --opengl camera reported as failed",
+                  rc == 1 and "4 running, 1 failed" in txt and "gl: exited with code 1" in txt, f"{dt:.1f}s")
+        ok, txt = wait_video(live)
         check("status: every camera reports video 640x360 over its control channel", ok)
         b = status_blocks(txt)
         check("status: rec camera reports recording", "record" in b.get("rec", ""), b.get("rec", "").strip())
@@ -233,10 +247,10 @@ def main():
         time.sleep(3)
         screenshot(os.path.join(out, "wall-1.png"))
 
-        rc, txt, dt = launcher("restart", "gl")
-        check("nova restart gl", rc == 0, f"{dt:.1f}s")
-        ok, _ = wait_video(["gl"])
-        check("gl back after restart", ok)
+        rc, txt, dt = launcher("restart", "qp" if not gl_ok else "gl")
+        check(f"nova restart {'gl' if gl_ok else 'qp'}", rc == 0, f"{dt:.1f}s")
+        ok, _ = wait_video(["gl" if gl_ok else "qp"])
+        check("back after restart", ok)
 
         end = time.time() + 40
         while time.time() < end and len(recordings()) < 2:
@@ -252,9 +266,13 @@ def main():
 
         for cid in CAMS:
             log = os.path.join(ROOT, "logs", f"{cid}.log")
-            tb = grep(log, "Traceback")
-            check(f"{cid}.log: no Traceback", not tb, "; ".join(tb))
-            check(f"{cid}.log: exited gracefully", grep(log, "exited gracefully"))
+            check(f"{cid}.log: no logging errors (encoding)", not grep(log, "--- Logging error ---"))
+            if cid == "gl" and not gl_ok:
+                check("gl.log: says OpenGL could not be initialised", grep(log, "OpenGL could not be initialised"))
+            else:
+                tb = grep(log, "Traceback")
+                check(f"{cid}.log: no Traceback", not tb, "; ".join(tb))
+                check(f"{cid}.log: exited gracefully", grep(log, "exited gracefully"))
             print(f"--- {cid}.log highlights", *grep(log, "decoder", "accel", "hwaccel", "opengl", "GL_", "renderer",
                                                      "encoder", "critical", "error", "saved", limit=25),
                   sep="\n  ", flush=True)

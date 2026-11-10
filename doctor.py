@@ -141,18 +141,37 @@ def gl_probe():
     surf.create()
     if not ctx.makeCurrent(surf):
         return f"{plat}: the context cannot be made current"
+    got = f"{ctx.format().majorVersion()}.{ctx.format().minorVersion()}" + (" OpenGL ES" if ctx.isOpenGLES() else "")
     try:
         try:
             from OpenGL.GL import glGetString, GL_VENDOR, GL_RENDERER, GL_VERSION
             vendor, renderer, version = ((glGetString(x) or b"?").decode(errors="replace")
                                          for x in (GL_VENDOR, GL_RENDERER, GL_VERSION))
         except Exception as e:
-            return f"{plat}: context {ctx.format().majorVersion()}.{ctx.format().minorVersion()}, PyOpenGL failed: {e}"
-        got = f"{ctx.format().majorVersion()}.{ctx.format().minorVersion()}"
-        es = " OpenGL ES" if ctx.isOpenGLES() else ""
-        return f"{plat}: {vendor} / {renderer} / {version} (context {got}{es})"
+            # Windows without a GPU driver: Qt falls back to its own opengl32sw.dll (Mesa), while
+            # PyOpenGL calls the system opengl32.dll, which has no context current; every GL call of a
+            # Nova window then fails. Qt can still name what it got. One line: the report shows the last.
+            f = ctx.functions()
+            qt = " / ".join(str(f.glGetString(x) or "?") for x in (0x1F00, 0x1F01, 0x1F02))
+            why = type(e).__name__ + (f" {e.err}" if getattr(e, "err", None) is not None else "")
+            return f"{plat}: {qt} (context {got}{_qt_software_gl()}), PyOpenGL cannot use it ({why})"
+        return f"{plat}: {vendor} / {renderer} / {version} (context {got})"
     finally:
         ctx.doneCurrent()
+
+
+def _qt_software_gl():
+    """', Qt's software opengl32sw.dll' when this Windows process loaded it, else ''."""
+    if not WINDOWS:
+        return ""
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetModuleHandleW.restype = ctypes.c_void_p
+        k32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        return ", Qt's software opengl32sw.dll" if k32.GetModuleHandleW("opengl32sw.dll") else ""
+    except (OSError, AttributeError):
+        return ""
 
 
 def gl_line(python=None):
@@ -382,7 +401,11 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         else:
             out.append(("✓", f"NVIDIA driver {d} is recent enough for NVENC"))
     # OpenGL
-    if re.search(r"llvmpipe|softpipe|swrast|Software Rasterizer", gl, re.I):
+    if "PyOpenGL cannot use it" in gl:
+        out.append(("⚠", "--opengl cannot work here: Nova draws through PyOpenGL, which cannot reach this OpenGL "
+                         "(on Windows: no GPU driver, Qt fell back to its software opengl32sw.dll), and an --opengl "
+                         "window closes at start; leave --opengl out of opts, or install the GPU driver"))
+    elif re.search(r"llvmpipe|softpipe|swrast|Software Rasterizer", gl, re.I):
         out.append(("⚠", "OpenGL is rendered in software (no GPU driver in use): --opengl will cost CPU; check the driver"))
     elif gl.startswith("n/a") or "no OpenGL" in gl:
         out.append(("ℹ", "no OpenGL context here: Nova falls back to QPainter (--opengl has no effect)"))

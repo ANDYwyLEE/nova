@@ -160,9 +160,9 @@ def test_one_process_per_camera_folder(app, tmp_path, monkeypatch):
 
 
 HOLD = textwrap.dedent("""
-    import sys, time, recorder
+    import os, sys, time, recorder
     lock = recorder.DirLock(sys.argv[1])
-    print("held" if lock.acquire() else "busy", flush=True)
+    print(("held" if lock.acquire() else "busy"), os.getpid(), flush=True)
     time.sleep(60)
 """)
 
@@ -172,9 +172,12 @@ def test_the_folder_lock_works_across_processes(app, tmp_path):
     env = dict(os.environ, PYTHONPATH=ROOT)
     p = subprocess.Popen([sys.executable, "-c", HOLD, folder], cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True)
     try:
-        assert p.stdout.readline().strip() == "held"
+        # the holder's own pid, not p.pid: in a Windows venv python.exe is a launcher that runs the
+        # interpreter as its child
+        state, pid = p.stdout.readline().split()
+        assert state == "held"
         mine = recorder.DirLock(folder)
-        assert not mine.acquire() and mine.holder() == str(p.pid)
+        assert not mine.acquire() and mine.holder() == pid
     finally:
         p.kill()
         p.wait()
