@@ -93,3 +93,11 @@ def test_opengl_pyopengl_cannot_reach(monkeypatch, tmp_path):
     out = doctor.report(config=str(tmp_path / "none.ini"))
     assert "--opengl cannot work here" in out
     assert "OpenGL comes from a GPU driver" not in out and "rendered in software" not in out
+
+
+def test_no_opengl_context_says_windows_need_one(monkeypatch, tmp_path):
+    """Both renderers are a QOpenGLWindow: without a context no window opens (MSYS2's Qt on a Windows machine
+    without a GPU driver crashed at the first window), so "falls back to QPainter" was wrong."""
+    monkeypatch.setattr(doctor, "gl_line", lambda python=None: "windows: no OpenGL context at all")
+    out = doctor.report(config=str(tmp_path / "none.ini"))
+    assert "Nova windows need one with or without --opengl" in out and "falls back to QPainter" not in out

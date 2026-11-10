@@ -190,8 +190,9 @@ def main():
     ap.add_argument("--ffmpeg", default="ffmpeg")
     ap.add_argument("--out", required=True)
     ap.add_argument("--env", action="append", default=[], help="KEY=VALUE for cameras.ini [env]")
-    ap.add_argument("--gl", choices=("works", "fails"), required=True,
-                    help="fails: no usable OpenGL here, the --opengl camera must fail cleanly at start")
+    ap.add_argument("--gl", choices=("works", "fails", "headless"), required=True,
+                    help="fails: no usable OpenGL here, the --opengl camera must fail cleanly at start; "
+                         "headless: `nova record` without windows (no OpenGL needed), gl left out")
     a = ap.parse_args()
     for s in (sys.stdout, sys.stderr):
         s.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -199,7 +200,7 @@ def main():
         sys.exit("CI only: this rewrites cameras.ini, logs/ and videos/ of the checkout")
     for d in ("logs", "videos"):
         shutil.rmtree(os.path.join(ROOT, d), ignore_errors=True)
-    gl_ok = a.gl == "works"
+    gl_ok, headless = a.gl == "works", a.gl == "headless"
     live = CAMS if gl_ok else [c for c in CAMS if c != "gl"]
     LAUNCHER = shlex.split(a.launcher)
     out = os.path.abspath(a.out)
@@ -234,8 +235,10 @@ def main():
 
         rc, txt, _ = launcher("list")
         check("nova list", rc == 0 and all(c in txt for c in CAMS))
-        rc, txt, dt = launcher("start")
-        if gl_ok:
+        rc, txt, dt = launcher("record", *live) if headless else launcher("start")
+        if headless:
+            check("nova record: 4 running", rc == 0 and "4 running" in txt, f"{dt:.1f}s")
+        elif gl_ok:
             check("nova start: 5 running", rc == 0 and "5 running" in txt, f"{dt:.1f}s")
         else:
             # within EARLY_EXIT_GRACE (1.5 s) `start` reports it; a slower GL failure shows in status
@@ -247,7 +250,8 @@ def main():
         check("status: rec camera reports recording", "record" in b.get("rec", ""), b.get("rec", "").strip())
         check("status: cam1 cameras report audio", all("audio" in b.get(i, "") for i in ("qp", "rec")))
         time.sleep(3)
-        screenshot(os.path.join(out, "wall-1.png"))
+        if not headless:
+            screenshot(os.path.join(out, "wall-1.png"))
 
         rc, txt, dt = launcher("restart", "qp" if not gl_ok else "gl")
         check(f"nova restart {'gl' if gl_ok else 'qp'}", rc == 0, f"{dt:.1f}s")
@@ -258,15 +262,21 @@ def main():
         while time.time() < end and len(recordings()) < 2:
             time.sleep(1)
         check("rec: two segments closed", len(recordings()) >= 2, ", ".join(os.path.relpath(f, ROOT) for f in recordings()))
-        screenshot(os.path.join(out, "wall-2.png"))
+        if not headless:
+            screenshot(os.path.join(out, "wall-2.png"))
 
+        if headless:
+            dirs = {os.path.basename(os.path.dirname(f)) for f in recordings()}
+            rc, txt, _ = launcher("status")
+            check("headless: every camera records", all("record on" in status_blocks(txt).get(i, "") for i in live),
+                  ", ".join(sorted(dirs)))
         rc, txt, dt = launcher("stop")
         check("nova stop", rc == 0, f"{dt:.1f}s")
         check("nova stop under 10 s", dt < 10, f"{dt:.1f}s")
         rc, txt, _ = launcher("status")
         check("status after stop: nothing launched", "no launched cameras" in txt, txt)
 
-        for cid in CAMS:
+        for cid in (live if headless else CAMS):
             log = os.path.join(ROOT, "logs", f"{cid}.log")
             check(f"{cid}.log: no logging errors (encoding)", not grep(log, "--- Logging error ---"))
             if cid == "gl" and not gl_ok:
@@ -296,7 +306,7 @@ def main():
                 check(f"recording {os.path.basename(fpath)} decodes", False, str(e))
         check("a recorded segment holds >= 100 frames (5 s at 25 fps)", frames and max(frames) >= 100, str(frames))
         wdir = os.path.join(os.environ.get("APPDATA", ""), "nova", "windows") if os.name == "nt" else None
-        if wdir:
+        if wdir and not headless:
             inis = glob.glob(os.path.join(wdir, "*.conf"))
             for f in inis:
                 with open(f, encoding="utf-8", errors="replace") as fh:

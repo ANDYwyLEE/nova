@@ -408,7 +408,9 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
     elif re.search(r"llvmpipe|softpipe|swrast|Software Rasterizer", gl, re.I):
         out.append(("⚠", "OpenGL is rendered in software (no GPU driver in use): --opengl will cost CPU; check the driver"))
     elif gl.startswith("n/a") or "no OpenGL" in gl:
-        out.append(("ℹ", "no OpenGL context here: Nova falls back to QPainter (--opengl has no effect)"))
+        # both renderers draw into a QOpenGLWindow (QPainter on OpenGL without --opengl)
+        out.append(("ℹ", "no OpenGL context here: Nova windows need one with or without --opengl; "
+                         "`nova record` (no window) still works"))
     else:
         out.append(("✓", "OpenGL comes from a GPU driver"))
     # desktop

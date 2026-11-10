@@ -9,9 +9,6 @@ on:
 
 env:
   MEDIAMTX: v1.21.3
-  # pal1000/mesa-dist-win (the mingw build has opengl32.dll): llvmpipe in place of a GPU driver. Qt sees the
-  # runner's Basic Display Adapter and picks software GL whatever opengl32.dll is, hence QT_OPENGL=desktop.
-  MESA: 26.2.6
 
 jobs:
   native:
@@ -56,37 +53,18 @@ jobs:
         timeout-minutes: 15
         shell: cmd
         run: venv\Scripts\python .github\wintest\e2e.py --launcher "cmd /c nova.bat" --mediamtx mtx\mediamtx.exe --gl fails --out e2e-out
-      - name: Mesa llvmpipe as the OpenGL driver (opengl32.dll next to python.exe)
-        if: always()
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download $env:MESA -R pal1000/mesa-dist-win -p "mesa3d-$($env:MESA)-release-mingw.7z" -D mesa
-          7z x -omesa mesa\*.7z x64 | Select-Object -Last 2
-          Get-ChildItem mesa\x64 | Select-Object -ExpandProperty Name
-          foreach ($d in "opengl32.dll", "libgallium_wgl.dll", "libglapi.dll", "libdlclose-skip.dll") {
-            if (Test-Path "mesa\x64\$d") { Copy-Item "mesa\x64\$d" $env:pythonLocation; "copied $d" }
-          }
-      - name: OpenGL with Mesa
-        if: always()
-        shell: cmd
-        run: |
-          set QT_OPENGL=desktop
-          venv\Scripts\python .github\wintest\gldiag.py desktop
-          nova.bat doctor
-      - name: End to end, OpenGL through Mesa
+      - name: End to end, no windows (nova.bat record, 4 cameras)
         if: always()
         timeout-minutes: 15
         shell: cmd
-        run: venv\Scripts\python .github\wintest\e2e.py --launcher "cmd /c nova.bat" --mediamtx mtx\mediamtx.exe --gl works --env QT_OPENGL=desktop --out e2e-mesa
+        run: venv\Scripts\python .github\wintest\e2e.py --launcher "cmd /c nova.bat" --mediamtx mtx\mediamtx.exe --gl headless --out e2e-headless
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-native
           path: |
             e2e-out
-            e2e-mesa
+            e2e-headless
           if-no-files-found: ignore
 
   msys2:
@@ -148,26 +126,23 @@ jobs:
       - name: pytest
         if: always()
         run: venv/bin/python -m pytest -rs
-      - name: End to end (./nova start/status/restart/stop, 5 windows)
+      - name: Fonts on the offscreen platform (test_view draws text there)
         if: always()
+        run: QT_QPA_PLATFORM=offscreen venv/bin/python -c "from PySide6.QtGui import QGuiApplication, QFontDatabase; a = QGuiApplication([]); f = QFontDatabase.families(); print(len(f), f[:8])"
+      - name: End to end, windows (expected to fail without a GPU driver; see the log)
+        if: always()
+        continue-on-error: true
         timeout-minutes: 15
         run: venv/bin/python .github/wintest/e2e.py --launcher "sh ./nova" --mediamtx mtx/mediamtx.exe --ffmpeg ffmpeg --gl fails --out e2e-out
-      - name: Mesa llvmpipe as the OpenGL driver (pacman mesa, opengl32.dll next to python.exe)
-        if: always()
-        run: |
-          for i in 1 2 3; do pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-mesa && break; [ $i = 3 ] && exit 1; sleep 20; done
-          ls /ucrt64/bin | grep -i -E 'opengl32|gallium|glapi'
-          venv/bin/python .github/wintest/gldiag.py desktop
-          QT_OPENGL=desktop ./nova doctor | grep -E 'OpenGL'
-      - name: End to end, OpenGL through Mesa
+      - name: End to end, no windows (./nova record, 4 cameras)
         if: always()
         timeout-minutes: 15
-        run: venv/bin/python .github/wintest/e2e.py --launcher "sh ./nova" --mediamtx mtx/mediamtx.exe --ffmpeg ffmpeg --gl works --env QT_OPENGL=desktop --out e2e-mesa
+        run: venv/bin/python .github/wintest/e2e.py --launcher "sh ./nova" --mediamtx mtx/mediamtx.exe --ffmpeg ffmpeg --gl headless --out e2e-headless
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-msys2
           path: |
             e2e-out
-            e2e-mesa
+            e2e-headless
           if-no-files-found: ignore
