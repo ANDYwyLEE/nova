@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-10 — Three pinned packages with security advisories
+
+GitHub listed 38 alerts for the repository: 19 advisories, each counted once for `requirements.txt` and once for `requirements-dev.txt`, which includes it. All are closed by newer pins; after `git pull`, run `pip install -r requirements.txt` again.
+
+- **certifi 2026.7.22 → 2026.10.23** (critical). The older bundle trusts the root `emSign ECC Root CA - G3`, under which intermediate CA keys were compromised, so someone holding such a key and sitting between a program and a server can pass as any HTTPS site. In Nova only `requests` uses the bundle, and Nova's camera requests are plain HTTP or, for Reolink's self-signed certificate, not verified; live streams go through FFmpeg, which does not use certifi. What did rely on it is `pip` itself, with its own copy: upgrade it too (`pip install -U pip`, 26.3 carries the new bundle).
+- **filelock 4.1.0 → 4.2.10** (one high, the rest medium and low). The advisories need another local user who can create or rename files in the directory of the lock, and most concern the lock kinds Nova does not use (`ReadWriteLock` on SQLite, the soft locks). Nova takes one plain `FileLock` while probing encoders, in a directory only its user can enter (`$XDG_RUNTIME_DIR`, else a `0700` folder that is checked, the per-user temp folder on Windows). Checked with the new version: the lock still holds between processes, and three recordings started at once each found `h264_nvenc`.
+- **setuptools 84.0.0 → 84.2.1** (low, installing a crafted wheel on Windows). Nova does not use it at run time.
+
 ## 2026-11-10 — An icon
 
 Nova's windows had the toolkit's default icon on the task bar and Python's rocket in the macOS Dock. The icon is Nova's own picture: camera windows laid over each other, each its own size, two behind in the green of a window without the focus and the focused one in front in orange, which is the camera with its lens. The colours are the border colours of `-b`, brightened for the dark tile they stand on, so the icon looks the same on a light and on a dark panel.
