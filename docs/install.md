@@ -119,6 +119,8 @@ What VideoToolbox accelerates is decided by the Mac, not by the wheel: H.264 on 
 
 `--opengl` requests the 3.3 core-profile context macOS requires; without it the QPainter renderer is used.
 
+Every camera window is a process of its own, so the Dock shows one Nova icon per open window; their name there is Python, the program that runs them.
+
 ## Updating
 
 ```bash

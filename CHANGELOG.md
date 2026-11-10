@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-10 — An icon
+
+Nova's windows had the toolkit's default icon on the task bar and Python's rocket in the macOS Dock. The icon is Nova's own picture: camera windows laid over each other, each its own size, two behind in the green of a window without the focus and the focused one in front in orange, which is the camera with its lens. The colours are the border colours of `-b`, brightened for the dark tile they stand on, so the icon looks the same on a light and on a dark panel.
+
+- **Three drawings** in `icons/`, since fewer pixels need a simpler picture with heavier lines: `nova.svg` from 64 px up, `nova-medium.svg` for 32 and 48 px, `nova-small.svg` for 16 and 24 px (one window behind the camera, every edge on the 16 px grid). `tools/gen_icon.py` renders the PNG files from them, and its `--check`, which the tests run, tells when a file is no longer what its drawing renders to.
+- **Linux**: every window carries the sizes from 16 to 256 px (`_NET_WM_ICON`), seen on Cinnamon's panel. Native Wayland windows (`QT_QPA_PLATFORM = wayland`) depend on the compositor accepting an icon from the application; that has not been checked in a login.
+- **macOS**: the Dock picture, drawn with the margin Dock icons have. Checked on the Intel iMac by reading back the picture the application holds for the Dock: Python's rocket before, Nova's tile after.
+- **Windows**: the process also names itself with an application id, without which the task bar keeps `python.exe`'s icon and groups Nova with other Python programs. Not yet seen on a real Windows PC.
+
 ## 2026-11-10 — macOS on an Intel iMac
 
 Tested over ssh on an iMac (2019: Core i3-8100, Radeon Pro 555X, 4K Retina display, macOS 15.7) with a fresh install by the macOS guide (MacPorts Python 3.12 and PortAudio, the `av` 19.0.2 wheel): the test suite passes, `nova doctor` reports the machine, six windows from `nova start` open at their saved places (as Nova and the window server both have them), 40 moves and resizes through the control channel land where asked, a saved layout comes back, `nova record` writes files with `h264_videotoolbox` and AAC that decode, and both renderers play with hardware and with software decoding.
