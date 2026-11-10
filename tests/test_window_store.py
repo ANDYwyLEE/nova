@@ -33,8 +33,11 @@ def test_settings_dir_is_qts_user_settings_folder():
     assert WindowStore().dir == os.path.join(d, "windows")
 
 
+# Qt is loaded before the clock starts: thirteen interpreters loading it at the same moment take a second
+# each on a small CI runner (macOS, 3 cores), which says nothing about the writers waiting for each other.
 WRITER = """
 import sys, time
+from PySide6.QtCore import QSettings
 from util import WindowStore
 t0 = time.monotonic()
 WindowStore(sys.argv[2]).write(sys.argv[1], "1,2,3,4", "0,0,1,1")
