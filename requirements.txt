@@ -1,4 +1,4 @@
-av==19.0.1
+av>=19.0.2
 certifi==2026.7.22
 charset-normalizer==3.5.2
 filelock==4.1.0

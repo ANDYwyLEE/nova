@@ -1,6 +1,6 @@
 # Building FFmpeg yourself (only for SRT, VAAPI or CUDA filters)
 
-The `av` wheel from PyPI bundles an FFmpeg (9.0.2 in av 19.0.1) with NVENC/NVDEC, Quick Sync (libvpl), AMF, x264/x265/SVT-AV1, libopus and TLS. Build your own only if you need something it lacks:
+The `av` wheel from PyPI bundles an FFmpeg (9.0.2 in av 19.0.1 and 19.0.2) with NVENC/NVDEC, Quick Sync (libvpl), AMF, x264/x265/SVT-AV1, libopus and TLS. Build your own only if you need something it lacks:
 
 - the **SRT** protocol (`srt://` input or `-t srt://…` output)
 - **VAAPI** decoding on Intel/AMD Linux machines without an NVIDIA GPU
@@ -23,9 +23,9 @@ Output protocol options (SRT `latency`, `passphrase`, …) still go in the URL q
 ## Lessons learned
 
 - A source-built `av` links against the **system** libx264/libx265/libsrt at build time. A later OS upgrade (libx264.so.164 → .165) silently breaks both `~/deps/bin/ffmpeg` and the `av` module. Rebuild after distro upgrades, or link those libraries statically.
-- Pin `av` in `requirements.txt`; a blanket `pip install -U` replaces the source build with the wheel.
+- `pip install -r requirements.txt` keeps a source build of 19.0.2 or newer (it asks for `av>=19.0.2`), but `pip install -U av` or a blanket `pip install -U` replaces it with the newest wheel. For a new PyAV release, run the `--no-binary av` command below again.
 - Always verify with `ffmpeg -hwaccels`, `ffmpeg -decoders | grep -E "cuvid|vaapi|qsv"` and `ffmpeg -protocols | grep srt` before building `av`.
-- PyAV's own installation page names FFmpeg 8.x for source builds; av 19.0.1 builds and runs against 9.0.2 as well (the version its wheel bundles), checked below.
+- PyAV's own installation page names FFmpeg 8.x for source builds; av 19.0.1 and 19.0.2 build and run against 9.0.2 as well (the version their wheels bundle): 19.0.1 checked below, 19.0.2 against MSYS2's FFmpeg 9.0.2.
 
 ## Linux (Ubuntu 26.04): NVIDIA + SRT + VAAPI
 
@@ -55,7 +55,7 @@ ffmpeg -hide_banner -decoders | grep -E "cuvid|vaapi"; ffmpeg -protocols | grep 
 
 # av against it (pip fetches Cython and builds the extension; a few minutes)
 cd ~/nova && . venv/bin/activate
-PKG_CONFIG_PATH=$HOME/deps/lib/pkgconfig pip install --no-binary av av==19.0.1 --no-cache-dir
+PKG_CONFIG_PATH=$HOME/deps/lib/pkgconfig pip install --no-binary av av --no-cache-dir           # the newest release
 LD_LIBRARY_PATH=$HOME/deps/lib python -c "import av; print(av.library_versions)"
 ```
 

@@ -138,7 +138,7 @@ class AVNoiseFilter(logging.Filter):
     """AV_NOISE applied to PyAV's libav.* records.  A handler filter: a filter on the "libav" logger
     never sees the records of its children (libav.h264, ...).  PyAV's own "Some options were not
     used" warning is kept at DEBUG when every unused option is one Nova gives the output protocol on
-    purpose (avwriter.RTMP_PROTOCOL_OPTIONS): a stock PyAV cannot pass them on, a patched one does."""
+    purpose (avwriter.RTMP_PROTOCOL_OPTIONS): PyAV before 19.0.2 cannot pass them on."""
     def filter(self, record):
         if record.name == "av.container.output":
             msg = record.getMessage()

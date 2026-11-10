@@ -370,6 +370,20 @@ def log_lines(limit=5):
 
 
 # ------------------------------------------------------------------ the checks
+def av_minimum():
+    """The oldest PyAV requirements.txt accepts (`av>=X`), or None."""
+    try:
+        m = re.search(r"^av\s*>=\s*([\w.]+)", open(os.path.join(HERE, "requirements.txt"), encoding="utf-8").read(), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def _release(v):
+    """'19.0.2' -> (19, 0, 2); pre-release and local suffixes are ignored."""
+    return tuple(int(x) for x in re.findall(r"\d+", v.split("+")[0])[:3])
+
+
 def _can_import(python, name):
     """Can the camera interpreter import `name`?"""
     try:
@@ -381,14 +395,15 @@ def _can_import(python, name):
 def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
     """[(mark, text)]: ✓ fine, ⚠ worth fixing, ℹ good to know."""
     out = []
-    # PyAV version against requirements.txt
+    # PyAV against the oldest release requirements.txt accepts (newer ones are welcome)
     try:
         import av
-        pin = re.search(r"^av==(\S+)", open(os.path.join(HERE, "requirements.txt"), encoding="utf-8").read(), re.M)
-        if pin and pin.group(1) != av.__version__:
-            out.append(("⚠", f"PyAV {av.__version__} differs from the pinned {pin.group(1)} (pip install -r requirements.txt)"))
-        else:
-            out.append(("✓", f"PyAV {av.__version__} is the pinned version"))
+        need = av_minimum()
+        if need and _release(av.__version__) < _release(need):
+            out.append(("⚠", f"PyAV {av.__version__} is older than {need}, the oldest Nova supports: RTMP streams cannot hand "
+                             f"rtmp_flush_interval to the protocol (pip install -r requirements.txt)"))
+        elif need:
+            out.append(("✓", f"PyAV {av.__version__} ({need} or newer is needed)"))
     except Exception:
         pass
     # NVIDIA driver for the wheel's NVENC

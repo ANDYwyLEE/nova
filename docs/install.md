@@ -12,7 +12,7 @@ What a camera costs, measured on a 13-window wall (Ubuntu 26.04, two RTX 4090, `
 
 ## What the PyPI FFmpeg can do
 
-Checked with `av` 19.0.1 on Linux (2026-10-11). The wheel bundles its own FFmpeg (9.0.2), so nothing below depends on the distribution's ffmpeg package or on the Python version: `av` 19 ships one `cp312-abi3` wheel per platform that Python 3.12, 3.13 and 3.14 all use (there is no wheel for 3.10/3.11, so **Python 3.12 or newer** is required).
+Checked with `av` 19.0.1 on Linux (2026-10-11); the 19.0.2 wheel bundles the identical FFmpeg build (same libraries, codecs, formats and hardware devices; compared 2026-11-10). The wheel bundles its own FFmpeg (9.0.2), so nothing below depends on the distribution's ffmpeg package or on the Python version: `av` 19 ships one `cp312-abi3` wheel per platform that Python 3.12, 3.13 and 3.14 all use (there is no wheel for 3.10/3.11, so **Python 3.12 or newer** is required).
 
 | included in the wheel | not included |
 |---|---|
@@ -124,4 +124,4 @@ cd nova && git pull
 . venv/bin/activate && pip install -r requirements.txt
 ```
 
-`requirements.txt` pins versions that are known to work together. Avoid `pip install -U` without a package name: it upgrades `av` to whatever is newest, and on a machine with a source-built `av` it silently replaces that build with the wheel.
+`requirements.txt` pins versions that are known to work together, except `av`: it names the oldest PyAV Nova supports (`av>=19.0.2`, the first release that hands output options to the protocol), and newer releases are welcome. `pip install -U av` takes the newest; `nova doctor` warns only about an older one. On a machine with a source-built `av` (MSYS2, [custom FFmpeg](custom-ffmpeg.md)), `pip install -U` replaces that build with the newest wheel: build the new release from source instead.

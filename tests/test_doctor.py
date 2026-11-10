@@ -101,3 +101,15 @@ def test_no_opengl_context_says_windows_need_one(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor, "gl_line", lambda python=None: "windows: no OpenGL context at all")
     out = doctor.report(config=str(tmp_path / "none.ini"))
     assert "Nova windows need one with or without --opengl" in out and "falls back to QPainter" not in out
+
+
+def test_pyav_newer_than_the_minimum_is_fine(monkeypatch, tmp_path):
+    """requirements.txt names the oldest PyAV Nova supports (19.0.2: protocol options reach avio_open2, PyAV
+    PR #2437); a newer one is no reason to warn, an older one is."""
+    import av
+    assert doctor.av_minimum() == "19.0.2"
+    assert doctor._release("19.0.2") == (19, 0, 2) and doctor._release("20.1.0rc1") == (20, 1, 0)
+    for version, mark in (("19.0.2", "✓"), ("19.1.0", "✓"), ("20.0.0", "✓"), ("19.0.1", "⚠"), ("18.2.0", "⚠")):
+        monkeypatch.setattr(av, "__version__", version)
+        marks = [m for m, t in doctor.checks("", "", "", None, None, str(tmp_path / "none.ini")) if t.startswith(f"PyAV {version} ")]
+        assert marks == [mark], version

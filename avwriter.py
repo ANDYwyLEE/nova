@@ -286,9 +286,9 @@ def _net_timeouts(path):
     t = max(1.0, _net_timeout_us() / 1_000_000)
     return max(LIVE_OPEN_TIMEOUT, t), t
 
-# Protocol options for RTMP targets.  PyAV 19 opens the output with avio_open2(..., NULL), so these
-# only take effect with a PyAV that passes the output options to the protocol (PyAV PR #2437);
-# until then they are harmless and their "not used" report is kept at DEBUG (logsync).
+# Protocol options for RTMP targets.  PyAV hands the output options to avio_open2() since 19.0.2
+# (PyAV PR #2437); an older PyAV opened the output with NULL options, so there these are harmless
+# and their "not used" report is kept at DEBUG (logsync).
 #   rtmp_flush_interval: FFmpeg reads the server's messages (acknowledgements every ~180 KB from
 #   YouTube, pings) only once per this many FLV packets; at the default 10 a 25 fps + AAC stream
 #   drains about 7 messages a second, barely YouTube's rate, and the rest piled up in the socket's

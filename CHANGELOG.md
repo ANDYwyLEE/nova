@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-10 — Windows test run; PyAV 19.0.2 or newer
+
+Tested on GitHub's Windows Server 2025 runners (no GPU, no GPU driver, no audio device) the two ways [docs/install.md](docs/install.md) describes: python.org CPython 3.13 with the PyPI wheels, and MSYS2 UCRT64 with PyAV built from source against MSYS2's FFmpeg. Both pass the test suite. An end-to-end run from the launcher (a local RTSP server, five cameras with windows at given places, status and restart over the named pipes, 5-second recording segments, stop, logs) passes on native Windows; its half without windows (`nova record`) passes on both.
+
+### Changed
+- **PyAV 19.0.2 or newer.** `requirements.txt` asks for `av>=19.0.2` instead of pinning 19.0.1, and newer releases are welcome. 19.0.2 hands the output options to the protocol ([PyAV pull request #2437](https://github.com/PyAV-Org/PyAV/pull/2437)), so `rtmp_flush_interval=1` now reaches RTMP streams (checked against a local RTMP listener: only a made-up option is left unused). Its wheel bundles the same FFmpeg 9.0.2 build as 19.0.1 (same libraries, codecs, formats and hardware devices). `nova doctor` warns only about a PyAV older than 19.0.2, no longer about one newer than a pin, and the source-build recipes take the newest release.
+
+### Fixed
+- **Windows logs kept every line.** Under `nova start` a camera's output is `logs/ID.log`, which Windows wrote in the ANSI code page (cp1252, cp949): every log line with an emoji was lost behind a `--- Logging error ---` traceback, and `nova doctor` died at its first check mark when its output was not a console. Nova and the launcher now write UTF-8.
+- **No RuntimeError after "Nova exited gracefully" on Windows.** A control connection still open at exit is destroyed with the server and reported as disconnected for a socket that is already gone.
+- **`nova doctor` on a Windows machine without a GPU driver.** Qt falls back to its software `opengl32sw.dll` there while PyOpenGL calls the system `opengl32.dll`, so every `--opengl` window closes at start; the report printed `OpenGL      )` and passed "OpenGL comes from a GPU driver". It now says what Qt got and that `--opengl` cannot work. Without any OpenGL context it no longer promises a QPainter fallback: both renderers draw in an OpenGL window.
+- **MSYS2 install (Option B).** The Cython package is `mingw-w64-ucrt-x86_64-cython`; the venv is created as `venv` itself, since MSYS2's `ln -s` copies a directory and `./nova` ran a venv without `av`; PyAudio's `setup.py` is built with both MSVC assumptions undone (dropping `portaudio`, and the `/MT` flag that gcc takes for an input file).
+
+### Notes
+- `.github/workflows/windows-test.yml` runs only by hand (`gh workflow run windows-test.yml`). The runners cannot test hardware decoding (`--accel qsv`/`d3d11va` fell back to software, as they should), audio output, `--opengl`, or windows under MSYS2 (its Qt has no software OpenGL, so without a GPU driver no window opens): those need a real Windows PC.
+- 19.0.2 also stops an audio encoder's resampler from starting an idle thread per CPU (PyAV's changelog).
+
 ## 2026-11-08 — Xfce's Wayland session
 
 Tested in a real Xfce 4.20 Wayland login (labwc 0.9.3) on the NVIDIA machine, left monitor only.

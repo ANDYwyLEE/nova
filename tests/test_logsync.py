@@ -128,7 +128,7 @@ def test_pyavs_unused_option_report_for_nova_s_protocol_options_is_debug(root_ha
     logging.getLogger().setLevel(logging.INFO)
     logsync.setup_av_logging()
     out = logging.getLogger("av.container.output")
-    out.warning("Some options were not used: {'rtmp_flush_interval': '1'}")        # a stock PyAV: expected
+    out.warning("Some options were not used: {'rtmp_flush_interval': '1'}")        # PyAV before 19.0.2: expected
     out.warning("Some options were not used: {'flvflags': 'nope', 'rtmp_flush_interval': '1'}")   # a real one
     assert records == ["30 av.container.output Some options were not used: {'flvflags': 'nope', 'rtmp_flush_interval': '1'}"]
 
