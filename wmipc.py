@@ -16,6 +16,8 @@ import logging
 
 FIND_TIMEOUT_S = 5.0        # how long to wait for the compositor to map the window after show()
 RECT_TTL_S = 1.0            # a rect read from the compositor is reused this long
+SETTLE_S = 2.0              # how long after the window got its place the compositor's rect is checked against it
+SETTLE_TRIES = 5            # at most this many times is the place asked for again
 NORMAL, MAXIMIZED, FULLSCREEN = 0, 1, 2     # the window's mode as the compositor has it
 
 
@@ -55,13 +57,16 @@ class _Sway:
 
     def state(self, pid):
         """(x, y, w, h, mode) of the process's window in layout coordinates, or None while it is not mapped.
-        sway has no maximized state, only fullscreen."""
+        sway has no maximized state, only fullscreen. The rect is the container's, which is what `resize set`
+        and `move` take: sway's `rect` leaves out a title bar (deco_rect), and the one a window is mapped
+        with is still reported for a moment after `border none`."""
         stack = [self._request(self.GET_TREE)]
         while stack:
             n = stack.pop()
             if n.get("pid") == pid and n.get("type") in ("con", "floating_con"):
-                r = n["rect"]
-                return r["x"], r["y"], r["width"], r["height"], FULLSCREEN if n.get("fullscreen_mode") else NORMAL
+                r, bar = n["rect"], (n.get("deco_rect") or {}).get("height", 0)
+                return (r["x"], r["y"] - bar, r["width"], r["height"] + bar,
+                        FULLSCREEN if n.get("fullscreen_mode") else NORMAL)
             stack += n.get("nodes", []) + n.get("floating_nodes", [])
         return None
 
@@ -187,6 +192,9 @@ class Placer:
         self._normal = None         # the rect it had when last neither maximized nor fullscreen
         self._read_at = None
         self._failed = False
+        self._want = None           # the last rect asked for
+        self._ready_at = None
+        self._settle_left = SETTLE_TRIES
 
     @classmethod
     def for_session(cls):
@@ -205,6 +213,7 @@ class Placer:
                 return False
             self.b.float_frameless(self.pid)
             self.ready = True
+            self._ready_at = time.monotonic()
             if self._pending:
                 self._apply(*self._pending)
                 self._pending = None
@@ -220,7 +229,30 @@ class Placer:
             return
         self._apply(*g)
 
+    def settle(self):
+        """Called a few times a second after the window got its first place; True when there is nothing more
+        to check. sway and Hyprland map the window tiled before Nova floats it, and sway gives a floating window
+        the size of whatever buffer it draws next: a buffer still on its way for a tiled size (two native
+        windows starting at once re-tile each other) arrives after the placement and undoes its size, which
+        would then be kept on record. So for SETTLE_S the place is asked for again while the compositor has
+        another rect for the window in its normal state."""
+        if not self.ready or self._failed or self._want is None or self._settle_left <= 0:
+            return True
+        if time.monotonic() - self._ready_at > SETTLE_S:
+            return True
+        try:
+            st = self.b.state(self.pid)
+        except Exception as e:
+            self._fail(e)
+            return True
+        if st is not None and st[4] == NORMAL and tuple(st[:4]) != self._want:
+            self._settle_left -= 1
+            logging.info(f"[Nova] {self.b.name} has the window at {tuple(st[:4])}, not at {self._want}: placing it again")
+            self._apply(*self._want)
+        return False
+
     def _apply(self, x, y, w, h):
+        self._want = (x, y, w, h)
         try:
             self.b.place(self.pid, x, y, w, h)
             self._rect = self._normal = (x, y, w, h)

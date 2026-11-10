@@ -2,6 +2,7 @@
 mouse and keyboard handling. QSettings point at a temp dir (conftest), never at the user's Nova.conf."""
 import os
 import sys
+import time
 from collections import deque
 
 import pytest
@@ -873,6 +874,28 @@ def test_a_window_the_compositor_maximizes_keeps_its_place_on_record(make, app, 
     assert stored(core)[0] == "150,120,400,225"
     w.wm.max, w.wm.now = False, (150, 120, 400, 225)
     assert w._is_normal_state()
+
+
+def test_the_attach_timer_runs_on_until_the_place_has_settled(make, app):
+    """After the window is mapped and placed the same timer keeps asking the placer whether the compositor still
+    has it there (Placer.settle), and stops when the placer says there is nothing more to check."""
+    w, core = make("100,100,640,360")
+    w.wm = FakePlacer(ready=False)
+    calls, stopped = [], []
+    def try_attach():
+        calls.append("attach")
+        w.wm.ready = True
+        return True
+    w.wm.try_attach = try_attach
+    w.wm.settle = lambda: calls.append("settle") or len(calls) >= 4
+    w._wm_attach_t0 = time.monotonic()
+    w._wm_timer = type("T", (), {"stop": lambda self: stopped.append(1)})()
+    w._wm_attach()
+    assert calls == ["attach"] and not stopped and w.wm is not None
+    w._wm_attach(); w._wm_attach()
+    assert calls == ["attach", "settle", "settle"] and not stopped
+    w._wm_attach()
+    assert calls[-1] == "settle" and stopped == [1]
 
 
 def test_a_compositor_that_never_shows_the_window_is_left_alone(make, app, monkeypatch, caplog):

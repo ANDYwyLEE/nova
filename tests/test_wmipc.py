@@ -215,3 +215,83 @@ def test_placer_keeps_the_last_normal_rect_and_fails_quietly(caplog, monkeypatch
     clock[0] += 2
     p.rect()
     assert sum("gone" in r.message for r in caplog.records) == 1
+
+
+def test_sway_rect_is_the_container_with_its_title_bar(tmp_path):
+    """sway's `rect` leaves out a title bar (deco_rect) while `resize set` and `move` take the container's box,
+    and for a moment after `border none` the tree still reports the bar the window was mapped with: read as it
+    was, a window just placed at 400,700 640x360 looked like 400,725 640x335."""
+    path = str(tmp_path / "sway.sock")
+    pid = os.getpid()
+    tree = _sway_tree(pid)
+    con = tree["nodes"][0]["nodes"][0]["floating_nodes"][0]
+    con["rect"] = {"x": 400, "y": 725, "width": 640, "height": 335}
+    con["deco_rect"] = {"x": 400, "y": 677, "width": 640, "height": 25}
+
+    def handle(c):
+        head = c.recv(14)
+        n, kind = struct.unpack("=II", head[6:])
+        if n:
+            c.recv(n)
+        reply = json.dumps(tree).encode()
+        c.sendall(b"i3-ipc" + struct.pack("=II", len(reply), kind) + reply)
+
+    t = _serve(path, handle, 1)
+    assert wmipc._Sway(path).state(pid) == (400, 700, 640, 360, wmipc.NORMAL)
+    t.join(5)
+
+
+def test_placer_asks_again_while_the_compositor_has_another_rect(monkeypatch, caplog):
+    """Two native Wayland windows started at once in sway: each is mapped tiled and re-tiled by the other, and a
+    buffer drawn for a tiled size reached sway after Nova's placement, which made it the floating window's size
+    (3436x1390 instead of 640x360, in 2 of 5 starts); that size was then kept on record. For SETTLE_S after the
+    first place the compositor's rect is checked and the place asked for again."""
+    clock = [50.0]
+    monkeypatch.setattr(wmipc.time, "monotonic", lambda: clock[0])
+    caplog.set_level("INFO")
+
+    class B:
+        name = "fake"
+        def __init__(self):
+            self.now, self.mode, self.placed, self.reads = None, wmipc.NORMAL, [], 0
+        def state(self, pid):
+            self.reads += 1
+            return (*self.now, self.mode) if self.now else None
+        def float_frameless(self, pid): pass
+        def place(self, pid, x, y, w, h):
+            self.placed.append((x, y, w, h))
+            self.now = (x, y, w, h)
+    b = B()
+    p = wmipc.Placer(b)
+    assert p.settle() is True and b.reads == 0            # not mapped: nothing to check, no IPC
+    p.place(400, 700, 640, 360)
+    b.now = (0, 23, 1720, 1417)                           # mapped, tiled
+    assert p.try_attach() is True and b.placed == [(400, 700, 640, 360)]
+    assert p.settle() is False and len(b.placed) == 1     # as asked: only checked
+    b.now = (400, 700, 3436, 1390)                        # the late buffer of the tiled size
+    clock[0] += 0.1
+    assert p.settle() is False and b.placed == [(400, 700, 640, 360)] * 2
+    assert sum("placing it again" in r.message for r in caplog.records) == 1
+    assert p.rect() == (400, 700, 640, 360) and p.normal_rect() == (400, 700, 640, 360)
+    b.now, b.mode = (0, 0, 3440, 1440), wmipc.FULLSCREEN  # the user's own fullscreen is not a wrong place
+    clock[0] += 0.1
+    assert p.settle() is False and len(b.placed) == 2
+    b.mode = wmipc.NORMAL
+    p.place(500, 500, 800, 450)                           # a key or `nova layout apply` meanwhile: that is the place now
+    b.now = (500, 500, 640, 360)
+    clock[0] += 0.1
+    assert p.settle() is False and b.placed[-1] == (500, 500, 800, 450) and len(b.placed) == 4
+    clock[0] += wmipc.SETTLE_S                            # later the window is the user's to resize with the compositor
+    b.now = (500, 500, 300, 200)
+    reads = b.reads
+    assert p.settle() is True and len(b.placed) == 4 and b.reads == reads
+
+    b2 = B()
+    q = wmipc.Placer(b2)                                  # a compositor that will not give the size: a few tries, no more
+    b2.place = lambda pid, x, y, w, h: b2.placed.append((x, y, w, h))
+    q.place(0, 0, 9000, 9000)
+    b2.now = (0, 0, 100, 100)
+    q.try_attach()
+    done = [q.settle() for _ in range(wmipc.SETTLE_TRIES + 2)]
+    assert len(b2.placed) == 1 + wmipc.SETTLE_TRIES and done[-1] is True
+

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-10 — Two monitors on one GPU
+
+Both monitors now hang on one NVIDIA GPU (DisplayPort), so sway drives the two of them (wlroots cannot show one desktop across two NVIDIA GPUs). Tested in real logins on Cinnamon (X11) and sway 1.11: the wall of 13 at its saved places on both monitors, 40 moves between the monitors, a window straddling the two, F/Esc filling the monitor the window is on and returning, the compositor's own maximize or fullscreen on the right monitor with the place on record unchanged. In sway for XWayland and for native Wayland windows.
+
+### Fixed
+- **Native Wayland windows started at the same moment in sway keep their size.** sway maps a window tiled before Nova floats and places it, and two windows mapped at once re-tile each other. sway gives a floating window the size of whatever buffer it draws next, so a buffer still on its way for a tiled size arrived after Nova's placement and undid its size (3436x1390 instead of 640x360: 8 of 30 windows started in pairs), and that size was then kept on record as the window's place. For two seconds after the first placement Nova now compares the compositor's rect with the one it asked for and asks again (30 of 30 afterwards). The launcher starts cameras one after the other, which is why `nova start` did not show it (the wall of 13 as native windows: 4 starts of 4 right, before and after). XWayland windows, the default, were not affected.
+- **sway: the window's rect is its container's.** sway reports a window's rect without its title bar, and for a moment after Nova removes the bar the window was mapped with, the tree still shows it: a window just placed at 400,700 640x360 read as 400,725 640x335. `resize` and `move` take the container's box, so that is what Nova reads now.
+
+### Notes
+- Monitors with different refresh rates (60/75 Hz left, 60/100 Hz right, switched while 15 windows ran): every window stays at its place, and a camera window draws only when a frame arrives, so nothing changes for cameras. A 120 fps test source showed where the rates do differ. On X11 with the NVIDIA driver every window is presented at the rate of one monitor, the primary one, whatever monitor it is on (the driver's `__GL_SYNC_DISPLAY_DEVICE` names another); in sway each window follows the monitor it is on, XWayland and native alike.
+
 ## 2026-11-10 — Windows test run; PyAV 19.0.2 or newer
 
 Tested on GitHub's Windows Server 2025 runners (no GPU, no GPU driver, no audio device) the two ways [docs/install.md](docs/install.md) describes: python.org CPython 3.13 with the PyPI wheels, and MSYS2 UCRT64 with PyAV built from source against MSYS2's FFmpeg. Both pass the test suite. An end-to-end run from the launcher (a local RTSP server, five cameras with windows at given places, status and restart over the named pipes, 5-second recording segments, stop, logs) passes on native Windows; its half without windows (`nova record`) passes on both.

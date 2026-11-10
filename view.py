@@ -197,10 +197,15 @@ class Nova(QOpenGLWindow):
             self._wm_timer.start()
 
     def _wm_attach(self):
-        """Poll until the compositor has mapped the window; then it floats and gets its place."""
+        """Poll until the compositor has mapped the window; then it floats and gets its place, and for a
+        moment longer the place is checked against what the compositor made of it (Placer.settle)."""
+        if self.wm.ready:
+            if self.wm.settle():
+                self._wm_timer.stop()
+            return
         if self.wm.try_attach() or time.monotonic() - self._wm_attach_t0 > FIND_TIMEOUT_S:
-            self._wm_timer.stop()
             if not self.wm.ready:
+                self._wm_timer.stop()
                 logging.warning(f"[Nova] {self.wm.name} never showed this window; placement is the compositor's")
                 self.wm = None          # from now on Qt's own geometry and window state, as anywhere else
 
