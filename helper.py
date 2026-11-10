@@ -3,6 +3,7 @@
 from typing import Dict
 from player import Player
 from novaargs import option_table
+from util import MAC
 from PySide6.QtCore import Signal
 
 
@@ -38,6 +39,15 @@ CONTROL_DESCRIPTIONS = {
 }
 
 
+def control_descriptions(mac=MAC):
+    """CONTROL_DESCRIPTIONS as this machine's overlay shows them. On a Mac the key is Command: Qt reports ⌘ as its
+    Control modifier, macOS keeps Control+Arrow for Mission Control and Spaces, and Control+click is a right click.
+    Ctrl-C stays as it is: it is the terminal's, and in the window either key works with C."""
+    if not mac:
+        return CONTROL_DESCRIPTIONS
+    return {k.replace("Ctrl +", "Cmd +"): v.replace("(Ctrl:", "(Cmd:") for k, v in CONTROL_DESCRIPTIONS.items()}
+
+
 def generate_help_text(arg_descriptions: Dict[str, str],
                        control_descriptions: Dict[str, str]) -> str:
     arg_lines = ["\n--- Command Line Arguments ---"]
@@ -62,7 +72,7 @@ class Helper(Player):
         self.flag = False
         self.help_text = generate_help_text(
             ARG_DESCRIPTIONS,
-            CONTROL_DESCRIPTIONS
+            control_descriptions()
         )
 
     #@abstractmethod

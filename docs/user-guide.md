@@ -217,6 +217,8 @@ Status text in the window ("Connecting…", "Failed: …", "Stream error: …") 
 | `Ctrl-C` | Exit the program (both terminal and GUI). |
 <!-- /generated:keys -->
 
+On a Mac, **Ctrl** in this table and the next is the Command key (⌘), and the help overlay there says `Cmd`: macOS keeps Control+Arrow for Mission Control and Spaces, and Control+click is a right click.
+
 Window moves and resizes happen in grid steps (`-g`, default 20 px) and are clamped to the virtual desktop, so a window can sit on a second monitor left of or above the primary one. A held key repeats only moves, resizes and zoom; toggles (R, T, A, F, H, S, P …) act once per press.
 
 ## Mouse

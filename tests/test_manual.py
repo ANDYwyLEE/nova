@@ -32,3 +32,19 @@ def test_every_launcher_command_is_in_the_manual():
     for v in verbs:
         head = v.split()[0] if v.split()[0] != "layout" else v
         assert f"nova {head}" in GUIDE, v
+
+
+def test_the_overlay_names_the_command_key_on_a_mac():
+    """On macOS Qt reports ⌘ as its Control modifier, and Control+Arrow never reaches the window (Mission Control,
+    Spaces): the overlay said "Ctrl + Arrow", which does nothing there. The manual's table keeps Ctrl, with a note."""
+    import helper
+    mac = helper.control_descriptions(mac=True)
+    assert "Cmd + Arrow" in mac and "Cmd + Mouse Drag" in mac and not any(k.startswith("Ctrl +") for k in mac)
+    assert "(Cmd: enlarge the window" in mac["I / + / ="] and "(Cmd: shrink the window" in mac["O / - / _"]
+    assert "Ctrl-C" in mac and len(mac) == len(helper.CONTROL_DESCRIPTIONS)
+    assert helper.control_descriptions(mac=False) is helper.CONTROL_DESCRIPTIONS
+    text = helper.generate_help_text({"-x": "y"}, mac)
+    assert "Cmd + Arrow" in text and "Ctrl + Arrow" not in text
+    guide = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "user-guide.md"), encoding="utf-8").read()
+    assert "On a Mac, **Ctrl** in this table and the next is the Command key" in guide
+

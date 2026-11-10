@@ -16,8 +16,10 @@ Measured there with 1080p H.264 cameras, as the share of one core:
 ### Fixed
 - **`nova doctor` on macOS does not list TLS as missing.** The macOS wheel has neither GnuTLS nor OpenSSL: FFmpeg uses the system's TLS there, which its configure line does not name, and the report said "not in this build: … gnutls openssl", as if https and rtmps were out of reach. doctor now asks FFmpeg itself and says "TLS from the system (SecureTransport)".
 
+- **The help overlay names the Command key on a Mac.** It said `Ctrl + Arrow` (grow the window on that edge), `Ctrl + Mouse Drag` and `Ctrl` with +/-, which do nothing there: macOS keeps Control+Arrow for Mission Control and Spaces, and Control+click is a right click. The key was there all along, since Qt reports ⌘ as its Control modifier; the overlay now says `Cmd`, and the manual's key table has a note.
+
 ### Notes
-- Not checked on the iMac: keys and the mouse (sending them over ssh needs the Accessibility permission), sound, and the picture itself (a screenshot needs the Screen Recording permission).
+- Over ssh neither keys nor the mouse can be sent (the Accessibility permission) and no screenshot taken (the Screen Recording permission). At the iMac's own keyboard every key works, with ⌘ for Ctrl.
 
 ## 2026-11-10 — Two monitors on one GPU
 
