@@ -113,3 +113,32 @@ def test_pyav_newer_than_the_minimum_is_fine(monkeypatch, tmp_path):
         monkeypatch.setattr(av, "__version__", version)
         marks = [m for m, t in doctor.checks("", "", "", None, None, str(tmp_path / "none.ini")) if t.startswith(f"PyAV {version} ")]
         assert marks == [mark], version
+
+
+def test_tls_from_the_system_is_not_listed_as_missing(monkeypatch):
+    """The macOS wheel has neither gnutls nor openssl: FFmpeg uses the system's TLS there, which its configure line
+    does not name. The report said "not in this build: … gnutls openssl", which reads as no https and no rtmps."""
+    import av
+    import av._core as core
+    monkeypatch.setattr(core, "library_meta", {"libavcodec": {"configuration": "--enable-videotoolbox --enable-libx264 --disable-gnutls"}})
+    monkeypatch.setattr(doctor, "_tls_works", lambda: True)
+    line = dict(doctor.ffmpeg_lines())["FFmpeg"]
+    assert "TLS from the system" in line and "gnutls" not in line.replace("--disable-gnutls", "") and "openssl" not in line
+    monkeypatch.setattr(doctor, "_tls_works", lambda: False)
+    line = dict(doctor.ffmpeg_lines())["FFmpeg"]
+    assert "TLS from the system" not in line and "gnutls openssl" in line
+    monkeypatch.setattr(core, "library_meta", {"libavcodec": {"configuration": "--enable-gnutls --enable-libx264"}})
+    monkeypatch.setattr(doctor, "_tls_works", lambda: 1 / 0)          # a TLS library is named: FFmpeg is not asked
+    line = dict(doctor.ffmpeg_lines())["FFmpeg"]
+    assert "TLS from the system" not in line and "built with: libx264 gnutls" in line
+    monkeypatch.undo()
+
+    def refused(*a, **k):
+        raise ConnectionRefusedError(111, "Connection refused")
+
+    def no_protocol(*a, **k):
+        raise av.error.ProtocolNotFoundError(1, "Protocol not found")
+    monkeypatch.setattr(av, "open", refused)
+    assert doctor._tls_works() is True
+    monkeypatch.setattr(av, "open", no_protocol)
+    assert doctor._tls_works() is False

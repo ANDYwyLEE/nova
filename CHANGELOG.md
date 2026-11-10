@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-10 — macOS on an Intel iMac
+
+Tested over ssh on an iMac (2019: Core i3-8100, Radeon Pro 555X, 4K Retina display, macOS 15.7) with a fresh install by the macOS guide (MacPorts Python 3.12 and PortAudio, the `av` 19.0.2 wheel): the test suite passes, `nova doctor` reports the machine, six windows from `nova start` open at their saved places (as Nova and the window server both have them), 40 moves and resizes through the control channel land where asked, a saved layout comes back, `nova record` writes files with `h264_videotoolbox` and AAC that decode, and both renderers play with hardware and with software decoding.
+
+Measured there with 1080p H.264 cameras, as the share of one core:
+
+| | 25 fps camera | 10 fps camera |
+|---|---|---|
+| window, OpenGL, VideoToolbox decoding | 12 % | 4 % |
+| window, OpenGL, software decoding | 36 % | 4 % |
+| recording without a window, VideoToolbox decoding and `h264_videotoolbox` | 10 % | 4 % |
+| recording without a window, software decoding and `libx264` | 207 % | 45 % |
+
+### Fixed
+- **`nova doctor` on macOS does not list TLS as missing.** The macOS wheel has neither GnuTLS nor OpenSSL: FFmpeg uses the system's TLS there, which its configure line does not name, and the report said "not in this build: … gnutls openssl", as if https and rtmps were out of reach. doctor now asks FFmpeg itself and says "TLS from the system (SecureTransport)".
+
+### Notes
+- Not checked on the iMac: keys and the mouse (sending them over ssh needs the Accessibility permission), sound, and the picture itself (a screenshot needs the Screen Recording permission).
+
 ## 2026-11-10 — Two monitors on one GPU
 
 Both monitors now hang on one NVIDIA GPU (DisplayPort), so sway and Hyprland drive the two of them (neither can show one desktop across two NVIDIA GPUs). Tested in real logins on Cinnamon (X11), sway 1.11, Hyprland 0.53, Xfce 4.20 on Wayland (labwc 0.9) and Cinnamon 6.4 on Wayland (muffin): the wall of 13 at its saved places on both monitors, 40 moves between the monitors, a window straddling the two, F/Esc filling the monitor the window is on and returning, the compositor's own maximize or fullscreen on the right monitor with the place on record unchanged. In sway and Hyprland for XWayland and for native Wayland windows. Cinnamon's Wayland session, which two days ago left the monitor on the second GPU black or with wrong colours, shows both monitors now, without a copy error in its log.

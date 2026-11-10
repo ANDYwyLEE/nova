@@ -33,6 +33,7 @@ GL_TIMEOUT = 30
 # what to look for in FFmpeg's configure line
 FFMPEG_FEATURES = ("nvenc", "nvdec", "libvpl", "amf", "vaapi", "videotoolbox", "libx264", "libx265",
                    "libsvtav1", "libaom", "libdav1d", "libopus", "libsrt", "gnutls", "openssl", "libfreetype")
+TLS_LIBRARIES = ("gnutls", "openssl")
 HW_SUFFIXES = ("cuvid", "nvenc", "qsv", "amf", "vaapi", "videotoolbox", "v4l2m2m", "rkmpp", "mediacodec", "mf",
                "d3d12va", "vulkan")
 ENV_SHOWN = ("NOVA_", "QT_", "LD_", "DYLD_", "PATH")      # [env] values printed; others are hidden
@@ -48,6 +49,20 @@ def _run(cmd, timeout=10):
 
 def _gb(n):
     return f"{n / 1e9:.0f} GB"
+
+
+def _tls_works():
+    """Can this FFmpeg open TLS URLs (https, rtmps)? Asked of FFmpeg itself, for builds whose configure line names
+    no TLS library: only "protocol not found" means no; the refused connection to this machine's discard port
+    means the protocol is there."""
+    import av
+    try:
+        av.open("https://127.0.0.1:9/", timeout=2).close()
+    except av.error.ProtocolNotFoundError:
+        return False
+    except Exception:
+        return True
+    return True
 
 
 class _QuietStderr:
@@ -207,9 +222,14 @@ def ffmpeg_lines():
     flags = set(re.findall(r"--enable-([\w-]+)", conf))
     on = [f for f in FFMPEG_FEATURES if f in flags]
     off = [f for f in FFMPEG_FEATURES if f not in flags]
+    tls = ""
+    if conf and not flags & set(TLS_LIBRARIES) and _tls_works():
+        # the macOS wheel: TLS (https, rtmps) from the system, which FFmpeg detects without a configure switch
+        off = [f for f in off if f not in TLS_LIBRARIES]
+        tls = f"; TLS from the system ({'SecureTransport' if MAC else 'Schannel' if WINDOWS else 'not named in the configure line'})"
     lines = [("PyAV", f"{av.__version__} ({'PyPI wheel' if wheel else 'built from source'}), FFmpeg {ffver}, "
                       f"libavcodec {'.'.join(str(x) for x in av.library_versions.get('libavcodec', ()))}"),
-             ("FFmpeg", f"built with: {' '.join(on) or '?'}" + (f"; not in this build: {' '.join(off)}" if off else ""))]
+             ("FFmpeg", f"built with: {' '.join(on) or '?'}{tls}" + (f"; not in this build: {' '.join(off)}" if off else ""))]
     if not conf:
         lines[-1] = ("FFmpeg", "configure line not available from this PyAV")
     try:

@@ -113,6 +113,8 @@ python nova.py --opengl --accel videotoolbox -i rtsp://...
 cp cameras.example.ini cameras.ini && chmod 600 cameras.ini && ./nova start   # ./nova -h lists the commands
 ```
 
+Checked on Apple Silicon by the CI and, on 2026-11-10, on an Intel iMac (2019, macOS 15.7, MacPorts) with exactly these commands.
+
 What VideoToolbox accelerates is decided by the Mac, not by the wheel: H.264 on every supported Mac, HEVC decode/encode on Apple Silicon and on Intel Macs from 2016 (6th-generation Core) on. On an older Intel Mac one direction may fall back to software while the other is accelerated; the log lines `HW decoder:` / `software decoder` and `[AVWriter]` show which.
 
 `--opengl` requests the 3.3 core-profile context macOS requires; without it the QPainter renderer is used.
