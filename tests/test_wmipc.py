@@ -102,9 +102,9 @@ def test_hyprland_rect_and_commands(tmp_path):
     def handle(c):
         req = c.recv(4096).decode()
         seen.append(req)
-        c.sendall(json.dumps(clients).encode() if req == "j/clients" else b"ok")
+        c.sendall(json.dumps(clients).encode() if req == "j/clients" else b"[]" if req == "j/monitors" else b"ok")
 
-    t = _serve(path, handle, 9)
+    t = _serve(path, handle, 11)
     b = wmipc._Hyprland(path)
     assert b.state(pid) == (3660, 60, 320, 180, wmipc.NORMAL)   # Hyprland's own state, not what it tells the window
     clients[1]["fullscreen"] = 1
@@ -295,3 +295,45 @@ def test_placer_asks_again_while_the_compositor_has_another_rect(monkeypatch, ca
     done = [q.settle() for _ in range(wmipc.SETTLE_TRIES + 2)]
     assert len(b2.placed) == 1 + wmipc.SETTLE_TRIES and done[-1] is True
 
+
+
+def test_hyprland_window_joins_the_monitor_it_is_placed_on(tmp_path):
+    """Two monitors: a window mapped on the left one's workspace and moved to the right monitor with
+    movewindowpixel stayed on that workspace: F and Hyprland's own fullscreen filled the left monitor, and the
+    window went away when the left monitor changed workspace. It now joins the active workspace of the monitor
+    its centre is placed on; movetoworkspacesilent shifts a floating window by the monitors' distance, so the
+    exact move comes after it."""
+    path = str(tmp_path / ".socket.sock")
+    seen = []
+    pid = os.getpid()
+    client = {"pid": pid, "mapped": True, "floating": True, "at": [220, 600], "size": [391, 220], "fullscreen": 0,
+              "monitor": 0, "workspace": {"id": 1}}
+    monitors = [{"id": 0, "x": 0, "y": 0, "width": 3440, "height": 1440, "scale": 1.0, "transform": 0, "activeWorkspace": {"id": 1}},
+                {"id": 1, "x": 3440, "y": 0, "width": 3840, "height": 2160, "scale": 1.5, "transform": 1, "activeWorkspace": {"id": 7}}]
+
+    def handle(c):
+        req = c.recv(4096).decode()
+        seen.append(req)
+        c.sendall(json.dumps([client]).encode() if req == "j/clients" else json.dumps(monitors).encode() if req == "j/monitors"
+                  else b"no such window" if "movetoworkspacesilent 1," in req else b"ok")
+
+    t = _serve(path, handle, 18)
+    b = wmipc._Hyprland(path)
+    b.place(pid, 4000, 60, 266, 200)               # centre 4133,160: on the right monitor
+    assert seen == ["j/monitors", "j/clients", f"dispatch movetoworkspacesilent 7,pid:{pid}",
+                    f"dispatch resizewindowpixel exact 266 200,pid:{pid}", f"dispatch movewindowpixel exact 4000 60,pid:{pid}"]
+    client["monitor"] = 1
+    seen.clear()
+    b.place(pid, 4020, 60, 266, 200)               # already there: on whatever workspace of that monitor it is
+    assert [r for r in seen if "workspace" in r] == []
+    seen.clear()
+    b.place(pid, 3300, 700, 400, 225)              # straddling: its centre (3500) is still on the right monitor
+    assert [r for r in seen if "workspace" in r] == []
+    seen.clear()
+    b.place(pid, 3200, 700, 400, 225)              # centre 3400: the left monitor; the move failing does not stop the placement
+    assert seen[2:] == [f"dispatch movetoworkspacesilent 1,pid:{pid}", f"dispatch resizewindowpixel exact 400 225,pid:{pid}",
+                        f"dispatch movewindowpixel exact 3200 700,pid:{pid}"]
+    t.join(5)
+    # the right monitor is 3840x2160 at scale 1.5 turned a quarter: 1440x2560 in the layout
+    assert wmipc._on_monitor(monitors[1], 3440 + 1439, 2559) and not wmipc._on_monitor(monitors[1], 3440 + 1440, 100)
+    assert not wmipc._on_monitor(monitors[1], 3440 + 100, 2560) and not wmipc._on_monitor(monitors[0], 3440, 0)

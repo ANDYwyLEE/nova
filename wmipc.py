@@ -125,8 +125,36 @@ class _Hyprland:
         self._request(f"dispatch setprop pid:{pid} border_size 0")      # cosmetic: an older keyword may fail
 
     def place(self, pid, x, y, w, h):
+        self._join_monitor(pid, x + w // 2, y + h // 2)
         self.command(f"resizewindowpixel exact {w} {h},pid:{pid}")
         self.command(f"movewindowpixel exact {x} {y},pid:{pid}")
+
+    def _join_monitor(self, pid, cx, cy):
+        """A floating window stays on the workspace it was mapped on wherever movewindowpixel puts it: on
+        another monitor it still went fullscreen (F, Hyprland's own fullscreen and maximize) on the first
+        one, and disappeared when that one changed workspace. So before the move the window joins the active
+        workspace of the monitor its centre will be on, as Hyprland does itself when a window is dragged
+        there. movetoworkspacesilent shifts a floating window by the distance between the two monitors; the
+        exact move that follows puts it where it belongs. Best effort: the placement goes on without it."""
+        try:
+            target = next((m for m in json.loads(self._request("j/monitors") or "[]") if _on_monitor(m, cx, cy)), None)
+            c = self._client(pid)
+            if target is None or c is None or c.get("monitor") == target.get("id"):
+                return
+            ws = (target.get("activeWorkspace") or {}).get("id")
+            if ws is not None:
+                self.command(f"movetoworkspacesilent {ws},pid:{pid}")
+        except (ValueError, RuntimeError, OSError) as e:
+            logging.debug(f"[Nova] Hyprland: the window stays on its workspace ({e})")
+
+
+def _on_monitor(m, x, y):
+    """Is the layout point on Hyprland monitor m (its mode's size, scaled and turned)?"""
+    scale = m.get("scale") or 1
+    w, h = m.get("width", 0) / scale, m.get("height", 0) / scale
+    if m.get("transform", 0) % 2:
+        w, h = h, w
+    return m.get("x", 0) <= x < m.get("x", 0) + w and m.get("y", 0) <= y < m.get("y", 0) + h
 
 
 UNKNOWN_PEER = -1           # the socket answers, but this OS cannot say which process serves it
