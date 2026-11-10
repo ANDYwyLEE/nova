@@ -1,0 +1,133 @@
+name: Windows test
+
+# Branch wintest only: Nova on Windows the two ways docs/install.md describes (Option A python.org CPython +
+# PyPI wheels, Option B MSYS2 UCRT64), each with pytest and an end-to-end run of real windows from the launcher.
+on:
+  push:
+    branches: [wintest]
+  workflow_dispatch:
+
+env:
+  MEDIAMTX: v1.21.3
+
+jobs:
+  native:
+    name: Windows, python.org CPython 3.13 (Option A)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: venv and requirements (Option A)
+        shell: cmd
+        run: |
+          python -m venv venv
+          venv\Scripts\python -m pip install -U pip
+          venv\Scripts\pip install -r requirements-dev.txt
+      - name: ffmpeg binary (RTP tests, RTSP publisher) and mediamtx
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          choco install ffmpeg -y --no-progress | Select-Object -Last 3
+          gh release download $env:MEDIAMTX -R bluenviron/mediamtx -p "mediamtx_$($env:MEDIAMTX)_windows_amd64.zip" -D mtx
+          Expand-Archive mtx\*.zip -DestinationPath mtx
+          ffmpeg -hide_banner -version | Select-Object -First 1
+      - name: nova doctor
+        shell: cmd
+        run: nova.bat doctor
+      - name: pytest
+        shell: cmd
+        run: venv\Scripts\python -m pytest -rs
+      - name: End to end (nova.bat start/status/restart/stop, 5 windows)
+        if: always()
+        timeout-minutes: 15
+        shell: cmd
+        run: venv\Scripts\python .github\wintest\e2e.py --launcher "cmd /c nova.bat" --mediamtx mtx\mediamtx.exe --out e2e-out
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-native
+          path: e2e-out
+          if-no-files-found: ignore
+
+  msys2:
+    name: Windows, MSYS2 UCRT64 (Option B)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+      - name: pacman packages (Option B, verbatim)
+        run: |
+          pacman -S --needed --noconfirm git make pkgconf \
+              mingw-w64-ucrt-x86_64-{gcc,python-pip,python-wheel,python-cython,python-setuptools,python-numpy,python-requests,portaudio,pyside6,python-pyopengl,ffmpeg}
+          python --version; ffmpeg -hide_banner -version | head -1
+          pacman -Q | grep -E 'python |pyside6|ffmpeg|portaudio|qt6-base'
+      - name: venv, PyAV from source (Option B, verbatim)
+        run: |
+          python -m venv --system-site-packages python3.12 && ln -s python3.12 venv && . venv/bin/activate
+          pip install xmltodict filelock PyOpenGL_accelerate
+          pip install --no-binary av av --no-cache-dir
+          python -c "import av; print('av', av.__version__, av.ffmpeg_version_info); from av.codec.hwaccel import hwdevices_available; print(hwdevices_available())"
+      - name: PyAudio by hand (Option B recipe)
+        run: |
+          set -o pipefail
+          . venv/bin/activate
+          mkdir -p /tmp/pa && cd /tmp/pa
+          pip download pyaudio --no-binary :all: --no-deps -d . && tar xzf PyAudio-*.tar.gz && cd PyAudio-*/
+          # the docs: win32 branch gets MS_WIN64 (0.2.14 has it), /ucrt64/include, /ucrt64/lib, and keeps portaudio
+          python - <<'EOF'
+          s = open("setup.py").read()
+          old = '            external_libraries.remove("portaudio")\n'
+          assert old in s, "setup.py changed"
+          s = s.replace(old, "            include_dirs += ['/ucrt64/include']\n            external_libraries_path = ['/ucrt64/lib']\n")
+          open("setup.py", "w").write(s)
+          EOF
+          if python setup.py install > ../docs-recipe.log 2>&1; then
+              echo "docs recipe: OK"
+          else
+              tail -25 ../docs-recipe.log
+              echo "::warning::PyAudio: the docs recipe failed; retrying without the MSVC /MT flag"
+              sed -i 's|extra_compile_args += \["/MT"\]|pass|' setup.py
+              python setup.py install 2>&1 | tail -5
+          fi
+          cd / && python -c "import pyaudio; print(pyaudio.get_portaudio_version_text())"
+      - name: test tools
+        run: |
+          . venv/bin/activate
+          pip install pytest pytest-cov
+          pip list 2>/dev/null | grep -i -E '^(av|pyside6|pyaudio|pyopengl|pyopengl-accelerate|numpy|xmltodict|filelock|requests|python-dvr) ' || true
+      - name: mediamtx
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:MEDIAMTX -R bluenviron/mediamtx -p "mediamtx_$($env:MEDIAMTX)_windows_amd64.zip" -D mtx
+          Expand-Archive mtx\*.zip -DestinationPath mtx
+      - name: nova doctor
+        run: ./nova doctor
+      - name: launcher help
+        run: ./nova -h > help.txt && head -5 help.txt
+      - name: pytest
+        run: venv/bin/python -m pytest -rs
+      - name: End to end (./nova start/status/restart/stop, 5 windows)
+        if: always()
+        timeout-minutes: 15
+        run: venv/bin/python .github/wintest/e2e.py --launcher "sh ./nova" --mediamtx mtx/mediamtx.exe --ffmpeg ffmpeg --out e2e-out
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-msys2
+          path: e2e-out
+          if-no-files-found: ignore
