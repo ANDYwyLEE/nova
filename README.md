@@ -132,7 +132,7 @@ What Claude did in that time:
 - `--ffmpeg` option routing rebuilt from FFmpeg's own option tables; the brand URL shortcuts checked against the makers' documentation and real devices; FFmpeg's log levels matched to Nova's; a pass over every input Nova parses.
 - The test suite, `nova doctor`, the issue templates, the manual in `docs/`, the changelog, and the measurements quoted in this README.
 
-What Claude could not verify is said so in the documentation: the Windows and macOS windows beyond what CI's tests reach, and camera brands other than the ones on the author's network.
+What Claude could not verify is said so in the documentation: Windows and macOS were each run on one real machine (an AMD PC, an Intel iMac; the changelog has both rounds), other GPUs there only as far as CI's tests reach, and camera brands other than the ones on the author's network.
 
 ## License
 

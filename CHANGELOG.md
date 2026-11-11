@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-11-11 — Windows on a real PC
+
+Until now Windows had only run on GitHub's runners, which have no GPU, no GPU driver and no sound device. This round is on a PC (AMD Ryzen 9 5900HX with its integrated Radeon graphics, AMD Software 26.5.2, Windows 11 Pro 26H2, two 3440x1440 monitors, driven over ssh), with both installs of the guide: Option A (python.org Python 3.13.17 and the `av` 19.0.2 wheel) and Option B (MSYS2 UCRT64: Python 3.14.10, Qt 6.12, `av` built against MSYS2's FFmpeg 9.0.2). Both install as written and pass the test suite.
+
+Seen working with Option A: `nova doctor` with the AMD driver's OpenGL 3.3; a wall of 13 windows from `nova start`, the six reachable cameras each decoding on the GPU (every camera process shows on the GPU's video codec engine); OpenGL and QPainter windows with `d3d11va` and `dxva2`, and AMD's own `h264_amf` decoder, all in hardware; `nova record` choosing `h264_amf`, with files that decode; 40 moves and resizes through the control channel across both monitors, a window across their seam, places kept over `nova stop` and `nova start`, `nova restart`, a saved layout; the keys and the mouse of the manual sent as real input events (17 checks, among them fullscreen and back with the keyboard still in the window); Nova's icon on the task bar, all camera windows under one button; a camera's sound from the monitor's speakers. Recording started from an ssh login (session 0, where a service or a scheduled task runs) decodes and encodes on the GPU too.
+
+With Option B, on one monitor: doctor, the same windows and decoders, recording with `h264_amf`, the 17 key and mouse checks, and a place on a monitor that is no longer there pulled back onto the screen. MSYS2's Qt, which cannot open a window on a GPU-less runner, opens them on a real GPU.
+
+Measured with 1080p H.264 cameras, as the share of one core:
+
+| | 25 fps camera | 10 fps camera |
+|---|---|---|
+| window, OpenGL, `d3d11va` decoding | 21 % | 9 % |
+| window, OpenGL, software decoding | 26 % | 9 % |
+| window, QPainter, `d3d11va` decoding | 51 % | 20 % |
+| window, QPainter, software decoding | 55 % | 24 % |
+| recording without a window, `d3d11va` and `h264_amf` | 9 % | 4 % |
+
+A playing window takes about 285 MB, one whose camera does not answer 230 MB and 0.2 %. On this machine the renderer matters more than the decoder: `--opengl` costs about 40 % of what QPainter does.
+
+Fixed:
+
+- **A window on a monitor left of the primary one did not start from a layout.** Its x is negative there (on macOS too, for a display left of or above the main one), and Python up to 3.13 took `--geometry -1500,200,480,270` for an option: `argument --geometry: expected one argument`. Python 3.14 reads the value as a number, which is why Linux never showed it; Windows runs 3.13 (PyAudio has no 3.14 wheel). Remembered places were not affected.
+- **The help overlay was cut off.** Its size came from the window's size alone: on Windows the last seven lines fell below a 1920x1080 window, on Linux below 1280x720. The text now shrinks until it fits, and the status text (`Unreachable: … does not answer`) wraps where it used to run out of both sides of a small window.
+- **Media Foundation encoders never recorded.** `h264_mf`, the last hardware candidate on Windows, passed the probe and failed at every real open, so a build without NVENC, Quick Sync and AMF went through two warnings to libx264. Media Foundation needs a bitrate, which the stream did not have, and FFmpeg takes Microsoft's software encoder unless told otherwise. Nova now asks for the GPU's encoder (`hw_encoding=1`) at 0.1 bit per pixel and frame unless `-b:v` is given: the two test cameras record at 6–14 % of a core where libx264 took 58–188 %. With the PyPI wheel the vendor encoders still come first.
+- **`nova doctor` over ssh told a PC with a working driver to install one.** Windows' session 0 has no GPU, so Qt falls back to software OpenGL there; doctor now says so and points to the desktop.
+- **Tests**: the two that run the icon generator skip without QtSvg, which MSYS2 packages separately and Nova itself does not use.
+
+Seen and left as it is:
+
+- `--accel d3d12va` falls back to software decoding on this GPU after 30 packets: FFmpeg's D3D12 decoder needs a decode tier the driver does not offer.
+- A window that has no remembered place opens 320x180 in the middle of a monitor, and Windows puts every such window at the same spot: the first `nova start` of many cameras is a pile to pull apart once (or a layout to write). Linux window managers spread them.
+- The custom FFmpeg recipe for MSYS2 builds as written (FFmpeg from git, `av` 19.0.2 against it), but it is the Quick Sync recipe: on an AMD GPU it has no AMF, and recording goes through Media Foundation.
+
 ## 2026-11-10 — Three pinned packages with security advisories
 
 GitHub listed 38 alerts for the repository: 19 advisories, each counted once for `requirements.txt` and once for `requirements-dev.txt`, which includes it. All are closed by newer pins; after `git pull`, run `pip install -r requirements.txt` again.
