@@ -37,7 +37,9 @@ import ffopts_tables as T
 
 
 class NovaParser(argparse.ArgumentParser):
-    """argparse wrapper that lets '--ffmpeg "-rtsp_transport udp ..."' carry values starting with '-'."""
+    """argparse wrapper that lets '--ffmpeg "-rtsp_transport udp ..."' carry values starting with '-', and
+    '--geometry -1500,200,480,270' a negative x or y: a monitor left of or above the primary one (Windows,
+    macOS) has negative coordinates, and argparse takes '-1500,...' for an option ('expected one argument')."""
     def parse_args(self, args=None, namespace=None):
         if args is None:
             args = sys.argv[1:]
@@ -48,6 +50,9 @@ class NovaParser(argparse.ArgumentParser):
             if arg == '--ffmpeg' and i + 1 < len(args):
                 new_args.append(arg)
                 new_args.append(f" {args[i+1]}")
+                i += 2
+            elif arg in ('--geometry', '--zoom') and i + 1 < len(args) and re.match(r'-\d', args[i + 1]):
+                new_args.append(f"{arg}={args[i + 1]}")
                 i += 2
             else:
                 new_args.append(arg)

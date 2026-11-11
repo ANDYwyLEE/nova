@@ -155,6 +155,22 @@ def test_enabled_and_broken_ini_say_what_is_wrong(tmp_path, capsys):
         cams.load(write_ini(tmp_path, "no section header\nurl = x\n"))
 
 
+def test_negative_geometry_reaches_nova(tmp_path, monkeypatch):
+    """A window on a monitor left of the primary one (Windows, macOS) has a negative x: 'nova start --layout'
+    passed '--geometry -1500,200,480,270' and argparse took the value for an option (exit 2, found on Windows)."""
+    import novaargs
+    monkeypatch.setattr(cams, "LAYOUTS", str(tmp_path))
+    cam = cams.Camera("a", {"url": "rtsp://h/s"})
+    (tmp_path / "left.json").write_text(json.dumps({"cameras": {"a": {"geometry": "-1500,-200,480,270", "zoom": "0,0,1,1"}}}))
+    args = novaargs.build_parser().parse_args(["-i", "rtsp://h/s", *cams.layout_flags(cams.load_layout("left"), cam), "-l", "INFO"])
+    assert (args.geometry, args.zoom, args.log_level) == ("-1500,-200,480,270", "0,0,1,1", "INFO")
+    assert util.parse_geom(args.geometry) == (-1500, -200, 480, 270)
+    args = novaargs.build_parser().parse_args(["-i", "rtsp://h/s", "--geometry", "-3440,0,640,360", "--ffmpeg", "-an"])
+    assert args.geometry == "-3440,0,640,360" and args.ffmpeg.strip() == "-an"
+    with pytest.raises(SystemExit):                              # an option where the value belongs is still an error
+        novaargs.build_parser().parse_args(["-i", "rtsp://h/s", "--geometry", "--opengl"])
+
+
 def test_layout_entries_are_checked(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cams, "LAYOUTS", str(tmp_path))
     cam = cams.Camera("a", {"url": "rtsp://h/s"})
