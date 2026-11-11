@@ -54,6 +54,21 @@ def snap_to_grid(x, grid=GS):
     return x - r if r < grid / 2 else x + (grid - r)
 
 
+def _fit_font(p, font, size, min_size, box_w, box_h, flags, text):
+    """The largest point size from size down to min_size at which text, wrapped to box_w, fits in
+    box_w x box_h; sets it on p and returns the text's bounding rect. A size chosen from the window
+    alone left the help's last lines below a 1920x1080 window on Windows (Consolas 14 pt: 1232 px of
+    text) and cut 'Unreachable: 192.168.1.26:554 does not answer' at both sides of a 320x180 one."""
+    f = QFont(font)
+    for s in range(size, min_size - 1, -1):
+        f.setPointSize(s)
+        p.setFont(f)
+        br = p.boundingRect(QRect(0, 0, box_w, 100000), flags, text)
+        if br.width() <= box_w and br.height() <= box_h:
+            break
+    return br
+
+
 class Nova(QOpenGLWindow):
     def __init__(
         self,
@@ -391,11 +406,11 @@ class Nova(QOpenGLWindow):
         p.setRenderHint(QPainter.TextAntialiasing, True)
         bg_color = QColor(0, 0, 0, 160)
         p.fillRect(0, 0, w, h, bg_color)
-        f = QFont(font)
-        f.setPointSize(size)
-        p.setFont(f)
         p.setPen(QColor(255, 255, 255))
-        p.drawText(QRect(0, 0, w, h), align, text)
+        m = min(8, w // 20)                  # a margin, so a wrapped line does not touch the border
+        flags = align | Qt.TextWordWrap
+        _fit_font(p, font, size, 5, max(1, w - 2 * m), h, flags, text)
+        p.drawText(QRect(m, 0, max(1, w - 2 * m), h), flags, text)
         p.end()
         self.osd_txt = img
 
@@ -418,14 +433,10 @@ class Nova(QOpenGLWindow):
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
         p.fillRect(0, 0, w, h, QColor(0, 0, 0, 160))
-        font = QFont(MONO)
-        font.setPointSize(fsize)
-        p.setFont(font)
         p.setPen(QColor(255, 255, 255))
         max_w = int(w * 0.8)
         flags = Qt.AlignLeft | Qt.TextWordWrap
-        measure = QRect(0, 0, max_w, 10000)
-        br = p.boundingRect(measure, flags, text)
+        br = _fit_font(p, MONO, fsize, min(_min, fsize), max_w, h, flags, text)
         x = int((w - br.width()) / 2)
         y = int((h - br.height()) / 2)
         if y < 0: y = 0
