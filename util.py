@@ -224,6 +224,39 @@ def parse_zoom(text):
         return None
     return rx, ry, rw, rh
 
+def parse_tile(text):
+    """'I/N' (a --tile value: cell I of N, counted from 1) -> (I, N); None for anything else."""
+    try:
+        i, n = (int(v) for v in str(text).split("/"))
+    except (TypeError, ValueError):
+        return None
+    return (i, n) if 1 <= i <= n <= 10_000 else None
+
+
+def tile_rect(i, n, area, grid=20, ratio=16 / 9):
+    """(x, y, w, h) of cell i of n (from 1, row by row) in a grid of equal windows on area = (x, y, w, h),
+    the screen without its panels. The columns are the count that gives the largest windows of the given
+    shape; one grid step stays free between neighbours and to the area's edges, a window is at most a
+    third of the area high (two cameras do not take over the screen), its height a multiple of the grid
+    step as the keyboard resizing keeps it, and the block of cells is centred."""
+    ax, ay, aw, ah = area
+    gap = g = max(1, int(grid))
+    best = None
+    for cols in range(1, n + 1):
+        rows = -(-n // cols)
+        h = min((ah - gap * (rows + 1)) / rows, (aw - gap * (cols + 1)) / cols / ratio)
+        if best is None or h > best[0]:
+            best = (h, cols, rows)
+    h, cols, rows = best
+    h = min(h, ah / 3)
+    h = max(g, int(h // g) * g) if h >= g else max(1, int(h))       # more windows than the area holds: tiny
+    w = max(1, round(h * ratio))
+    x0 = ax + max(0, (aw - (cols * w + (cols - 1) * gap)) // 2)
+    y0 = ay + max(0, (ah - (rows * h + (rows - 1) * gap)) // 2)
+    r, c = divmod(i - 1, cols)
+    return x0 + c * (w + gap), y0 + r * (h + gap), w, h
+
+
 def window_title(name):
     """Title of a camera window: 'Nova - NAME' (NAME as given with -n).  Unique per camera, so the
     taskbar tells the windows apart and compositor rules (nova layout export) can match them."""

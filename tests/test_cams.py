@@ -208,3 +208,34 @@ def test_a_qt_platform_in_env_reaches_nova_py_as_novas_own(monkeypatch):
     e = cams.child_env({"QT_QPA_PLATFORM": "wayland"})
     assert e["NOVA_QT_PLATFORM"] == "wayland" and e["QT_QPA_PLATFORM"] == "wayland"
     assert cams.child_env({"QT_QPA_PLATFORM": "wayland", "NOVA_QT_PLATFORM": "xcb"})["NOVA_QT_PLATFORM"] == "xcb"
+
+
+def test_windows_without_a_place_are_numbered_for_a_grid(cfg, tmp_path, monkeypatch):
+    """Thirteen cameras started for the first time on Windows opened as one pile of 320x180 windows: nova
+    start now gives every window that has no place its cell (--tile I/N); the others are not counted."""
+    defaults, env, cs = cfg
+    chosen = [c for c in cs if c.id in "abd"]
+
+    class Store:
+        def __init__(self, placed): self.placed = placed
+        def read(self, h): return ("1,2,640,360", None) if h in self.placed else (None, "0,0,1,1")
+
+    monkeypatch.setattr(cams, "window_settings", lambda: Store(set()))
+    t = cams.tile_flags(chosen, {}, defaults, [], False, None)
+    assert t == {"a": ["--tile", "1/3"], "b": ["--tile", "2/3"], "d": ["--tile", "3/3"]}
+    assert cams.launch_argv(chosen[0], defaults, t["a"], "cameras.ini", "ctl")[-2:] == ["--tile", "1/3"]
+    # a remembered place, a layout entry, a --geometry typed after start, a headless camera: no cell
+    monkeypatch.setattr(cams, "window_settings", lambda: Store({cams.url_hash(chosen[1].url)}))
+    assert cams.tile_flags(chosen, {}, defaults, [], False, None) == {"a": ["--tile", "1/2"], "d": ["--tile", "2/2"]}
+    lay = {"cameras": {"a": {"geometry": "0,0,640,360"}}}
+    assert cams.tile_flags(chosen, {}, defaults, [], False, lay) == {"d": ["--tile", "1/1"]}
+    assert cams.tile_flags(chosen, {}, defaults, ["--geometry=-10,0,640,360"], False, None) == {}
+    assert cams.tile_flags(chosen, {}, defaults, [], True, None) == {}                  # nova record
+    # a camera that is already running is not started, so it takes no cell
+    monkeypatch.setattr(cams, "window_settings", lambda: Store(set()))
+    monkeypatch.setattr(cams, "alive", lambda pid: pid == 4242)
+    assert cams.tile_flags(chosen, {"a": {"pid": 4242}}, defaults, [], False, None) == {"b": ["--tile", "1/2"], "d": ["--tile", "2/2"]}
+    # without PySide6 for the launcher there is no store to ask: every window is numbered, and one that
+    # has a place ignores its number
+    monkeypatch.setattr(cams, "window_settings", lambda: None)
+    assert len(cams.tile_flags(chosen, {}, defaults, [], False, None)) == 3

@@ -228,3 +228,28 @@ def test_masking_a_long_line_is_quick():
     t0 = time.monotonic()
     out = util.mask_url(line)
     assert time.monotonic() - t0 < 2.0 and "S3cret" not in out and "token=T" not in out
+
+
+def test_tile_cells_do_not_touch_and_stay_on_the_screen():
+    assert util.parse_tile("3/13") == (3, 13) and util.parse_tile("1/1") == (1, 1)
+    for bad in ("0/3", "4/3", "3", "a/b", "1/2/3", "", None, "-1/2", "1/0"):
+        assert util.parse_tile(bad) is None, bad
+    for n, area, grid in ((13, (0, 0, 3440, 1392), 20), (1, (0, 0, 1920, 1040), 20), (2, (-3440, 0, 3440, 1392), 20),
+                          (6, (0, 25, 2048, 1127), 20), (16, (0, 0, 1280, 680), 10), (5, (100, 50, 1920, 1040), 40)):
+        ax, ay, aw, ah = area
+        cells = [util.tile_rect(i, n, area, grid) for i in range(1, n + 1)]
+        assert len(set(cells)) == n
+        w, h = cells[0][2:]
+        assert all(c[2:] == (w, h) for c in cells) and h % grid == 0 and h <= ah / 3 and w == round(h * 16 / 9)
+        for x, y, _, _ in cells:                       # inside the area, a grid step from its edges
+            assert ax + grid <= x and x + w <= ax + aw - grid and ay + grid <= y and y + h <= ay + ah - grid, (n, area)
+        for a in cells:                                # a grid step between any two windows
+            for b in cells:
+                if a != b:
+                    apart_x = a[0] + w + grid <= b[0] or b[0] + w + grid <= a[0]
+                    apart_y = a[1] + h + grid <= b[1] or b[1] + h + grid <= a[1]
+                    assert apart_x or apart_y, (a, b)
+    assert util.tile_rect(1, 13, (0, 0, 3440, 1392)) == (80, 136, 640, 360)       # five columns, three rows
+    assert util.tile_rect(13, 13, (0, 0, 3440, 1392)) == (1400, 896, 640, 360)    # the last row starts at the left
+    x, y, w, h = util.tile_rect(200, 200, (0, 0, 1280, 680))                      # more than fit: small, but a size
+    assert w >= 1 and h >= 1

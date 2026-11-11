@@ -80,6 +80,12 @@ def build_parser():
         help="Initial zoom region as ratios rx,ry,rw,rh of the picture (0,0,1,1 = whole picture)."
     )
     parser.add_argument(
+        "--tile",
+        type=str,
+        metavar="I/N",
+        help="Where a window without a remembered place opens: cell I of N in a grid on the primary screen (nova start gives it to such windows)."
+    )
+    parser.add_argument(
         "-a", "--audio", "--enable-audio",
         dest="auto_audio",
         action="store_true",

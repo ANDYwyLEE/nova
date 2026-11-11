@@ -109,7 +109,7 @@ nova -c FILE <command>               use FILE instead of cameras.ini
 
 ## Layouts
 
-Every window remembers its own place. A layout remembers the whole wall: which cameras are open, where each window sits, how big it is and which part of the picture it shows. Keep as many as you like (`work`, `away`, `one-monitor`, …).
+Every window remembers its own place. A window that has none yet (a camera started for the first time) opens in a grid: `nova start` numbers such windows (`--tile I/N`) and each takes its cell on the primary screen, as large as the count allows up to a third of the screen's height, one grid step (`-g`, 20 px) away from its neighbours and from the screen's edges; from then on it stays where you put it. A layout remembers the whole wall: which cameras are open, where each window sits, how big it is and which part of the picture it shows. Keep as many as you like (`work`, `away`, `one-monitor`, …).
 
 ```
 nova layout save NAME        write the open cameras' windows to layouts/NAME.json
@@ -152,6 +152,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 | `-g, --grid-size` | Grid size for window alignment in pixels. Default: 20. |
 | `--geometry` | Initial window placement x,y,w,h; overrides the remembered one (nova start --layout uses it). |
 | `--zoom` | Initial zoom region as ratios rx,ry,rw,rh of the picture (0,0,1,1 = whole picture). |
+| `--tile` | Where a window without a remembered place opens: cell I of N in a grid on the primary screen (nova start gives it to such windows). |
 | `-a, --audio, --enable-audio` | Enable audio playback automatically on startup. |
 | `--headless, --no-gui` | Run in headless mode without showing the visual camera window. |
 | `-r, --record, --auto-record` | Start recording automatically on startup. |

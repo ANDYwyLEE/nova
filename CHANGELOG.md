@@ -27,11 +27,12 @@ Fixed:
 - **Media Foundation encoders never recorded.** `h264_mf`, the last hardware candidate on Windows, passed the probe and failed at every real open, so a build without NVENC, Quick Sync and AMF went through two warnings to libx264. Media Foundation needs a bitrate, which the stream did not have, and FFmpeg takes Microsoft's software encoder unless told otherwise. Nova now asks for the GPU's encoder (`hw_encoding=1`) at 0.1 bit per pixel and frame unless `-b:v` is given: the two test cameras record at 6–14 % of a core where libx264 took 58–188 %. With the PyPI wheel the vendor encoders still come first.
 - **`nova doctor` over ssh told a PC with a working driver to install one.** Windows' session 0 has no GPU, so Qt falls back to software OpenGL there; doctor now says so and points to the desktop.
 - **Tests**: the two that run the icon generator skip without QtSvg, which MSYS2 packages separately and Nova itself does not use.
+- **A first start is a grid, not a pile.** A window that has no remembered place opened 320x180 wherever the system put it, and Windows puts every such window at the same spot: thirteen cameras started for the first time were one pile to pull apart. `nova start` now numbers the windows that have no place (`--tile I/N`) and each opens in its cell of a grid on the primary screen: thirteen on a 3440x1440 monitor are five columns of 640x360 windows, a grid step (20 px) apart and away from the edges. A window is at most a third of the screen high, so one or two new cameras do not take over the screen. Windows that have a place, a layout entry or a `--geometry` are not counted and open where they belong; the cell becomes the window's remembered place like any other.
+- **An exception at start left no trace under `-l CRITICAL`.** Uncaught exceptions were logged as errors, so a camera on a quiet wall could exit with code 1 and an empty log. They are logged as critical now.
 
 Seen and left as it is:
 
 - `--accel d3d12va` falls back to software decoding on this GPU after 30 packets: FFmpeg's D3D12 decoder needs a decode tier the driver does not offer.
-- A window that has no remembered place opens 320x180 in the middle of a monitor, and Windows puts every such window at the same spot: the first `nova start` of many cameras is a pile to pull apart once (or a layout to write). Linux window managers spread them.
 - The custom FFmpeg recipe for MSYS2 builds as written (FFmpeg from git, `av` 19.0.2 against it), but it is the Quick Sync recipe: on an AMD GPU it has no AMF, and recording goes through Media Foundation.
 
 ## 2026-11-10 — Three pinned packages with security advisories

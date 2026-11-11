@@ -17,7 +17,7 @@ from mousehandler import MouseHdlr
 from keyhandler import KeyHdlr
 from helper import Helper
 from fonts import MONO
-from util import WSL, MAC, WINDOWS, mask_url, window_title, parse_geom, parse_zoom, WindowStore
+from util import WSL, MAC, WINDOWS, mask_url, window_title, parse_geom, parse_zoom, parse_tile, tile_rect, WindowStore
 from wmipc import Placer, FIND_TIMEOUT_S
 
 GS = 20 # default grid size
@@ -77,6 +77,7 @@ class Nova(QOpenGLWindow):
         border=False,
         geometry=None,
         zoom=None,
+        tile=None,
     ):
         super().__init__()
 
@@ -154,7 +155,16 @@ class Nova(QOpenGLWindow):
         else:
             if g:
                 logging.warning(f"[Nova] ⚠️ ignoring geometry {str(g)[:60]!r}: not x,y,w,h with a positive size")
-            self.resize(320, 180)
+            # No place on record. Left to the system, Windows opens every such window at the same spot
+            # (13 cameras: one pile of 320x180 windows); `nova start` numbers them and each takes its cell.
+            t = parse_tile(tile) if tile else None
+            if tile and not t:
+                logging.warning(f"[Nova] ⚠️ ignoring tile {str(tile)[:20]!r}: not I/N with 1 <= I <= N")
+            if t:
+                p = self._primary_rect()
+                self._geom(*tile_rect(t[0], t[1], (p.x(), p.y(), p.width(), p.height()), self.grid))
+            else:
+                self.resize(320, 180)
         # Geometry of the window when neither fullscreen nor maximized: what is persisted in those states.
         self._normal_geom = self.geometry()
 

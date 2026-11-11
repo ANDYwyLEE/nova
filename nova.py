@@ -198,6 +198,7 @@ if __name__ == "__main__":
             border=args.border,
             geometry=args.geometry,
             zoom=args.zoom,
+            tile=args.tile,
         )
     else:
         # nobody owns a window: a fatal worker error must end the process

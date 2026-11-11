@@ -230,6 +230,32 @@ def layout_flags(layout, cam):
     return flags
 
 
+def tile_flags(chosen, pids, defaults, extra, record, layout):
+    """{camera id: ['--tile', 'I/N']} for the cameras of this start whose window has no place yet: nothing on
+    record, no layout entry, no --geometry of their own. Left to the system such windows open wherever it
+    puts them, and Windows puts every one at the same spot; numbered, each opens in its cell of a grid
+    (util.tile_rect). Cameras with a place are not counted, so the cells are as large as they can be."""
+    try:
+        store = window_settings()
+    except Exception:
+        store = None                    # without PySide6 here every window counts; one with a place ignores --tile
+    need = []
+    for cam in chosen:
+        old = pids.get(cam.id)
+        if old and alive(old["pid"]):
+            continue
+        argv = command(cam, defaults, extra, record, layout)
+        if not mode_of(argv).startswith("window") or has_flag(argv, {"--geometry", "--tile"}):
+            continue
+        try:
+            if store is not None and store.read(url_hash(cam.url))[0]:
+                continue
+        except Exception:
+            pass
+        need.append(cam.id)
+    return {cid: ["--tile", f"{i}/{len(need)}"] for i, cid in enumerate(need, 1)}
+
+
 def umask():
     """077 (files for this user only) unless NOVA_UMASK says otherwise, e.g. 022 when another account or
     a service (Samba, a media server, backups) reads videos/."""
@@ -706,12 +732,14 @@ def cmd_start(defaults, env, cams, args, record=False):
         chosen = [known[i] for i in layout["cameras"] if i in known]
     else:
         chosen = select(cams, args.ids, only_enabled=True)
+    tiles = tile_flags(chosen, pids, defaults, args.extra, record, layout)
     for cam in chosen:
         old = pids.get(cam.id)
         if old and alive(old["pid"]):
             print(f"{cam.id}: already running (pid {old['pid']}, {old['mode']})")
             continue
-        argv = command(cam, defaults, args.extra, record, layout)
+        extra = list(args.extra) + tiles.get(cam.id, [])
+        argv = command(cam, defaults, extra, record, layout)
         mode = mode_of(argv)
         if mode == "headless":
             print(f"{cam.id}: refused - headless without -r or -t would neither show nor save anything "
@@ -725,7 +753,7 @@ def cmd_start(defaults, env, cams, args, record=False):
             continue
         gpu = assign_gpu(cam, cams, env, argv)
         address = control_address(cam.id)
-        run = launch_argv(cam, defaults, args.extra, args.config, address, record, layout)
+        run = launch_argv(cam, defaults, extra, args.config, address, record, layout)
         with open_log(cam.id) as log:
             log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} nova {'record' if record else 'start'} "
                       f"{cam.id} ({mode}) =====\n".encode())

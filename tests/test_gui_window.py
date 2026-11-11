@@ -237,6 +237,39 @@ def test_a_place_on_a_missing_monitor_opens_on_the_primary_screen(make, app):
     assert stored(core)[0] == f"{g.x()},{g.y()},{g.width()},{g.height()}"
 
 
+def test_a_window_without_a_place_opens_in_its_tile(make, app):
+    """nova start numbers the windows that have no place (--tile I/N): each opens in its cell of a grid on
+    the primary screen, and that becomes its remembered place. A remembered place and --geometry win."""
+    import util
+    p = QGuiApplication.primaryScreen().availableGeometry()
+    area = (p.x(), p.y(), p.width(), p.height())
+    w, core = make(tile="2/6")
+    g = w.geometry()
+    assert (g.x(), g.y(), g.width(), g.height()) == util.tile_rect(2, 6, area, 20)
+    w._persist_if_changed()
+    assert stored(core)[0] == f"{g.x()},{g.y()},{g.width()},{g.height()}"
+    w2, _ = make("200,100,320,180", None, key="t_tile_with_a_place", tile="2/6")
+    assert (w2.geometry().x(), w2.geometry().y(), w2.width(), w2.height()) == (200, 100, 320, 180)
+    w3, _ = make(key="t_tile_with_geometry", geometry="40,60,480,270", tile="2/6")
+    assert (w3.geometry().x(), w3.geometry().y(), w3.width(), w3.height()) == (40, 60, 480, 270)
+    w4, _ = make(key="t_tile_bad", tile="7/6")              # not a cell: as without --tile
+    assert (w4.width(), w4.height()) == (320, 180)
+
+
+def test_the_opengl_window_takes_what_nova_py_passes(make, monkeypatch):
+    """nova.py builds either view with the same keywords. NovaGL listed its own and did not know `tile`:
+    every --opengl window died at start with a TypeError (and, at -l CRITICAL, without a line in its log)."""
+    import novagl
+    import util
+    for name in dir(novagl):
+        if name.startswith("gl"):
+            monkeypatch.setattr(novagl, name, lambda *a, **k: None)
+    p = QGuiApplication.primaryScreen().availableGeometry()
+    w, _ = make(cls=novagl.NovaGL, grid=20, border=True, geometry=None, zoom=None, tile="3/4")
+    g = w.geometry()
+    assert (g.x(), g.y(), g.width(), g.height()) == util.tile_rect(3, 4, (p.x(), p.y(), p.width(), p.height()), 20)
+
+
 def test_a_larger_than_screen_window_off_screen_is_shrunk_with_its_ratio(make):
     s = screen_rect()
     w, core = make(f"9000,9000,{s.width() * 2},{s.height()}", None)

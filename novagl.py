@@ -89,7 +89,7 @@ def _enum_int(v, default):
 
 
 class NovaGL(Nova):
-    def __init__(self, core, grid=20, border=False, geometry=None, zoom=None):
+    def __init__(self, core, grid=20, border=False, **place):       # place: geometry, zoom, tile (view.Nova)
         self.shader_program = None
         self.VAO = self.VBO = self.EBO = self.VAO_static = self.VBO_static = None
         self.video_texture = None
@@ -103,7 +103,7 @@ class NovaGL(Nova):
         self._gl_reported_at = None    # time.monotonic() of the last error report
         self._gl_rebuilt_at = None
         self._gl_dead = False          # given up: only the OSD is drawn, with the error message
-        super().__init__(core, grid, border, geometry=geometry, zoom=zoom)
+        super().__init__(core, grid, border, **place)
 
     def _surface_format(self):
         # Applied by Nova.__init__ *before* show(): a 3.3 core profile is required for the
