@@ -21,7 +21,12 @@ def app():
 
 @pytest.fixture(scope="module")
 def gen_icon(app):
-    spec = importlib.util.spec_from_file_location("gen_icon", os.path.join(ROOT, "tools", "gen_icon.py"))
+    # tools/gen_icon.py renders the drawings with QtSvg, which Nova itself never loads (the icon is PNG files).
+    # MSYS2's pyside6 has the module but not Qt's DLL unless mingw-w64-ucrt-x86_64-qt6-svg is installed, and
+    # docs/install.md's package list does not ask for it: "DLL load failed while importing QtSvg".
+    pytest.importorskip("PySide6.QtSvg", exc_type=ImportError,
+                        reason="QtSvg is not installed (only tools/gen_icon.py needs it)")
+    spec =importlib.util.spec_from_file_location("gen_icon", os.path.join(ROOT, "tools", "gen_icon.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
