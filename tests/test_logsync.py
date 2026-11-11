@@ -51,6 +51,9 @@ def test_uncaught_exceptions_go_through_logging(monkeypatch):
     finally:
         root.removeHandler(h)
     assert seen and "pw3" not in seen[0].exc_text and "rtsp://a:***@h/z" in seen[0].exc_text
+    # at CRITICAL: a wall runs at -l CRITICAL, and a camera that died of an exception at start left an
+    # empty log ("exited with code 1 right after start")
+    assert seen[0].levelno == logging.CRITICAL
 
 
 # ---------------------------------------------------------------- FFmpeg's log through PyAV

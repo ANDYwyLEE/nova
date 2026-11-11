@@ -69,7 +69,9 @@ def install_excepthooks():
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc, tb)
             return
-        logging.getLogger().error("Uncaught exception", exc_info=(exc_type, exc, tb))
+        # CRITICAL: a camera that dies of one at start left an empty log under `-l CRITICAL`, the level a
+        # quiet wall runs at ("exited with code 1 right after start" and nothing to read)
+        logging.getLogger().critical("Uncaught exception", exc_info=(exc_type, exc, tb))
     sys.excepthook = hook
     threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
 
