@@ -90,9 +90,23 @@ def test_opengl_pyopengl_cannot_reach(monkeypatch, tmp_path):
     line = ("windows: VMware, Inc. / Gallium 0.4 on llvmpipe (LLVM 3.6, 128 bits) / 3.0 Mesa 11.2.2 "
             "(context 3.0, Qt's software opengl32sw.dll), PyOpenGL cannot use it (GLError 1282)")
     monkeypatch.setattr(doctor, "gl_line", lambda python=None: line)
+    monkeypatch.setattr(doctor, "windows_service_session", lambda: False)
     out = doctor.report(config=str(tmp_path / "none.ini"))
     assert "--opengl cannot work here" in out
     assert "OpenGL comes from a GPU driver" not in out and "rendered in software" not in out
+    assert "session 0" not in out
+
+
+def test_opengl_in_windows_session_0_is_not_blamed_on_the_driver(monkeypatch, tmp_path):
+    """nova doctor over ssh (Windows session 0, no GPU) on a PC whose AMD driver works: Qt falls back to
+    opengl32sw.dll there, and the report told the user to install the GPU driver (2026-11-11)."""
+    line = ("windows: VMware, Inc. / Gallium 0.4 on llvmpipe (LLVM 3.6, 128 bits) / 3.0 Mesa 11.2.2 "
+            "(context 3.0, Qt's software opengl32sw.dll), PyOpenGL cannot use it (GLError 1282)")
+    monkeypatch.setattr(doctor, "gl_line", lambda python=None: line)
+    monkeypatch.setattr(doctor, "windows_service_session", lambda: True)
+    out = doctor.report(config=str(tmp_path / "none.ini"))
+    assert "session 0" in out and "from the desktop" in out
+    assert "--opengl cannot work here" not in out and "install the GPU driver" not in out
 
 
 def test_no_opengl_context_says_windows_need_one(monkeypatch, tmp_path):

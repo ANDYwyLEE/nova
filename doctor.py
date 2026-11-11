@@ -189,6 +189,21 @@ def _qt_software_gl():
         return ""
 
 
+def windows_service_session():
+    """True in Windows session 0, where services and ssh logins run: it has no display and no GPU, so Qt
+    falls back to its software opengl32sw.dll there whatever the driver; windows on the desktop are not
+    affected. (Seen 2026-11-11: doctor over ssh blamed a missing GPU driver on a PC with a working one.)"""
+    if not WINDOWS:
+        return False
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32")
+        sid = ctypes.c_ulong()
+        return bool(k32.ProcessIdToSessionId(k32.GetCurrentProcessId(), ctypes.byref(sid))) and sid.value == 0
+    except (OSError, AttributeError):
+        return False
+
+
 def gl_line(python=None):
     """gl_probe() in a child process: a crashing driver or a hung display connection must not
     take the report with it."""
@@ -436,7 +451,10 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         else:
             out.append(("✓", f"NVIDIA driver {d} is recent enough for NVENC"))
     # OpenGL
-    if "PyOpenGL cannot use it" in gl:
+    if windows_service_session() and ("PyOpenGL cannot use it" in gl or re.search(r"llvmpipe|softpipe", gl, re.I)):
+        out.append(("ℹ", "this runs in Windows session 0 (ssh or a service), which has no GPU: the OpenGL above is not "
+                         "what windows on the desktop get; run nova doctor from the desktop to check --opengl"))
+    elif "PyOpenGL cannot use it" in gl:
         out.append(("⚠", "--opengl cannot work here: Nova draws through PyOpenGL, which cannot reach this OpenGL "
                          "(on Windows: no GPU driver, Qt fell back to its software opengl32sw.dll), and an --opengl "
                          "window closes at start; leave --opengl out of opts, or install the GPU driver"))
