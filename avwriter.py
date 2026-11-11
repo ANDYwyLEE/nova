@@ -34,6 +34,23 @@ def _family(name: str) -> str:
     if "vp9" in n: return "vp9"
     return "h264"
 
+def _mf_opts(encoder_name, opts):
+    """opts with hw_encoding=1 for a Media Foundation encoder, unless the user chose. FFmpeg's *_mf encoders
+    take Microsoft's software MFT by default: its H.264 one ignored a 4 Mbit/s target on a test pattern
+    (140 Mbit/s) and there is no HEVC one, while with hw_encoding=1 the GPU vendor's MFT encodes (AMD's on a
+    Ryzen 5900HX: 5 ms per 1080p frame, the bitrate kept). In the list of hardware encoders, mf means that."""
+    if encoder_name.endswith("_mf") and "hw_encoding" not in opts:
+        return {**opts, "hw_encoding": "1"}
+    return opts
+
+
+def _mf_bitrate(width, height, fps):
+    """Media Foundation refuses an output type without a bitrate ("could not set output type"), and a stream
+    made by add_stream has none: 0.1 bit per pixel and frame (1080p25: 5.2 Mbit/s, 1080p10: 2.1), as much
+    as h264_amf writes for the same cameras by default."""
+    return max(500_000, int(width * height * max(1, fps) * 0.1))
+
+
 LIVE_FORMATS = ("flv", "mpegts", "hls", "rtsp", "rtp_mpegts")
 LIVE_MAX_LEAD = 1.0 # s a live stream may run ahead of the clock (YouTube: ~1 s of video per second)
 AUDIO_WAIT = 2.0    # s of video a writer waits for the camera's first audio frame before deciding the track
@@ -236,7 +253,7 @@ class EncoderManager:
             ctx.pix_fmt = opts.get('pix_fmt') or _get_best_pix_fmt(encoder_name)
             ctx.time_base = Fraction(1, 30)
             ctx.framerate = Fraction(30, 1)
-            ctx.options.update({k: v for k, v in opts.items() if k != 'pix_fmt'})
+            ctx.options.update({k: v for k, v in _mf_opts(encoder_name, opts).items() if k != 'pix_fmt'})
             ctx.open()
             return None
         except Exception as e:
@@ -623,6 +640,11 @@ class AVWriter:
             final_v_opts[k] = v
         if c_name == "libx265" and 'x265-params' not in final_v_opts:
             final_v_opts['x265-params'] = 'log-level=warning'     # x265 is very chatty at INFO
+        if c_name.endswith("_mf"):
+            final_v_opts = _mf_opts(c_name, final_v_opts)
+            if not any(k in final_v_opts for k in ('b', 'bit_rate')):
+                try: v_ctx.bit_rate = _mf_bitrate(self.width, self.height, self.fps)
+                except Exception as e: logging.debug(f"[AVWriter] bit_rate not settable: {e}")
         v_ctx.options.update(final_v_opts)
 
         tag = v_tag

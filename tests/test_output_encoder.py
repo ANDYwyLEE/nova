@@ -136,3 +136,37 @@ def test_a_user_encoder_the_target_cannot_carry_is_not_used(monkeypatch, caplog,
         w.close()
     warns = [r.getMessage() for r in caplog.records if "carries" in r.getMessage()]
     assert len(warns) == 1 and "-e hevc_nvenc: flv carries h264 only; using" in warns[0], warns
+
+
+def test_media_foundation_means_the_hardware_encoder_with_a_bitrate():
+    """*_mf sits in the list of hardware encoders, but FFmpeg takes Microsoft's software MFT unless
+    hw_encoding=1 is set, and Media Foundation refuses a stream without a bitrate (found on an AMD PC)."""
+    assert avwriter._mf_opts("h264_mf", {}) == {"hw_encoding": "1"}
+    assert avwriter._mf_opts("hevc_mf", {"hw_encoding": "0", "b": "4M"}) == {"hw_encoding": "0", "b": "4M"}
+    assert avwriter._mf_opts("h264_amf", {"usage": "transcoding"}) == {"usage": "transcoding"}
+    assert avwriter._mf_opts("libx264", {}) == {}
+    assert avwriter._mf_bitrate(1920, 1080, 25) == 5_184_000
+    assert avwriter._mf_bitrate(1920, 1080, 10) == 2_073_600
+    assert avwriter._mf_bitrate(320, 180, 5) == 500_000
+
+
+@pytest.mark.skipif("h264_mf" not in av.codecs_available, reason="no Media Foundation encoder in this FFmpeg (Windows only)")
+def test_h264_mf_opens_for_a_real_recording(tmp_path, caplog, monkeypatch):
+    """h264_mf passed the probe (a bare context has 200 kbit/s) and then failed at every real open with
+    "could not set output type": add_stream leaves the bitrate at 0. With the software MFT here
+    (hw_encoding 0), since a machine without a GPU has no hardware one."""
+    if avwriter.EncoderManager._try_open("h264_mf", {"hw_encoding": "0"}) is not None:
+        pytest.skip("this Windows has no H.264 encoder MFT (a Server edition without Media Foundation)")
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    caplog.set_level(logging.INFO)
+    out = tmp_path / "mf.mp4"
+    w = avwriter.AVWriter(None, path=str(out), width=640, height=360, fps=25, encoder="h264_mf",
+                          enc_v_opts={"hw_encoding": "0"}, audio_enable=False)
+    for f in frames(50, 640, 360):
+        w.write_video(f)
+    w.close()
+    assert w.v_encoder == "h264_mf"
+    assert not [r.getMessage() for r in caplog.records if "does not open" in r.getMessage()]
+    with av.open(str(out)) as c:
+        assert c.streams.video[0].codec_context.name == "h264"
+        assert sum(1 for _ in c.decode(video=0)) == 50

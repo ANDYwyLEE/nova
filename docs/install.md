@@ -72,7 +72,7 @@ nova start
 ```
 
 - PyAudio wheels exist on PyPI for Python 3.8 to 3.13, so no compiler is needed there. There is no Windows wheel for Python 3.14 yet (October 2026): use 3.13, or build PyAudio against PortAudio yourself.
-- Accel: `cuda` (NVIDIA), `qsv` (Intel), `d3d11va` or `dxva2` (any GPU through the standard decoder), `amf` for AMD encoding.
+- Accel: `cuda` (NVIDIA), `qsv` (Intel), `d3d11va` or `dxva2` (any GPU through the standard decoder; with them an AMD GPU records through `h264_amf`), `amf` (AMD's own decoder). `d3d12va` falls back to software decoding where FFmpeg lacks the GPU's decode tier (an AMD Ryzen 5900HX, November 2026).
 - `nova.bat` uses `venv\Scripts\python.exe` automatically, so `nova start` works from a plain command prompt without activating the venv.
 
 ### Option B: MSYS2 UCRT64
