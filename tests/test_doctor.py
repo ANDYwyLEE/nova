@@ -185,15 +185,18 @@ def test_quick_sync_check_says_what_is_missing(monkeypatch):
     intel, nvidia = ("Intel", "8086:a780", "i915", "renderD128"), ("NVIDIA", "10de:2684", "nvidia", "renderD129")
     err = "[Errno 1313558101] Unknown error occurred; last error log: [h264_qsv] Error creating a MFX session: -9."
     check = doctor.quick_sync_check
+    monkeypatch.setattr(doctor.shutil, "which", lambda tool: "/usr/bin/" + tool)       # a system with apt
     assert check(set(), [nvidia], err) is None                        # no Intel GPU, not asked for: no line
     assert check({"cuda"}, [nvidia, intel], None)[0] == "✓"
     mark, text = check({"cuda"}, [nvidia, intel], err)                # an unused Intel GPU: good to know
     assert mark == "ℹ" and "intel-media-va-driver-non-free libmfx-gen1.2" in text and "MFX session: -9" in text
-    monkeypatch.setattr(doctor.shutil, "which", lambda tool: "/usr/bin/" + tool)
     mark, text = check({"qsv"}, [intel], err)                         # asked for and not working: worth fixing
     assert mark == "⚠" and "software decoding" in text and "apt install" in text
-    monkeypatch.setattr(doctor.shutil, "which", lambda tool: None)    # Fedora, Arch, openSUSE: no apt to name
+    monkeypatch.setattr(doctor.shutil, "which", lambda tool: None)    # no package manager Nova knows
     assert "apt" not in check({"qsv"}, [intel], err)[1] and "Quick Sync runtime" in check({"qsv"}, [intel], err)[1]
+    for tool, word in (("dnf", "RPM Fusion"), ("zypper", "libmfx-gen1_2"), ("pacman", "vpl-gpu-rt")):
+        monkeypatch.setattr(doctor.shutil, "which", lambda t, tool=tool: "/usr/bin/" + t if t == tool else None)
+        assert word in check({"qsv"}, [intel], err)[1] and "apt install" not in check({"qsv"}, [intel], err)[1]
     monkeypatch.setattr(doctor.shutil, "which", lambda tool: "/usr/bin/" + tool)
     assert check({"qsv"}, [], "")[0] == "⚠" and check(set(), [intel], "") is None      # a build without h264_qsv
     monkeypatch.setattr(doctor, "LINUX", False)

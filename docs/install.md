@@ -5,7 +5,7 @@ Nova needs Python 3.12 or newer and the packages in `requirements.txt`. Nothing 
 What a camera costs, measured on a 13-window wall (Ubuntu 26.04, two RTX 4090, `--opengl --accel cuda -f 30`): a live 1080p H.264 camera takes 4–11 % of one core (0.85 and 18 Mbit/s streams), about 375 MB of RAM and 430–460 MiB of VRAM; recording it adds about 250 MB and 500 MiB (the NVENC session); a window whose camera is unreachable idles at 220 MB without a GPU context. Software decoding of the 18 Mbit/s stream costs 40 % of a core. Thirteen windows together: 0.4 cores and 4 GB. The window is up within a second of launch, the first frame follows in 2–6 s.
 - [What the PyPI FFmpeg can do](#what-the-pypi-ffmpeg-can-do)
 - [What has run on real hardware](#what-has-run-on-real-hardware)
-- [Linux](#linux-ubuntu-2404-and-2604)
+- [Linux](#linux): Ubuntu, Debian, Mint, Fedora, RHEL/Rocky/Alma, openSUSE, Arch
 - [Windows](#windows)
 - [macOS](#macos)
 - [Updating](#updating)
@@ -39,19 +39,22 @@ Every combination below was run with real cameras, most of them recording severa
 
 | system | GPU | install | decoding (`--accel`) | recording |
 |---|---|---|---|---|
-| Ubuntu 26.04 | NVIDIA RTX 4090 (driver 595) | wheel | `cuda` | `h264_nvenc`, `hevc_nvenc` |
+| Ubuntu 26.04 | NVIDIA RTX 4090 (drivers 595 and 615), RTX 4060 (driver 615) | wheel | `cuda` | `h264_nvenc`, `hevc_nvenc`, `av1_nvenc` |
 | Ubuntu 26.04 | Intel UHD 770 (13th generation) | wheel + two packages | `qsv` | `h264_qsv`, `hevc_qsv` |
 | Ubuntu 26.04 | Intel UHD 770 | [custom FFmpeg](custom-ffmpeg.md) | `vaapi` | `h264_vaapi`, `hevc_vaapi` |
+| Ubuntu 26.04 | AMD Radeon (Ryzen 9 9955HX, Mesa 26) | [custom FFmpeg](custom-ffmpeg.md) | `vaapi` | `h264_vaapi`, `hevc_vaapi` |
 | Windows 11 | Intel UHD 620 (8th generation; drivers of 2020 and 2022) | Option A and Option B | `qsv`, `d3d11va`, `dxva2`, `d3d12va` | `h264_qsv`, `hevc_qsv` |
 | Windows 11 | AMD Radeon (Ryzen 9 5900HX) | Option A and Option B | `d3d11va`, `dxva2`, `amf` | `h264_amf`, `h264_mf` |
 | macOS 15 | Intel iMac 2019 (Radeon Pro 555X) | MacPorts | `videotoolbox` | `h264_videotoolbox` |
 | any of them | none | wheel | software | `libx264` |
 
-Not run on hardware: NVIDIA on Windows, an AMD GPU on Linux, Apple Silicon outside CI, AV1 encoding on any GPU (the Intel GPUs above have no AV1 encoder).
+Not run on hardware: NVIDIA on Windows, Apple Silicon outside CI, a Raspberry Pi or another ARM board (the arm64 install runs on GitHub's ARM runners, without a camera), AV1 encoding on an Intel or AMD GPU (the ones above have no AV1 encoder).
 
-The Linux commands of the next section are also run as written, by an ordinary user, in fresh `ubuntu:24.04`, `ubuntu:26.04` and `debian:13` images (Python 3.12, 3.14 and 3.13) each week: install, `nova doctor`, a recording, a window on a virtual screen and the tests.
+The Linux commands of the next section are also run as written, by an ordinary user, in a fresh image of every distribution named there (Python 3.12 to 3.14; Ubuntu and Debian on arm64 as well) each week: install, `nova doctor`, a recording through the launcher, a window on a virtual screen and the tests.
 
-## Linux (Ubuntu 24.04 and 26.04)
+## Linux
+
+Ubuntu 24.04 and 26.04, Debian 13, Linux Mint 22:
 
 ```bash
 sudo apt update
@@ -68,18 +71,58 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # then edit it: se
 ./nova start                                # a window per enabled camera; ./nova -h lists the commands
 ```
 
-- **Fedora** (and its relatives): the same steps with these packages in place of the apt line.
+Other distributions: the same steps, with these packages in place of the two `apt` lines.
+
+- **Fedora**
 
   ```bash
   sudo dnf install -y git python3 python3-devel gcc portaudio-devel mesa-libGL mesa-libEGL \
       glib2 dbus-libs fontconfig libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms
   ```
-- Ubuntu 24.04's `python3` is 3.12, which is enough: it installs the same `av` wheel, with the same NVIDIA/Intel/AMD codecs, as a newer Python. Ubuntu 22.04 (Python 3.10) needs a newer interpreter first (e.g. the deadsnakes PPA).
-- PyAudio has no Linux wheel and is compiled during `pip install`: that is what `build-essential`, `python3-dev` and `portaudio19-dev` are for (without a compiler: `No such file or directory: 'x86_64-linux-gnu-gcc'`). The `lib…` packages are what Qt loads at run time and does not bring itself; a desktop has most of them already, a server, a container or WSL does not (`ImportError: libglib-2.0.so.0`, or `Could not load the Qt platform plugin "xcb"`). These lines are run as written in fresh Ubuntu 24.04, Ubuntu 26.04 and Debian 13 images by the [Install guide](../.github/workflows/install-guide.yml) workflow.
+- **RHEL 10, Rocky Linux 10, AlmaLinux 10**: Fedora's packages, with EPEL for PortAudio's headers.
+
+  ```bash
+  sudo dnf install -y epel-release
+  sudo dnf install -y git python3 python3-devel gcc portaudio-devel mesa-libGL mesa-libEGL \
+      glib2 dbus-libs fontconfig libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms
+  ```
+- **RHEL 9, Rocky Linux 9, AlmaLinux 9**: `python3` there is 3.9, so Python 3.12 by name, and `python3.12 -m venv venv` in place of `python3 -m venv venv`.
+
+  ```bash
+  sudo dnf install -y epel-release
+  sudo dnf install -y git python3.12 python3.12-devel gcc portaudio-devel mesa-libGL mesa-libEGL \
+      glib2 dbus-libs fontconfig libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms
+  ```
+- **openSUSE Tumbleweed and Leap 16**
+
+  ```bash
+  sudo zypper install -y git python3 python3-devel gcc portaudio-devel Mesa-libGL1 Mesa-libEGL1 \
+      libglib-2_0-0 libgthread-2_0-0 krb5 libdbus-1-3 libfontconfig1 libxkbcommon-x11-0 \
+      libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0
+  ```
+- **Arch Linux** (Manjaro and EndeavourOS take the same packages)
+
+  ```bash
+  sudo pacman -Syu --needed git python base-devel portaudio libglvnd glib2 dbus fontconfig \
+      libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms
+  ```
+- **Which Python**: 3.12 or newer, whatever the distribution calls it. Ubuntu 24.04, Mint 22 and RHEL 10 have 3.12, Debian 13, openSUSE and Raspberry Pi OS 13 have 3.13, Ubuntu 26.04, Fedora and Arch have 3.14: all install the same `av` wheel. Ubuntu 22.04 and Mint 21 (Python 3.10) and Debian 12 (3.11) need a newer interpreter first (the deadsnakes PPA on Ubuntu, `uv python install 3.13` or pyenv anywhere).
+- **arm64** (Raspberry Pi 4 and 5 with a 64-bit system, other ARM boards and servers): `av` and PySide6 have aarch64 wheels, and the apt lines above are run on arm64 Ubuntu 24.04 and Debian 13 on GitHub's ARM runners, with the tests. No Raspberry Pi has run Nova with cameras here, so what its GPU does is not known; 32-bit ARM systems have no wheels.
+- PyAudio has no Linux wheel and is compiled during `pip install`: that is what `build-essential`, `python3-dev` and `portaudio19-dev` are for (without a compiler: `No such file or directory: 'x86_64-linux-gnu-gcc'`). The `lib…` packages are what Qt loads at run time and does not bring itself; a desktop has most of them already, a server, a container or WSL does not (`ImportError: libglib-2.0.so.0`, or `Could not load the Qt platform plugin "xcb"`). On openSUSE the same libraries are packaged one by one, hence `libgthread-2_0-0` and `krb5` (`ImportError: libgthread-2.0.so.0`, and `libgssapi_krb5.so.2` for Qt's network module, which the launcher's cameras need). `nova doctor` names a Qt module that does not load and the library it misses. Every package line here is run as written in a fresh image of its distribution by the [Install guide](../.github/workflows/install-guide.yml) workflow.
 - **NVIDIA**: the proprietary driver is all that is required (`libnvcuvid.so`, `libnvidia-encode.so` come with it); the CUDA toolkit is not needed. Use `--accel cuda`. The wheel's NVENC needs **driver 570.0 or newer** (`The minimum required Nvidia driver for nvenc is 570.0` in the log otherwise): Ubuntu 26.04 ships that, on 24.04 pick `nvidia-driver-570` or newer rather than the 535/550 series. With an older driver Nova still runs and records, but encodes with libx264 on the CPU.
-- **Intel**: `--accel qsv` works with the wheel once Intel's driver and Quick Sync runtime are there: `sudo apt install intel-media-va-driver-non-free libmfx-gen1.2` (the wheel brings the dispatcher itself, `libvpl2` is not needed). It has to be the non-free driver: with `intel-media-va-driver`, `h264_qsv` records only with `-low_power 1` and `hevc_qsv` not at all. `nova doctor` lists the Intel GPU and says whether Quick Sync starts. `libmfx-gen1.2` is Intel's runtime for 11th-generation Core (Tiger Lake) and newer; an older Intel GPU, like an AMD one, needs `--accel vaapi`, which needs the [custom build](custom-ffmpeg.md) and then decodes and records on the GPU (run on an Intel GPU; not on an AMD one). An integrated Intel GPU next to NVIDIA cards can do the decoding and recording while an NVIDIA card draws the desktop: a camera then takes none of the NVIDIA cards' memory (run on an i9-13900K's UHD Graphics 770 with two RTX 4090, Ubuntu 26.04, November 2026; numbers in the changelog). `--gpu` and `NOVA_GPU_DEVICES` do not apply to Quick Sync (each camera says so once in its log). Which GPU draws the desktop is the system's business, not Nova's: Nova uses the OpenGL the session gives it.
+- **Intel**: `--accel qsv` works with the wheel once Intel's driver and Quick Sync runtime are there (the wheel brings the dispatcher itself, `libvpl2` is not needed):
+
+  | | |
+  |---|---|
+  | Ubuntu, Debian (non-free) | `sudo apt install intel-media-va-driver-non-free libmfx-gen1.2` |
+  | Fedora | `sudo dnf install intel-media-driver intel-vpl-gpu-rt`, the driver from RPM Fusion's nonfree repository |
+  | openSUSE | `sudo zypper install intel-media-driver libmfx-gen1_2` |
+  | Arch | `sudo pacman -S intel-media-driver vpl-gpu-rt` |
+
+  It has to be the driver build with the encoders: with Ubuntu's `intel-media-va-driver`, `h264_qsv` records only with `-low_power 1` and `hevc_qsv` not at all, and with Fedora's own `libva-intel-media-driver` neither opens. Ubuntu's line has run with cameras for hours; the others opened `h264_qsv` and `hevc_qsv` in an image of each distribution on the same GPU (UHD Graphics 770). `nova doctor` lists the Intel GPU, says whether Quick Sync starts and names the packages for the distribution it runs on. The runtime is Intel's for 11th-generation Core (Tiger Lake) and newer; an older Intel GPU needs `--accel vaapi`, as an AMD GPU does. An integrated Intel GPU next to NVIDIA cards can do the decoding and recording while an NVIDIA card draws the desktop: a camera then takes none of the NVIDIA cards' memory (run on an i9-13900K's UHD Graphics 770 with two RTX 4090, Ubuntu 26.04, November 2026; numbers in the changelog). `--gpu` and `NOVA_GPU_DEVICES` do not apply to Quick Sync (each camera says so once in its log). Which GPU draws the desktop is the system's business, not Nova's: Nova uses the OpenGL the session gives it.
+- **AMD** (and Intel before the 11th generation): `--accel vaapi`, which the wheel's FFmpeg lacks: it needs the [custom build](custom-ffmpeg.md), and then decodes and records on the GPU through the VA driver that is part of Mesa. Run on a Ryzen 9 9955HX's Radeon graphics (Ubuntu 26.04, Mesa 26, November 2026): two 1080p cameras decoded and recorded with `h264_vaapi` at 2 to 3 % of a core and 240 MB each, where software decoding and libx264 took 35 to 59 % and twice the memory. Without `--gpu`, Nova takes the first GPU that is not an NVIDIA card, so the Radeon next to an NVIDIA card is found whichever of them the kernel numbered first.
 - **Wayland**: Nova positions its frameless windows itself, which Wayland compositors do not allow, so on a Wayland session it runs under XWayland, even where the desktop exports `QT_QPA_PLATFORM=wayland` for every application. GNOME, KDE and Xfce's labwc honour X11 positions, so nothing needs setting up; on Ubuntu 26.04's GNOME, which has no X11 session any more, this is the normal way to run. sway and Hyprland ignore them, so there Nova places its windows through the compositor's IPC, without rules ([user guide, Layouts](user-guide.md#layouts)). `QT_QPA_PLATFORM = wayland` in `[env]` gives native Wayland windows, NVIDIA included. Desktops with an X11 session (Cinnamon, Xfce, KDE) need nothing.
-- **Headless servers** (recording/streaming only): `--headless` sets `QT_QPA_PLATFORM=offscreen`; no X server is needed.
+- **Headless servers** (recording/streaming only): `--headless` sets `QT_QPA_PLATFORM=offscreen`; no X server is needed. NVIDIA decoding and NVENC work from any login. An Intel or AMD GPU is reached through `/dev/dri/renderD*`, which a desktop login is given and an ssh login or a service is not: put the user in the node's group (`sudo usermod -aG render $USER`, then log in again). Until then `--accel vaapi` reports `No VA display found for device /dev/dri/renderD…`, Quick Sync `Unknown error occurred`, and the camera decodes in software; `nova doctor` says when a node is closed to the user.
 
 ## Windows
 

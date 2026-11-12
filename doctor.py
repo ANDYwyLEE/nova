@@ -324,8 +324,13 @@ def drm_gpus(root="/sys/class/drm"):
     return out
 
 
-INTEL_PACKAGES = (        # package manager -> Intel's VA driver (with its encoders) and Quick Sync runtime
+INTEL_PACKAGES = (        # package manager -> Intel's VA driver (the build with encoders) and Quick Sync runtime;
+    # each line opened h264_qsv and hevc_qsv in that distribution's image on a UHD 770 (November 2026)
     ("apt-get", "sudo apt install intel-media-va-driver-non-free libmfx-gen1.2"),
+    ("pacman", "sudo pacman -S intel-media-driver vpl-gpu-rt"),
+    ("zypper", "sudo zypper install intel-media-driver libmfx-gen1_2"),
+    ("dnf", "sudo dnf install intel-media-driver intel-vpl-gpu-rt, the driver from RPM Fusion "
+            "(Fedora's own libva-intel-media-driver has no H.264/HEVC encoder)"),
 )
 
 

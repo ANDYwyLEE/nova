@@ -2,8 +2,9 @@ name: Install guide
 
 # docs/install.md, Linux: its commands as they are written, in a distribution image that has nothing
 # installed yet (the runners themselves come with a compiler, Python and half of the libraries, so CI
-# cannot tell when the guide forgets a package: it had forgotten the compiler PyAudio needs).
-# By hand, weekly, and when the guide or the requirements change.
+# cannot tell when the guide forgets a package: it had forgotten the compiler PyAudio needs, and on
+# openSUSE two libraries Qt loads). Every distribution the guide names has a job; each reads its own
+# package lines from the guide. By hand, weekly, and when the guide or the requirements change.
 on:
   schedule:
     - cron: "30 3 * * 1"          # Mondays 03:30 UTC
@@ -14,45 +15,64 @@ on:
       - docs/install.md
       - requirements.txt
       - requirements-dev.txt
+      - tools/ci_clip.py
       - .github/workflows/install-guide.yml
 
 jobs:
   linux:
-    name: ${{ matrix.image }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name || matrix.image }}
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     container: ${{ matrix.image }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        image: ["ubuntu:24.04", "ubuntu:26.04", "debian:13", "fedora:latest"]
+        # block: words of the line in docs/install.md that the distribution's package commands follow
+        include:
+          - { image: "ubuntu:24.04", block: "Ubuntu 24.04 and 26.04, Debian 13" }
+          - { image: "ubuntu:26.04", block: "Ubuntu 24.04 and 26.04, Debian 13" }
+          - { image: "debian:13", block: "Ubuntu 24.04 and 26.04, Debian 13" }
+          - { image: "fedora:latest", block: "**Fedora**" }
+          - { image: "rockylinux/rockylinux:10", block: "**RHEL 10" }
+          - { image: "almalinux:9", block: "**RHEL 9", python: "python3.12" }
+          - { image: "registry.opensuse.org/opensuse/tumbleweed:latest", name: "opensuse/tumbleweed", block: "**openSUSE" }
+          - { image: "registry.opensuse.org/opensuse/leap:16.0", name: "opensuse/leap:16.0", block: "**openSUSE" }
+          - { image: "archlinux:latest", block: "**Arch Linux" }
+          # arm64 (Raspberry Pi OS 13 is Debian 13): the same lines on GitHub's ARM runners
+          - { image: "ubuntu:24.04", runner: "ubuntu-24.04-arm", name: "ubuntu:24.04 arm64", block: "Ubuntu 24.04 and 26.04, Debian 13" }
+          - { image: "debian:13", runner: "ubuntu-24.04-arm", name: "debian:13 arm64", block: "Ubuntu 24.04 and 26.04, Debian 13" }
     env:
       DEBIAN_FRONTEND: noninteractive
+      BLOCK: ${{ matrix.block }}
+      PY: ${{ matrix.python || 'python3' }}
     steps:
       - uses: actions/checkout@v5
-      - name: The guide's package line, read from docs/install.md
+      - name: The guide's package lines, read from docs/install.md
         run: |
-          if command -v apt-get > /dev/null; then apt-get update; tool=apt; else tool=dnf; fi
-          line=$(awk -v pat="^ *sudo $tool install" '$0 ~ pat {p=1} p{print} p && !/\\$/{exit}' docs/install.md | sed -e 's/^ *sudo //' -e 's/\\$//' | tr '\n' ' ')
-          echo "$line"
-          case "$line" in "$tool install -y "*) ;; *) echo "could not read the $tool line from the guide"; exit 1;; esac
-          $line
+          # the first paragraph of the first ```bash block after the line that holds $BLOCK, without sudo
+          awk -v lab="$BLOCK" 'index($0, lab) {f=1} f && /```bash/ {b=1; next} b && (/```/ || /^ *$/) {exit} b {print}' docs/install.md \
+            | sed -e 's/^ *//' -e 's/sudo //g' -e 's/pacman -S/pacman --noconfirm -S/' > /tmp/packages.sh
+          cat /tmp/packages.sh
+          grep -qE '(apt|dnf|zypper) install -y |pacman --noconfirm -S' /tmp/packages.sh || { echo "could not read the package lines for '$BLOCK' from the guide"; exit 1; }
+          sh -e /tmp/packages.sh
       - name: An ordinary user, as on a desktop
         run: |
           command -v runuser > /dev/null || dnf install -y util-linux > /dev/null
+          command -v useradd > /dev/null || zypper install -y shadow > /dev/null
           useradd -m tester
           chown -R tester "$GITHUB_WORKSPACE"
       - name: The guide's venv and pip lines
         run: |
           runuser -u tester -- bash -ec '
-            python3 --version
-            python3 -m venv venv && . venv/bin/activate
+            $PY --version
+            $PY -m venv venv && . venv/bin/activate
             pip install -U pip && pip install -r requirements.txt
             python nova.py --help > /dev/null
             cp cameras.example.ini cameras.ini && chmod 600 cameras.ini
             ./nova -h > /dev/null
             ./nova list
-            QT_QPA_PLATFORM=offscreen ./nova doctor'
+            QT_QPA_PLATFORM=offscreen ./nova doctor | tee doctor.txt
+            ! grep -q "does not load" doctor.txt'
       - name: A clip read headless and recorded (the wheel's own codecs, no GPU)
         run: |
           runuser -u tester -- bash -ec '
@@ -61,12 +81,31 @@ jobs:
             timeout -s INT 14 python nova.py -i clip.mp4 --headless -r --recording-dir rec --snapshot-dir snap -l INFO > nova.log 2>&1 || true
             grep -E "First frame|AVWriter|saved" nova.log
             python tools/ci_clip.py --check rec'
-      - name: A window on a virtual screen (Qt's xcb plugin with the guide's libraries; Xvfb is not part of the guide)
+      - name: The same through the launcher (record, status, stop over the control channel = Qt's network module)
         run: |
-          if command -v apt-get > /dev/null; then apt-get install -y xvfb xauth > /dev/null; else dnf install -y xorg-x11-server-Xvfb xauth > /dev/null; fi
           runuser -u tester -- bash -ec '
             . venv/bin/activate
-            xvfb-run -a -s "-screen 0 1280x720x24" timeout -s INT 12 python nova.py -i clip.mp4 --snapshot-dir snap -l INFO > win.log 2>&1 || true
+            printf "[clip]\nurl = %s/clip.mp4\n" "$PWD" > ci.ini && chmod 600 ci.ini
+            ./nova -c ci.ini record clip --recording-dir "$PWD/rec2" -l INFO
+            sleep 8
+            ./nova -c ci.ini status | tee status.txt
+            ./nova -c ci.ini stop
+            cat logs/clip.log | tail -5
+            grep -q "record on" status.txt
+            python tools/ci_clip.py --check rec2'
+      - name: A window on a virtual screen (Qt's xcb plugin with the guide's libraries; the virtual screen is not part of the guide)
+        run: |
+          wrap='xvfb-run -a -s "-screen 0 1280x720x24"'
+          if command -v apt-get > /dev/null; then apt-get install -y xvfb xauth > /dev/null
+          elif command -v pacman > /dev/null; then pacman -S --noconfirm --needed xorg-server-xvfb xorg-xauth > /dev/null
+          elif command -v zypper > /dev/null; then zypper install -y xorg-x11-server-Xvfb xauth xvfb-run > /dev/null
+          elif dnf install -y xorg-x11-server-Xvfb xauth > /dev/null 2>&1; then :
+          else                    # RHEL 10 has no X server: Xwayland under a headless compositor, as its desktop runs Nova
+            dnf install -y xwayland-run mutter mesa-dri-drivers > /dev/null; wrap='xwfb-run -c mutter --'
+          fi
+          WRAP="$wrap" runuser -u tester -- bash -ec '
+            . venv/bin/activate
+            eval "$WRAP timeout -s INT 12 python nova.py -i clip.mp4 --snapshot-dir snap -l INFO" > win.log 2>&1 || true
             tail -4 win.log
             grep -q "First frame" win.log
             ! grep -qE "Could not load the Qt platform plugin|Traceback|CRITICAL" win.log'
