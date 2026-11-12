@@ -435,15 +435,21 @@ def pids_locked():
             yield                                                    # closing the file releases the lock
 
 
+NO_CMDLINE = "(no command line)"
+
+
 def cmdline(pid):
-    """pid's command line; None if there is no such process, '' if it cannot be read here."""
+    """pid's command line; None if there is no such process, '' if it cannot be read here. A process
+    that has none (a kernel thread, a program in the middle of exec) gives NO_CMDLINE: read, and not
+    Nova's. Taken for unreadable, a camera's old pid that a kernel thread got after a reboot counted as
+    the camera still running, and `nova start` skipped it."""
     if sys.platform.startswith("linux"):
         try:
             with open(f"/proc/{pid}/stat", "rb") as f:
                 if f.read().rsplit(b")", 1)[-1].split()[:1] == [b"Z"]:
                     return None                  # exited, not yet reaped by its parent
             with open(f"/proc/{pid}/cmdline", "rb") as f:
-                return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+                return f.read().replace(b"\0", b" ").decode("utf-8", "replace") or NO_CMDLINE
         except FileNotFoundError:
             return None
         except OSError:

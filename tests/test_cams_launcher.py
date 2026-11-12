@@ -170,6 +170,15 @@ def test_a_stale_pid_is_not_a_camera(home, capsys):
         other.kill()
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc")
+def test_a_kernel_thread_with_a_camera_s_old_pid_is_not_a_camera():
+    """pid 2 is kthreadd: it has no command line. An empty one was read as "cannot tell", so a pid file
+    from before a reboot could make `start` say "already running" about a kernel thread (and a test that
+    looked at a process in the middle of its exec failed on a faster machine)."""
+    assert cams.cmdline(2) == cams.NO_CMDLINE and not cams.alive(2)
+    assert "python" in cams.cmdline(os.getpid()).lower() or cams.cmdline(os.getpid())
+
+
 def test_unreadable_pid_file_stops_instead_of_starting_everything_again(home):
     (home / ".nova-pids.json").write_text("{not json")
     with pytest.raises(SystemExit) as e:
