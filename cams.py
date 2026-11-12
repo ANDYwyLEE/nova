@@ -1028,6 +1028,11 @@ def main(argv=None):
         return 0
     if cmd not in COMMANDS:
         sys.exit(f"unknown command '{cmd}'\n\n{USAGE.rstrip()}")
+    head = tokens[:tokens.index("--")] if "--" in tokens else tokens
+    if "-h" in head or "--help" in head:
+        # `nova record --help` used to hand --help to every camera: each one printed nova.py's help into
+        # its log and exited. Help is asked of the launcher here; nova.py --help lists the camera options.
+        print(USAGE.rstrip()); return 0
 
     args = Args(*split_ids(tokens), config=config)
     if cmd in ("stop", "restart"):

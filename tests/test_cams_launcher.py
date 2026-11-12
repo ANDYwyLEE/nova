@@ -206,6 +206,14 @@ def test_config_edge_cases(tmp_path, capsys):
         cams.load(str(ini))
 
 
+@pytest.mark.parametrize("argv", [("record", "--help"), ("start", "a", "-h"), ("restart", "--help"),
+                                  ("run", "a", "--help"), ("stop", "-h")])
+def test_help_after_a_command_starts_nothing(home, capsys, argv):
+    assert run(home, *argv) == 0                    # was: every camera started with --help passed on
+    assert "nova record [ID ...]" in capsys.readouterr().out and not cams.read_pids()
+    assert not (home / "logs").exists()
+
+
 def test_options_need_values():
     with pytest.raises(SystemExit):
         cams.take_option(["--layout"], "--layout")
