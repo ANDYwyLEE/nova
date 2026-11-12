@@ -5,6 +5,7 @@ import stat
 import tempfile
 
 import pytest
+from filelock import Timeout          # by its own name: on Python 3.15 avwriter.Timeout can be a lazy import
 
 import avwriter
 
@@ -53,7 +54,7 @@ def test_an_unusable_probe_lock_does_not_cost_the_hardware_encoder(monkeypatch, 
             attempts.append(path)
 
         def acquire(self):
-            raise avwriter.Timeout(attempts[-1])
+            raise Timeout(attempts[-1])
 
     monkeypatch.setattr(avwriter, "FileLock", BusyLock)
     monkeypatch.setattr(avwriter, "_encoder_lock_path", lambda: "/somewhere/nova_encoder_init.lock")
