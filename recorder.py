@@ -430,6 +430,14 @@ class AVRecorder(Player):
             logging.warning(f"[AVRecorder] empty segment discarded: {src_path}")
             return
         frames = writer.v_frames if writer.v_frames else f"0 video / {writer.a_frames} audio"
+        silent = bool(writer.v_frames and getattr(writer, "audio_track", False) and not writer.a_frames)
+        if silent != getattr(self, "_silent", False):
+            # said when it changes, not at every segment of a camera that announces audio and never sends any
+            self._silent = silent
+            if silent:
+                logging.warning("[AVRecorder] ⚠️ this segment has no sound: the camera sent no audio while it was written")
+            else:
+                logging.info("[AVRecorder] sound is back in the recording")
         if self._rename(src_path, start_ts, end_ts, frames):
             self._retry_unsaved()
         else:

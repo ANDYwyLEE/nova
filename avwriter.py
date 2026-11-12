@@ -519,6 +519,7 @@ class AVWriter:
         self.open_failed = None         # why the first mux (connect + header) failed
         self.v_frames = 0
         self.a_frames = 0
+        self.audio_track = False
         self.last_v_pts = -1
         self._colour = None             # (range, matrix, primaries, transfer) of the camera's pictures
         self._last_v_dts = None         # dts of the last video packet handed to the muxer
@@ -775,6 +776,7 @@ class AVWriter:
             self.open_failed = f"audio encoder {self.a_codec} does not open: {_short_err(e)}"
             raise OutputOpenError(f"cannot start: {self.open_failed}") from e
         self.a_stream = stream
+        self.audio_track = True         # this file has an audio track (stays set after close)
         a_ctx = stream.codec_context
         logging.debug(f"[AVWriter] audio {self.a_codec} {self.sample_rate}Hz {a_ctx.layout.name} opts={a_ctx.options}")
 

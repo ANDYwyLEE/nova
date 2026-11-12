@@ -286,3 +286,25 @@ def test_audio_past_the_boundary_with_the_picture_gone_waits_for_the_next_segmen
     assert len(writers) == 2 and writers[1].a_frames == 2
     clock.t = t0 + 120.04; r.write(1, frame(n))
     assert len(writers) == 3
+
+
+def test_a_segment_without_sound_is_said_once(tmp_path, caplog):
+    """Two cameras of a 12-hour run stopped sending audio: every later segment had an audio track with no
+    packet in it, and "saved: ... (17996 frames)" was all the log held."""
+    rec = recorder.AVRecorder.__new__(recorder.AVRecorder)
+    rec._unsaved = []
+    rec._rename = lambda src, s, e, frames=None: True
+    rec._retry_unsaved = lambda: None
+
+    def save(v, a, track=True):
+        f = tmp_path / "x.mp4"; f.write_bytes(b"x")
+        del caplog.records[:]
+        rec._save_file(str(f), 0, 1, SimpleNamespace(first_packet_sent=True, v_frames=v, a_frames=a, audio_track=track))
+        return [r.getMessage() for r in caplog.records if "sound" in r.getMessage()]
+
+    caplog.set_level(logging.INFO)
+    assert save(100, 80) == []
+    assert "no sound" in save(100, 0)[0]
+    assert save(100, 0) == []                             # the next silent segment: not again
+    assert "sound is back" in save(100, 50)[0]
+    assert save(100, 0, track=False) == []                # recorded without an audio track: nothing to miss
