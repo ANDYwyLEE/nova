@@ -194,3 +194,28 @@ def test_quick_sync_check_says_what_is_missing(monkeypatch):
     assert check({"qsv"}, [], "")[0] == "⚠" and check(set(), [intel], "") is None      # a build without h264_qsv
     monkeypatch.setattr(doctor, "LINUX", False)
     assert "Intel graphics driver" in check({"qsv"}, [], err)[1]
+
+
+def test_vaapi_check_names_the_gpu_without_vaapi():
+    """--gpu N is /dev/dri/renderD(128+N) for VAAPI. With NOVA_GPU_DEVICES = 0,1 on a machine whose second
+    node is an NVIDIA card, every other camera decoded in software and only its own log said so."""
+    gpus = [("NVIDIA", "10de:2684", "nvidia", "renderD130"), ("Intel", "8086:a780", "i915", "renderD128"),
+            ("NVIDIA", "10de:2684", "nvidia", "renderD129")]
+    probe = lambda node: None if node.endswith("renderD128") else "OSError: Input/output error; last error log: Failed to initialise VAAPI connection: -1"
+    lines = doctor.vaapi_check({0, 1}, gpus, probe)
+    assert [m for m, _ in lines] == ["✓", "⚠"]
+    assert "renderD128 (Intel 8086:a780, --gpu 0)" in lines[0][1]
+    assert "GPU 1 is /dev/dri/renderD129 (NVIDIA 10de:2684)" in lines[1][1] and "Failed to initialise VAAPI" in lines[1][1]
+    assert "VAAPI answers on renderD128 (--gpu 0)" in lines[1][1]
+    only_bad = doctor.vaapi_check({1}, gpus, probe)                    # nothing configured works: say where it would
+    assert [m for m, _ in only_bad] == ["⚠"] and "VAAPI answers on renderD128 (--gpu 0)" in only_bad[0][1]
+    assert doctor.vaapi_check({0}, gpus, probe)[0][0] == "✓" and len(doctor.vaapi_check({0}, gpus, probe)) == 1
+    assert doctor.vaapi_check({0}, gpus, lambda node: "") == []        # a build without VAAPI
+
+
+def test_the_gpu_indexes_of_a_configuration():
+    from types import SimpleNamespace as C
+    cams = [C(opts="--gpu 2", enabled=True), C(opts="--gpu 5", enabled=False), C(opts="-r", enabled=True)]
+    assert doctor.config_gpus({"opts": "--opengl --accel vaapi"}, {"NOVA_GPU_DEVICES": "0,1"}, cams) == {0, 1, 2}
+    assert doctor.config_gpus({"opts": "--accel vaapi --gpu=3"}, {}, []) == {3}
+    assert doctor.config_gpus({}, {}, []) == {0}

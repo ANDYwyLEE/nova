@@ -329,6 +329,60 @@ def quick_sync_check(accels, gpus, error):
     return ("ℹ", f"the Intel GPU could decode and record with --accel qsv, but Quick Sync does not start ({short}): {fix}")
 
 
+def vaapi_error(node):
+    """None when a VAAPI device opens on this DRM render node, else why not ("" when the FFmpeg build has
+    no VAAPI at all)."""
+    try:
+        import av
+        from av.codec.hwaccel import HWAccel, hwdevices_available
+        if "vaapi" not in [str(d) for d in hwdevices_available()]:
+            return ""
+        import logsync
+        os.environ.setdefault("LIBVA_MESSAGING_LEVEL", "0")
+        with logsync.av_quiet():
+            av.CodecContext.create("h264", "r", hwaccel=HWAccel(device_type="vaapi", device=node,
+                                                               allow_software_fallback=False))
+        return None
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def config_gpus(defaults, env, cameras):
+    """The GPU indexes the cameras are given: NOVA_GPU_DEVICES and every --gpu in an opts line, else 0."""
+    found = set()
+    for text in [env.get("NOVA_GPU_DEVICES", "")] + [m for t in [defaults.get("opts", "")] + [c.opts for c in cameras if c.enabled]
+                                                     for m in re.findall(r"--gpu[= ]+([\d,]+)", t)]:
+        found |= {int(x) for x in re.findall(r"\d+", text)}
+    return found or {0}
+
+
+def vaapi_check(indexes, gpus, probe):
+    """Check lines for --accel vaapi: --gpu N means /dev/dri/renderD(128+N), and on a machine with several
+    GPUs not every node has VAAPI. A camera on a node without it decodes in software and says so only in
+    its own log."""
+    name = {g[3]: f"{g[0]} {g[1]}" for g in gpus}
+    tried = {i: (f"renderD{128 + i}", probe(f"/dev/dri/renderD{128 + i}")) for i in sorted(indexes)}
+    if any(err == "" for _, err in tried.values()):
+        return []                                         # a build without VAAPI: the --accel check says so
+    good = [(i, n) for i, (n, err) in tried.items() if err is None]
+    out = []
+    if good:
+        out.append(("✓", "VAAPI opens on " + ", ".join(f"{n} ({name.get(n, 'GPU')}, --gpu {i})" for i, n in good)
+                    + ": --accel vaapi decodes and records there"))
+    bad = [(i, n, err) for i, (n, err) in tried.items() if err is not None]
+    if bad:
+        elsewhere = [f"{g[3]} (--gpu {int(g[3][7:]) - 128})" for g in gpus
+                     if g[3].startswith("renderD") and g[3] not in {n for n, _ in tried.values()}
+                     and probe(f"/dev/dri/{g[3]}") is None]
+        works = [f"{n} (--gpu {i})" for i, n in good] + elsewhere
+        for i, n, err in bad:
+            short = " ".join(str(err).split("last error log:")[-1].split())[:70]
+            out.append(("⚠", f"--accel vaapi: GPU {i} is /dev/dri/{n} ({name.get(n, 'no GPU there')}), where VAAPI does not "
+                             f"start ({short}): cameras given that GPU decode in software"
+                             + (f"; VAAPI answers on {', '.join(works)}" if works else "")))
+    return out
+
+
 def gpu_lines():
     lines = []
     if shutil.which("nvidia-smi"):
@@ -558,6 +612,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
             except Exception as e:
                 out.append(("ℹ", f"--accel {' '.join(sorted(accels))}: could not check ({e})"))
         gpus = drm_gpus() if LINUX else []
+        if LINUX and "vaapi" in accels:
+            out.extend(vaapi_check(config_gpus(defaults, env, cs), gpus, vaapi_error))
         if "qsv" in accels or any(g[0] == "Intel" for g in gpus):
             line = quick_sync_check(accels, gpus, quick_sync_error())
             if line:
