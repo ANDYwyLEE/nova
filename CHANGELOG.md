@@ -14,7 +14,7 @@ An AMD GPU on Linux had never run Nova. It has now, on a second machine: a Ryzen
 | `--accel cuda`: `h264_cuvid`, `h264_nvenc` (also `hevc_nvenc`, `av1_nvenc`) | 2.0 % | 2.8 % | 790 MB |
 | `--accel vaapi` on the Radeon: `h264_vaapi` (also `hevc_vaapi`) | 1.9 % | 3.0 % | 240 MB |
 
-Mesa's AMD encoder writes 9.7 Mbit/s at its default quality where Intel's writes 1.8; `--ffmpeg "-b:v 2M"` brings it to 1.9. `av1_nvenc` records on both NVIDIA cards tried (RTX 4090 and 4060).
+At its default quality `h264_vaapi` on the Radeon writes 2.0 Mbit/s for the camera that Intel's records in 1.8 and NVENC in 9.7. `av1_nvenc` records on both NVIDIA cards tried (RTX 4090 and 4060).
 
 Nova also ran under WSL2 for the first time (a fresh Ubuntu 26.04 instance on the Windows 11 laptop of the last round): the guide's lines, a recording, the launcher, windows through WSLg, the tests. OpenGL there is Mesa's software renderer until `GALLIUM_DRIVER = d3d12` is set (an `--opengl` window then took 15 % of a core instead of 38 %); `nova doctor` says so.
 

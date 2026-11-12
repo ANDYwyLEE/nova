@@ -125,7 +125,7 @@ Size ≈ bitrate × time: 4 Mbit/s is about 1.8 GB per hour and 43 GB per day pe
 | `h264_nvenc` (RTX 4090) | 11 to 12 Mbit/s | 5 % of a core |
 | `h264_qsv` (Intel UHD 770 / 620) | 1.3 to 1.8 Mbit/s | 4 % / 8 % |
 | `h264_vaapi` (Intel UHD 770, custom FFmpeg build) | 1.8 Mbit/s | 5 % |
-| `h264_vaapi` (AMD Radeon of a Ryzen 9 9955HX, custom FFmpeg build) | 9.7 Mbit/s | 2 % |
+| `h264_vaapi` (AMD Radeon of a Ryzen 9 9955HX, custom FFmpeg build) | 2.0 Mbit/s | 2 % |
 | `libx264` | 2.0 Mbit/s | 47 % |
 | `h264_amf` (AMD Radeon, Ryzen 5900HX) | 7.3 Mbit/s | 4 % |
 | `h264_mf` (Windows Media Foundation) | 2.1 Mbit/s: Nova asks for 0.1 bit per pixel and frame, the encoder has no default | |
