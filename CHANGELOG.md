@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-12 — Quick Sync on a real Intel laptop, two monitors on Windows
+## 2026-11-12 — Quick Sync on real Intel GPUs (Windows and Linux), two monitors on Windows
 
 Intel's Quick Sync had never run on hardware here. This round is on a laptop (Core i7-8565U with UHD Graphics 620, Intel driver 26.20.100.7811 of January 2020, Windows 11 Home 26H2, driven over ssh) with Option A of the install guide (Python 3.13.17, the `av` 19.0.2 wheel). The first recording with `--accel qsv` showed two faults, both fixed below; an older Nova had recorded with Quick Sync on this laptop because it numbered the frames instead of using the camera's times.
 
@@ -18,6 +18,8 @@ Measured with 1080p H.264 cameras, as the share of one core:
 
 Six cameras recording together took 67 % of one core and 2.6 GB, a third of the GPU's 3D engine and a quarter of its video decode engine. A camera that does not answer costs 0.1 % and 106 MB without a window.
 
+On Linux, Quick Sync ran on the integrated UHD Graphics 770 of an i9-13900K that sits next to two NVIDIA cards (Ubuntu 26.04, the `av` 19.0.2 wheel). Out of the box `h264_qsv` did not start (`Error creating a MFX session: -9`); with `intel-media-va-driver-non-free` and `libmfx-gen1.2` installed it decodes and records: six cameras at once at 4 to 9 % of a core each (about 215 to 255 MB), files that decode completely, `-e hevc_qsv` too, and windows drawn by the NVIDIA card with the picture decoded on the Intel one, which costs the NVIDIA cards no memory (a `cuda` camera takes 446 MiB there). With the free `intel-media-va-driver`, `h264_qsv` opens only with `-low_power 1` and `hevc_qsv` not at all; this GPU has no AV1 encoder. The install guide now says so.
+
 On the AMD PC of the last round, now with both monitors (the right one 121 px higher than the main one, so its top is at a negative y): a first start tiles the 13 windows on the main monitor; 40 moves across both monitors, a window across the seam, places at the very top and in the far corner of the raised monitor kept across stop, start and `nova restart`, and `nova layout save`, `apply` and `start --layout`, all with Option A and Option B.
 
 Fixed:
@@ -26,6 +28,8 @@ Fixed:
 - **Quick Sync recordings lost frames and logged a traceback now and then.** `h264_qsv` and `hevc_qsv` use B-frames by default and compute each packet's decode time from the nominal frame rate. With the real, uneven frame times of a camera that time repeats or runs backwards, and the MP4 muxer refuses such a packet (`non monotonically increasing dts`). Quick Sync now encodes with `-bf 0` unless `-bf` is given, and the writer moves a decode time that does not increase just past the previous one, as the `ffmpeg` program does, with one warning.
 - **Every recording with `--ffmpeg` codec options logged `The "dc" option is deprecated`.** FFmpeg says that when a codec's options are read, which Nova does to route yours; nobody had given that option. On every platform.
 - **A place that is on no screen opens on the nearest monitor.** It went to the primary one: a place just past the bottom edge of the right monitor put the window in the corner of the left one.
+- **`libva info:` lines filled the log.** On Linux Quick Sync runs on libva, which prints four lines to stderr at every device open, whatever `-l` says: 36 lines for one recording camera. libva's own messages now follow `-l` (all of them from `DEBUG` down, errors up to `ERROR`, nothing at `CRITICAL`); a `LIBVA_MESSAGING_LEVEL` you set stays.
+- **`nova doctor` did not mention an Intel GPU.** Its GPU lines came from `nvidia-smi` alone. On Linux it now lists every GPU the kernel has, and where there is an Intel one, or `--accel qsv` in `cameras.ini`, it tries to start Quick Sync and names the two packages when that fails.
 - **Tests**: the encoder-fallback test read its child's UTF-8 output with the system code page and failed on a Korean Windows.
 
 Documented: how large Quick Sync recordings get ([recording.md](docs/recording.md#quick-sync-how-large-the-files-get)). Without a rate option the encoder keeps the quantizer constant and the size follows the scene (one outdoor camera: 12.6 Mbit/s in the afternoon, 0.9 at night); the guide has the modes side by side, measured on the same pictures.
@@ -34,6 +38,7 @@ Seen and left as it is:
 
 - Quick Sync's FFmpeg note `Using the constant quantization parameter (CQP) by default` at every recording start: it is the default described above.
 - The Intel driver on this laptop is six years old; the same tests with a current driver are still to do.
+- On Linux a camera with `--accel qsv` and `NOVA_GPU_DEVICES` set warns that `--gpu` does not apply to Quick Sync: true, and the way to see that the variable is meant for the NVIDIA cards.
 
 ## 2026-11-11 — Windows on a real PC
 
