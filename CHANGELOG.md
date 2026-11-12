@@ -4,7 +4,7 @@
 
 Intel's Quick Sync had never run on hardware here. This round is on a laptop (Core i7-8565U with UHD Graphics 620, Intel driver 26.20.100.7811 of January 2020, Windows 11 Home 26H2, driven over ssh) with Option A of the install guide (Python 3.13.17, the `av` 19.0.2 wheel). The first recording with `--accel qsv` showed two faults, both fixed below; an older Nova had recorded with Quick Sync on this laptop because it numbered the frames instead of using the camera's times.
 
-Seen working after the fixes: windows with OpenGL and QPainter decoding through `qsv`, `d3d11va`, `dxva2` and `d3d12va`, all in hardware; `nova record` of the six reachable cameras at once, each decoding with `h264_qsv` and recording with `h264_qsv`, with files that decode completely; `-e hevc_qsv`, `-bf 2`, `-b:v` with and without `-maxrate`, and `-t` to an FLV and an MPEG-TS file. Quick Sync also decodes and encodes over ssh (Windows' session 0). Option B (MSYS2) on this laptop is still to do.
+Seen working after the fixes: windows with OpenGL and QPainter decoding through `qsv`, `d3d11va`, `dxva2` and `d3d12va`, all in hardware; `nova record` of the six reachable cameras at once, each decoding with `h264_qsv` and recording with `h264_qsv`, with files that decode completely; `-e hevc_qsv`, `-bf 2`, `-b:v` with and without `-maxrate`, and `-t` to an FLV and an MPEG-TS file. Quick Sync also decodes and encodes over ssh (Windows' session 0). Option B (a fresh MSYS2: Python 3.14.10, FFmpeg 9.0.2 with libvpl 2.17, `av` 19.0.2 built from source) passes the same runs: the tests, the windows with every decoder, recording with `h264_qsv`. Everything was then repeated with Intel's driver 31.0.101.2115 of November 2022 in place of the laptop maker's: the same results, and the same two faults without the fixes (a newer driver does not put a camera's parameter sets into the stream, and Quick Sync's B-frame decode times are computed the same way).
 
 Measured with 1080p H.264 cameras, as the share of one core:
 
@@ -37,7 +37,6 @@ Documented: how large Quick Sync recordings get ([recording.md](docs/recording.m
 Seen and left as it is:
 
 - Quick Sync's FFmpeg note `Using the constant quantization parameter (CQP) by default` at every recording start: it is the default described above.
-- The Intel driver on this laptop is six years old; the same tests with a current driver are still to do.
 - On Linux a camera with `--accel qsv` and `NOVA_GPU_DEVICES` set warns that `--gpu` does not apply to Quick Sync: true, and the way to see that the variable is meant for the NVIDIA cards.
 
 ## 2026-11-11 — Windows on a real PC

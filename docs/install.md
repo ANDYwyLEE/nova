@@ -80,6 +80,7 @@ nova start
 MSYS2's Python cannot use PyPI binary wheels, so `av` is compiled against MSYS2's own FFmpeg package (which ships NVENC, QSV, AMF and SRT):
 
 ```bash
+pacman -Syu      # a fresh MSYS2 first: twice, the first run updates the core and closes the window
 pacman -S --needed git make pkgconf \
     mingw-w64-ucrt-x86_64-{gcc,python-pip,python-wheel,cython,python-setuptools,python-numpy,python-requests,portaudio,pyside6,python-pyopengl,ffmpeg}
 cd nova
