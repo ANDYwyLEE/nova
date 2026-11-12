@@ -2,7 +2,8 @@ name: Install guide
 
 # docs/install.md, Linux: its commands as they are written, in a distribution image that has nothing
 # installed yet (the runners themselves come with a compiler, Python and half of the libraries, so CI
-# cannot tell when the guide forgets a package). By hand, weekly, and when the guide or the requirements change.
+# cannot tell when the guide forgets a package: it had forgotten the compiler PyAudio needs).
+# By hand, weekly, and when the guide or the requirements change.
 on:
   schedule:
     - cron: "30 3 * * 1"          # Mondays 03:30 UTC
@@ -28,51 +29,40 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
-      - name: The guide's apt line
+      - uses: actions/checkout@v5
+      - name: The guide's apt line, read from docs/install.md
         run: |
           apt-get update
-          apt-get install -y git python3 python3-venv python3-dev portaudio19-dev \
-              libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0
-      - uses: actions/checkout@v5
+          line=$(awk '/^## Linux/{f=1} f && /^sudo apt install/{p=1} p{print} p && !/\\$/{exit}' docs/install.md | sed -e 's/^sudo //' -e 's/\\$//' | tr '\n' ' ')
+          echo "$line"
+          case "$line" in "apt install -y "*) ;; *) echo "could not read the apt line from the guide"; exit 1;; esac
+          $line
+      - name: An ordinary user, as on a desktop
+        run: |
+          useradd -m tester
+          chown -R tester "$GITHUB_WORKSPACE"
       - name: The guide's venv and pip lines
         run: |
-          python3 --version
-          python3 -m venv venv && . venv/bin/activate
-          pip install -U pip && pip install -r requirements.txt
-      - name: nova.py --help, the launcher, doctor
+          runuser -u tester -- bash -ec '
+            python3 --version
+            python3 -m venv venv && . venv/bin/activate
+            pip install -U pip && pip install -r requirements.txt
+            python nova.py --help > /dev/null
+            cp cameras.example.ini cameras.ini && chmod 600 cameras.ini
+            ./nova -h > /dev/null
+            ./nova list
+            QT_QPA_PLATFORM=offscreen ./nova doctor'
+      - name: A clip read headless and recorded (the wheel's own codecs, no GPU)
         run: |
-          . venv/bin/activate
-          python nova.py --help > /dev/null
-          cp cameras.example.ini cameras.ini && chmod 600 cameras.ini
-          ./nova -h > /dev/null
-          ./nova list
-          QT_QPA_PLATFORM=offscreen ./nova doctor
-      - name: A camera, headless, recorded for ten seconds (the wheel's own codecs, no GPU)
-        run: |
-          . venv/bin/activate
-          python - <<'PY'
-          import av, numpy as np
-          from fractions import Fraction
-          with av.open("clip.mp4", "w") as c:
-              s = c.add_stream("libx264", rate=10); s.width, s.height, s.pix_fmt = 640, 360, "yuv420p"
-              for i in range(300):
-                  f = av.VideoFrame.from_ndarray(np.full((360, 640, 3), (i * 3) % 255, np.uint8), format="rgb24")
-                  f.pts, f.time_base = i, Fraction(1, 10)
-                  for p in s.encode(f): c.mux(p)
-              for p in s.encode(): c.mux(p)
-          PY
-          timeout -s INT 14 python nova.py -i clip.mp4 --headless -r --recording-dir rec -l INFO > nova.log 2>&1 || true
-          grep -E "First frame|AVWriter|saved" nova.log
-          python - <<'PY'
-          import av, glob
-          files = glob.glob("rec/**/*.mp4", recursive=True)
-          assert files, "no recording"
-          n = sum(1 for _ in av.open(files[0]).decode(video=0))
-          print(files[0], n, "frames")
-          assert n > 30
-          PY
+          runuser -u tester -- bash -ec '
+            . venv/bin/activate
+            python tools/ci_clip.py clip.mp4
+            timeout -s INT 14 python nova.py -i clip.mp4 --headless -r --recording-dir rec --snapshot-dir snap -l INFO > nova.log 2>&1 || true
+            grep -E "First frame|AVWriter|saved" nova.log
+            python tools/ci_clip.py --check rec'
       - name: The tests
         run: |
-          . venv/bin/activate
-          pip install -r requirements-dev.txt
-          pytest -q
+          runuser -u tester -- bash -ec '
+            . venv/bin/activate
+            pip install -r requirements-dev.txt
+            pytest -q'
