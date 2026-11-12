@@ -37,7 +37,7 @@ If you need SRT or VAAPI, build FFmpeg yourself: [custom-ffmpeg.md](custom-ffmpe
 ```bash
 sudo apt update
 sudo apt install -y git python3 python3-venv python3-dev build-essential portaudio19-dev \
-    libgl1 libegl1 libglib2.0-0 libfontconfig1 libxkbcommon-x11-0 libxcb-cursor0 \
+    libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libxkbcommon-x11-0 libxcb-cursor0 \
     libxcb-icccm4 libxcb-keysyms1 libxcb-shape0
 
 git clone https://github.com/ANDYwyLEE/nova.git && cd nova
