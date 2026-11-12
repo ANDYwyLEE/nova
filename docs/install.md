@@ -88,7 +88,7 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # then edit it: se
 ```bat
 git clone https://github.com/ANDYwyLEE/nova.git
 cd nova
-py -m venv venv
+py -3.13 -m venv venv
 venv\Scripts\activate
 pip install -U pip
 pip install -r requirements.txt
@@ -97,7 +97,7 @@ copy cameras.example.ini cameras.ini
 nova start
 ```
 
-- PyAudio wheels exist on PyPI for Python 3.8 to 3.13, so no compiler is needed there. There is no Windows wheel for Python 3.14 yet (October 2026): use 3.13, or build PyAudio against PortAudio yourself.
+- **Use Python 3.13, not the newest.** PyAudio has Windows wheels for Python 3.8 to 3.13 and PyOpenGL-accelerate none for 3.15, so with a newer Python `pip` tries to compile them and stops at `Microsoft Visual C++ 14.0 or greater is required` (seen with Python 3.15.2, November 2026). A plain `py -m venv venv` takes the newest Python on the machine, and the Python install manager offers the newest first: get 3.13 from python.org, with `py install 3.13`, or with `winget install Python.Python.3.13`, and create the venv with `py -3.13` as above.
 - Accel: `cuda` (NVIDIA), `qsv` (Intel: Quick Sync decodes and records, `h264_qsv`; run on a UHD 620 laptop, November 2026), `d3d11va` or `dxva2` (any GPU through the standard decoder; with them an AMD GPU records through `h264_amf`, an Intel one through `h264_qsv`), `amf` (AMD's own decoder). `d3d12va` falls back to software decoding where FFmpeg lacks the GPU's decode tier (an AMD Ryzen 5900HX, November 2026).
 - `nova.bat` uses `venv\Scripts\python.exe` automatically, so `nova start` works from a plain command prompt without activating the venv.
 - Intel Quick Sync needs nothing but Intel's graphics driver: run with the laptop maker's driver of 2020 and Intel's of 2022 on a UHD Graphics 620, with the same results. Without a desktop (ssh, a service) `qsv`, `d3d11va` and `d3d12va` still decode and Quick Sync and AMF still record; `dxva2` needs a desktop session.

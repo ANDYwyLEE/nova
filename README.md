@@ -29,8 +29,8 @@ Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Wind
 
 ```bash
 git clone https://github.com/ANDYwyLEE/nova.git && cd nova
-python3 -m venv venv && . venv/bin/activate        # Windows: py -m venv venv && venv\Scripts\activate
-pip install -U pip && pip install -r requirements.txt   # Linux first: sudo apt install portaudio19-dev
+python3 -m venv venv && . venv/bin/activate        # Windows: py -3.13 -m venv venv && venv\Scripts\activate
+pip install -U pip && pip install -r requirements.txt   # Linux first: the apt line of docs/install.md
 
 python nova.py --opengl --accel cuda -b -i "rtsp://user:pass@192.168.1.10:554/stream_0"
 ```
