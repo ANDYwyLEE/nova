@@ -30,7 +30,19 @@ Output protocol options (SRT `latency`, `passphrase`, …) still go in the URL q
 
 ## Linux (Ubuntu 26.04): NVIDIA + SRT + VAAPI
 
-Checked on 2026-10-14 and again on 2026-11-12 (Ubuntu 26.04.1, NVIDIA driver 595, two RTX 4090 and the integrated Intel UHD 770): FFmpeg 9.0.2 configures and builds in under a minute on 32 cores, `pip install --no-binary av` against it in another; the result has the cuvid/nvenc/vaapi codecs, `hwdevices_available() == ['vdpau', 'cuda', 'vaapi', 'drm']` and the SRT protocol.
+Checked on 2026-10-14 and twice on 2026-11-12 (Ubuntu 26.04.1, two RTX 4090 and the integrated Intel UHD 770; NVIDIA driver 595 with the 13.0 headers, then driver 615 with the 13.1 headers): FFmpeg 9.0.2 configures and builds in under a minute on 32 cores, `pip install --no-binary av` against it in another; the result has the cuvid/nvenc/vaapi codecs, `hwdevices_available() == ['vdpau', 'cuda', 'vaapi', 'drm']` and the SRT protocol.
+
+The NVENC headers have to fit the driver (`nvidia-smi` shows its version). Each release of `nv-codec-headers` is one version of NVIDIA's Video Codec SDK and names its minimum driver in its README:
+
+| NVIDIA driver (Linux) | `nv-codec-headers` release | run here |
+|---|---|---|
+| 610 or newer | `n13.1.15.0` | driver 615: `h264_nvenc`, `hevc_nvenc`, `av1_nvenc` record |
+| 570 to 609 | `n13.0.19.1` | driver 595: `h264_nvenc` records |
+| 550 to 569 | `n12.2.72.0` | not run |
+| 530 to 549 | `n12.1.14.1` | not run |
+| 520 to 529 | `n12.0.16.2` | not run |
+
+A plain `git clone` takes the newest headers (the 13.1 line since June 2026), which is right for a current driver and wrong for an older one: the build succeeds either way and only the recording tells (below). FFmpeg 9.0.2 accepts every release in the table.
 
 ```bash
 sudo apt install -y git curl pkg-config build-essential nasm yasm libx264-dev libx265-dev \
@@ -38,9 +50,8 @@ sudo apt install -y git curl pkg-config build-essential nasm yasm libx264-dev li
 # CUDA filters only: sudo apt install -y nvidia-cuda-toolkit   (nvcc; add the three cuda lines below)
 
 mkdir -p ~/deps && cd ~/deps
-# NVENC/NVDEC headers (header-only). Take the release your driver supports, not the newest: n13.0.19.1 needs
-# driver 570, n13.1.15.0 (and the main branch) driver 610. Each release's README names its minimum driver.
-git clone --depth 1 --branch n13.0.19.1 https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
+# NVENC/NVDEC headers (header-only): the release for your driver from the table above (here: driver 610 or newer)
+git clone --depth 1 --branch n13.1.15.0 https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
 make -C nv-codec-headers install PREFIX=$HOME/deps
 export PKG_CONFIG_PATH=$HOME/deps/lib/pkgconfig
 
@@ -66,7 +77,7 @@ Without an NVIDIA GPU drop the `nv-codec-headers` lines and `--enable-nvenc --en
 
 What to expect from the result:
 
-- **NVENC headers newer than the driver** build without a word and fail when a recording starts: `Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0` in the log at `-l DEBUG`, and the recording goes to `libx264` (a 1080p camera at 10 fps: 47 % of a core where NVENC takes 5 %). The log line `[AVWriter] libx264 …` is the sign; rebuild with the older headers.
+- **NVENC headers newer than the driver** build without a word and fail when a recording starts: `Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0` in the log at `-l DEBUG`, and the recording goes to `libx264` (a 1080p camera at 10 fps: 47 % of a core where NVENC takes 5 %). The log line `[AVWriter] libx264 …` is the sign; install the release for your driver (`make -C nv-codec-headers install PREFIX=$HOME/deps` after `git checkout`), then `make && make install` in the FFmpeg folder again: only the NVENC and NVDEC files are recompiled, a few seconds, and `av` needs no rebuild.
 - **VAAPI decodes and records.** `--accel vaapi` attaches the device to the standard decoder (`HW decoder: h264 + vaapi hwaccel`) and records with `h264_vaapi`; `-e hevc_vaapi` works the same way. An Intel GPU needs its VA driver for that (`intel-media-va-driver-non-free` was installed here). A codec the GPU has no encoder for is refused and named: `-e av1_vaapi does not open here (Function not implemented); using h264_vaapi` on a UHD 770. Without a rate option the encoder keeps the quality constant (FFmpeg notes `No quality level set; using default (20)`): 1.8 Mbit/s for an indoor 1080p camera at 10 fps; `-b:v 2M` gives 2.0.
 - **Which GPU**: `--gpu N` (or the launcher's `NOVA_GPU_DEVICES`) selects `/dev/dri/renderD(128+N)` for VAAPI, decoder and encoder alike. On a machine with several GPUs that has to be the VAAPI one: here `renderD128` is the Intel GPU and `renderD129`, an NVIDIA card, answers `Failed to initialise VAAPI connection`, after which the camera decodes in software and records with the next encoder that opens. `nova doctor` lists which GPU is behind which node.
 - Measured on the Intel GPU (UHD 770): a 1080p window with VAAPI decoding at 10 fps 2.4 % of a core, at 20 fps 5.8 %; decoding plus `h264_vaapi` recording 5 % and 200 MB per 10 fps camera, six cameras at once 42 % of a core.
