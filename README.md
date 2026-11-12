@@ -74,7 +74,7 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # one [section] pe
 | Inputs | RTSP (TCP/UDP), RTMP, SRT*, HTTP/HLS, MPEG-TS over UDP, files, capture devices (`-i 0`, `dshow://video=NAME`, `v4l2:///dev/video2`), `onvif://` `hik://` `dahua://` `xmeye://` `reolink://` `axis://` `tapo://` `unv://` |
 | Decoding | software (multi-threaded), `cuda` (NVDEC/CUVID), `qsv`, `vaapi`*, `videotoolbox`, `d3d11va`, `dxva2`, `rkmpp`/`v4l2m2m` (SBCs) |
 | Display | OpenGL shader path (NV12/YUV direct), QPainter fallback, frame-rate cap, zoom, fullscreen, focus-coloured borders |
-| Recording | fragmented MP4 segments aligned to the clock, camera-clock timestamps, NVENC/QSV/AMF/VideoToolbox/x264, `-vf` filters, `-r` decimation |
+| Recording | fragmented MP4 segments aligned to the clock, camera-clock timestamps, NVENC/QSV/AMF/VideoToolbox/VAAPI\*/x264, `-vf` filters, `-r` decimation |
 | Streaming | RTMP (YouTube, Twitch), HLS (YouTube HLS ingest incl. HEVC), SRT*, MPEG-TS; silent-audio synthesis |
 | Audio | PortAudio playback with device selection and resampling fallback |
 | Discovery | ONVIF (port probing, vendor-agnostic SOAP), Hikvision ISAPI, Dahua CGI, XMeye DVRIP, Reolink HTTP API, Axis VAPIX; Tapo and Uniview paths; recorder channels |

@@ -3,7 +3,7 @@
 The `av` wheel from PyPI bundles an FFmpeg (9.0.2 in av 19.0.1 and 19.0.2) with NVENC/NVDEC, Quick Sync (libvpl), AMF, x264/x265/SVT-AV1, libopus and TLS. Build your own only if you need something it lacks:
 
 - the **SRT** protocol (`srt://` input or `-t srt://…` output)
-- **VAAPI** decoding on Linux: an AMD GPU, or an Intel GPU older than the 11th generation (a newer Intel GPU has Quick Sync through the wheel: [install.md](install.md#linux-ubuntu-2404-and-2604))
+- **VAAPI** on Linux, for decoding and recording on an AMD GPU or on an Intel GPU older than the 11th generation (a newer Intel GPU has Quick Sync through the wheel: [install.md](install.md#linux-ubuntu-2404-and-2604))
 - CUDA filters (`scale_npp`, `scale_cuda`) or a newer FFmpeg than the wheel ships
 
 Quick Sync is not a reason: the wheel has it on Linux and Windows, and so does MSYS2's FFmpeg package.
@@ -67,9 +67,9 @@ Without an NVIDIA GPU drop the `nv-codec-headers` lines and `--enable-nvenc --en
 What to expect from the result:
 
 - **NVENC headers newer than the driver** build without a word and fail when a recording starts: `Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0` in the log at `-l DEBUG`, and the recording goes to `libx264` (a 1080p camera at 10 fps: 47 % of a core where NVENC takes 5 %). The log line `[AVWriter] libx264 …` is the sign; rebuild with the older headers.
-- **VAAPI decodes, it does not record.** `--accel vaapi` attaches the device to the standard decoder (`HW decoder: h264 + vaapi hwaccel`); an Intel GPU needs its VA driver for that (`intel-media-va-driver-non-free` was installed here). The `*_vaapi` encoders accept only pictures that already live on the GPU, which Nova's do not, so they never open: recording takes NVENC or Quick Sync where the build and the machine have them, else `libx264`. `-e h264_vaapi` is answered with `-e h264_vaapi does not open here (…); using …`.
-- **Which GPU**: `--gpu N` (or the launcher's `NOVA_GPU_DEVICES`) selects `/dev/dri/renderD(128+N)` for VAAPI. On a machine with several GPUs that has to be the VAAPI one: here `renderD128` is the Intel GPU and `renderD129`, an NVIDIA card, answers `Failed to initialise VAAPI connection`, after which the camera decodes in software. `nova doctor` lists which GPU is behind which node.
-- Measured with VAAPI decoding on the Intel GPU: a 1080p window at 10 fps 2.4 % of a core, at 20 fps 5.8 %; recording through NVENC 5 %.
+- **VAAPI decodes and records.** `--accel vaapi` attaches the device to the standard decoder (`HW decoder: h264 + vaapi hwaccel`) and records with `h264_vaapi`; `-e hevc_vaapi` works the same way. An Intel GPU needs its VA driver for that (`intel-media-va-driver-non-free` was installed here). A codec the GPU has no encoder for is refused and named: `-e av1_vaapi does not open here (Function not implemented); using h264_vaapi` on a UHD 770. Without a rate option the encoder keeps the quality constant (FFmpeg notes `No quality level set; using default (20)`): 1.8 Mbit/s for an indoor 1080p camera at 10 fps; `-b:v 2M` gives 2.0.
+- **Which GPU**: `--gpu N` (or the launcher's `NOVA_GPU_DEVICES`) selects `/dev/dri/renderD(128+N)` for VAAPI, decoder and encoder alike. On a machine with several GPUs that has to be the VAAPI one: here `renderD128` is the Intel GPU and `renderD129`, an NVIDIA card, answers `Failed to initialise VAAPI connection`, after which the camera decodes in software and records with the next encoder that opens. `nova doctor` lists which GPU is behind which node.
+- Measured on the Intel GPU (UHD 770): a 1080p window with VAAPI decoding at 10 fps 2.4 % of a core, at 20 fps 5.8 %; decoding plus `h264_vaapi` recording 5 % and 200 MB per 10 fps camera, six cameras at once 42 % of a core.
 
 ## Windows (MSYS2 UCRT64)
 
