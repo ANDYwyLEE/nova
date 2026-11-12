@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-11-13 — More distributions, an AMD GPU on Linux, NVIDIA driver 615
+
+The install guide named Ubuntu and Fedora. Its Linux section now has a package line for the RHEL family (Rocky Linux and AlmaLinux 9 and 10), openSUSE (Tumbleweed and Leap 16) and Arch as well, says that Linux Mint 22 takes Ubuntu's line, and which Python each distribution brings. Every line was first run as written in a pristine image of its distribution, by an ordinary user, through the whole sequence: install, `nova doctor`, a recording, a camera started and stopped through the launcher, a window on a virtual screen, the tests. What that turned up: openSUSE packages the libraries Qt loads one by one, and two more are needed there (`libgthread-2_0-0`, and `krb5` for Qt's network module, without which every camera started by `nova start` exits at once while `nova.py` by hand runs); RHEL 9's `python3` is 3.9, so Python 3.12 by name; PortAudio's headers come from EPEL; RHEL 10 has no X server left, Nova's window was checked there under Xwayland. The [Install guide](.github/workflows/install-guide.yml) workflow reads each distribution's lines from the guide and repeats all of this weekly, on arm64 too (Ubuntu 24.04 and Debian 13 on GitHub's ARM runners). No Raspberry Pi was at hand: the two boards that answered here are 32-bit with half a gigabyte of memory, below anything Nova can run on, so arm64 is covered by those runners and nothing is claimed about a Pi's GPU.
+
+Quick Sync on the other distributions: the Intel driver and runtime have other package names there, and Fedora's own driver build has no H.264 or HEVC encoder (RPM Fusion's has). The lines for Debian, Fedora, openSUSE and Arch each opened `h264_qsv` and `hevc_qsv` in that distribution's image on a UHD Graphics 770; they are in the guide, and `nova doctor` names the ones for the system it runs on instead of always saying `apt install`.
+
+An AMD GPU on Linux had never run Nova. It has now, on a second machine: a Ryzen 9 9955HX with its Radeon graphics and an NVIDIA RTX 4060 (Ubuntu 26.04, Mesa 26, no desktop, driven over ssh), installed by the guide and then by the custom-FFmpeg recipe, each line as written. With two 1080p streams fed at real time (10 and 20 fps), as the share of one core:
+
+| | 10 fps | 20 fps | memory each |
+|---|---|---|---|
+| software decoding, `libx264` | 35 % | 59 % | 460 to 590 MB |
+| `--accel cuda`: `h264_cuvid`, `h264_nvenc` (also `hevc_nvenc`, `av1_nvenc`) | 2.0 % | 2.8 % | 790 MB |
+| `--accel vaapi` on the Radeon: `h264_vaapi` (also `hevc_vaapi`) | 1.9 % | 3.0 % | 240 MB |
+
+Mesa's AMD encoder writes 9.7 Mbit/s at its default quality where Intel's writes 1.8; `--ffmpeg "-b:v 2M"` brings it to 1.9. `av1_nvenc` records on both NVIDIA cards tried (RTX 4090 and 4060).
+
+The main machine moved from NVIDIA driver 595 to 615.71.09 (the open kernel modules): `nova doctor`, the tests, a wall of 13 windows on OpenGL, a native Wayland window in a nested sway, and headless recording through `h264_nvenc` and `hevc_nvenc` at 1.6 to 2.9 % of a core per camera. The custom build was redone with the newest NVENC headers, which need driver 610: all three NVENC encoders record.
+
+Fixed:
+
+- **`--accel vaapi` used the wrong GPU on some machines.** Without `--gpu` it opened `/dev/dri/renderD128`, whatever that was: on the second machine the NVIDIA card, so cameras decoded in software until `--gpu 1` was found. Without `--gpu`, Nova now takes the first node that is not an NVIDIA card, for decoding and for the VAAPI encoders. `--gpu N` and `NOVA_GPU_DEVICES` mean `renderD(128+N)` as before.
+- **A GPU index the machine does not have sent the camera to the CPU.** `--gpu 1`, or a `cameras.ini` with `NOVA_GPU_DEVICES = 0,1` carried to a machine with one NVIDIA card: the decoder answered `invalid device ordinal`, every NVENC encoder `Generic error in an external library`, and the camera decoded in software and recorded with `libx264`, 32 % of a core where the GPU takes 2, with nothing in the log that named the index. Decoder and encoder now use GPU 0 and say so; `nova doctor` warns about such an index.
+- **`nova record --help` started every camera.** Help asked after a command was passed on to each camera, which printed the option list into its log and exited; the launcher reported fourteen cameras that `exited right after start`. It prints the launcher's usage now, for every command.
+- **The custom-FFmpeg recipe left the wheel in place.** In a venv made by the install guide, `pip install --no-binary av av` answers `Requirement already satisfied`, and the build looked done while `--accel vaapi` still was not there. The recipes say `--force-reinstall`, and their last line prints the hardware devices, which tell a build from the wheel (the library versions are the same).
+- **The NVENC headers of the recipe were pinned to an old release** because the machine it was written on had driver 595. The doc now lists the release for each driver range, from each release's own README, with 13.1 for driver 610 and later.
+- **`nova doctor` said nothing about a GPU the user may not open.** Over ssh, in a service or in a container, `/dev/dri/renderD*` belongs to the group `render`, and without it VAAPI says only `No VA display found` and Quick Sync `Unknown error occurred`. Doctor now names the node, the user and the group to join; it also names a Qt module that does not load and the library it misses, and it checks the VAAPI node Nova would pick by itself.
+
 ## 2026-11-12 — Quick Sync on real Intel GPUs (Windows and Linux), two monitors on Windows
 
 Intel's Quick Sync had never run on hardware here. This round is on a laptop (Core i7-8565U with UHD Graphics 620, Intel driver 26.20.100.7811 of January 2020, Windows 11 Home 26H2, driven over ssh) with Option A of the install guide (Python 3.13.17, the `av` 19.0.2 wheel). The first recording with `--accel qsv` showed two faults, both fixed below; an older Nova had recorded with Quick Sync on this laptop because it numbered the frames instead of using the camera's times.

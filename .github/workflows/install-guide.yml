@@ -41,6 +41,9 @@ jobs:
           # arm64 (Raspberry Pi OS 13 is Debian 13): the same lines on GitHub's ARM runners
           - { image: "ubuntu:24.04", runner: "ubuntu-24.04-arm", name: "ubuntu:24.04 arm64", block: "Ubuntu 24.04 and 26.04, Debian 13" }
           - { image: "debian:13", runner: "ubuntu-24.04-arm", name: "debian:13 arm64", block: "Ubuntu 24.04 and 26.04, Debian 13" }
+    defaults:
+      run:
+        shell: bash          # every image has it; a container job would take sh otherwise
     env:
       DEBIAN_FRONTEND: noninteractive
       BLOCK: ${{ matrix.block }}
@@ -50,11 +53,19 @@ jobs:
       - name: The guide's package lines, read from docs/install.md
         run: |
           # the first paragraph of the first ```bash block after the line that holds $BLOCK, without sudo
-          awk -v lab="$BLOCK" 'index($0, lab) {f=1} f && /```bash/ {b=1; next} b && (/```/ || /^ *$/) {exit} b {print}' docs/install.md \
-            | sed -e 's/^ *//' -e 's/sudo //g' -e 's/pacman -S/pacman --noconfirm -S/' > /tmp/packages.sh
+          # (bash alone: a pristine openSUSE Tumbleweed image has no awk)
+          found=0; inside=0; : > /tmp/packages.sh
+          while IFS= read -r line; do
+            [[ $line == *"$BLOCK"* ]] && found=1
+            if [[ $found == 1 && $inside == 0 && $line == *'```bash'* ]]; then inside=1; continue; fi
+            [[ $inside == 1 ]] || continue
+            [[ $line == *'```'* || -z ${line// /} ]] && break
+            line=${line#"${line%%[! ]*}"}; line=${line//sudo /}
+            echo "${line//pacman -S/pacman --noconfirm -S}" >> /tmp/packages.sh
+          done < docs/install.md
           cat /tmp/packages.sh
           grep -qE '(apt|dnf|zypper) install -y |pacman --noconfirm -S' /tmp/packages.sh || { echo "could not read the package lines for '$BLOCK' from the guide"; exit 1; }
-          sh -e /tmp/packages.sh
+          bash -e /tmp/packages.sh
       - name: An ordinary user, as on a desktop
         run: |
           command -v runuser > /dev/null || dnf install -y util-linux > /dev/null
