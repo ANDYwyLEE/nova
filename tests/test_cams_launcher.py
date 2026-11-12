@@ -171,12 +171,24 @@ def test_a_stale_pid_is_not_a_camera(home, capsys):
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc")
-def test_a_kernel_thread_with_a_camera_s_old_pid_is_not_a_camera():
-    """pid 2 is kthreadd: it has no command line. An empty one was read as "cannot tell", so a pid file
-    from before a reboot could make `start` say "already running" about a kernel thread (and a test that
+def test_a_kernel_thread_with_a_camera_s_old_pid_is_not_a_camera(monkeypatch):
+    """A kernel thread has no command line. An empty one was read as "cannot tell", so a pid file from
+    before a reboot could make `start` say "already running" about a kernel thread (and a test that
     looked at a process in the middle of its exec failed on a faster machine)."""
-    assert cams.cmdline(2) == cams.NO_CMDLINE and not cams.alive(2)
-    assert "python" in cams.cmdline(os.getpid()).lower() or cams.cmdline(os.getpid())
+    import io
+    proc = {"/proc/4242/stat": b"4242 (kworker/3:1) I 2 0 0 0 -1 69238880 0 0 0 0 0 0", "/proc/4242/cmdline": b"",
+            "/proc/4243/stat": b"4243 (python) S 1 0 0 0 -1 4194304 0 0 0 0 0 0",
+            "/proc/4243/cmdline": b"/usr/bin/python3\0-u\0/home/u/nova/nova.py\0--camera\0a\0"}
+
+    def fake_open(path, mode="r", *a, **k):
+        if path in proc:
+            return io.BytesIO(proc[path])
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(cams, "open", fake_open, raising=False)
+    monkeypatch.setattr(cams.os, "kill", lambda pid, sig: None)
+    assert cams.cmdline(4242) == cams.NO_CMDLINE and not cams.alive(4242)      # read, and not Nova's
+    assert "nova.py" in cams.cmdline(4243) and cams.alive(4243)
+    assert cams.cmdline(4244) is None and not cams.alive(4244)                 # no such process
 
 
 def test_unreadable_pid_file_stops_instead_of_starting_everything_again(home):
