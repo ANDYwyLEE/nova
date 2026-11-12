@@ -49,3 +49,46 @@ def test_the_overlay_names_the_command_key_on_a_mac():
     guide = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "user-guide.md"), encoding="utf-8").read()
     assert "On a Mac, **Ctrl** in this table and the next is the Command key" in guide
 
+
+
+def _slug(heading):
+    """GitHub's anchor of a heading: lower case, punctuation dropped, spaces to hyphens."""
+    h = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading.strip().lower().replace("`", ""))
+    return re.sub(r"[^\w\- ]", "", h).replace(" ", "-")
+
+
+def _md_lines(path):
+    code = False
+    for n, line in enumerate(open(path, encoding="utf-8"), 1):
+        if line.startswith("```"):
+            code = not code
+        elif not code:
+            yield n, line
+
+
+def test_links_between_the_documents_resolve():
+    """A renamed heading or file breaks `[text](install.md#heading)` without anyone noticing."""
+    files = [os.path.join(ROOT, f) for f in ("README.md", "CHANGELOG.md")] + sorted(glob.glob(os.path.join(ROOT, "docs", "*.md")))
+    anchors = {}
+    for f in files:
+        seen, found = {}, set()
+        for _, line in _md_lines(f):
+            m = re.match(r"#{1,6}\s+(.*?)\s*$", line)
+            if m:
+                s = _slug(m.group(1))
+                found.add(s if s not in seen else f"{s}-{seen[s]}")
+                seen[s] = seen.get(s, 0) + 1
+        anchors[os.path.normpath(f)] = found
+    bad = []
+    for f in files:
+        for n, line in _md_lines(f):
+            for target in re.findall(r"\]\(([^)\s]+)\)", line):
+                if re.match(r"[a-z]+://|mailto:", target):
+                    continue
+                path, _, frag = target.partition("#")
+                dest = os.path.normpath(os.path.join(os.path.dirname(f), path)) if path else os.path.normpath(f)
+                if not os.path.exists(dest):
+                    bad.append(f"{os.path.relpath(f, ROOT)}:{n}: no file {target}")
+                elif frag and dest.endswith(".md") and frag not in anchors.get(dest, ()):
+                    bad.append(f"{os.path.relpath(f, ROOT)}:{n}: no heading #{frag} in {os.path.relpath(dest, ROOT)}")
+    assert not bad, "\n".join(bad)
