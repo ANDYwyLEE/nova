@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-11-12 — Quick Sync on a real Intel laptop, two monitors on Windows
+
+Intel's Quick Sync had never run on hardware here. This round is on a laptop (Core i7-8565U with UHD Graphics 620, Intel driver 26.20.100.7811 of January 2020, Windows 11 Home 26H2, driven over ssh) with Option A of the install guide (Python 3.13.17, the `av` 19.0.2 wheel). The first recording with `--accel qsv` showed two faults, both fixed below; an older Nova had recorded with Quick Sync on this laptop because it numbered the frames instead of using the camera's times.
+
+Seen working after the fixes: windows with OpenGL and QPainter decoding through `qsv`, `d3d11va`, `dxva2` and `d3d12va`, all in hardware; `nova record` of the six reachable cameras at once, each decoding with `h264_qsv` and recording with `h264_qsv`, with files that decode completely; `-e hevc_qsv`, `-bf 2`, `-b:v` with and without `-maxrate`, and `-t` to an FLV and an MPEG-TS file. Quick Sync also decodes and encodes over ssh (Windows' session 0). Option B (MSYS2) on this laptop is still to do.
+
+Measured with 1080p H.264 cameras, as the share of one core:
+
+| | 25 fps camera | 20 fps camera | 10 fps camera |
+|---|---|---|---|
+| window, OpenGL, `qsv` decoding | | | 8 % |
+| window, OpenGL, `d3d11va` / `dxva2` / `d3d12va` decoding | | | 8 to 9 % |
+| window, OpenGL, software decoding | | | 11 % |
+| window, QPainter, `qsv` decoding | | | 27 % |
+| recording without a window, `qsv` decoding and `h264_qsv` | 20 % | 14 % | 8 % |
+
+Six cameras recording together took 67 % of one core and 2.6 GB, a third of the GPU's 3D engine and a quarter of its video decode engine. A camera that does not answer costs 0.1 % and 106 MB without a window.
+
+On the AMD PC of the last round, now with both monitors (the right one 121 px higher than the main one, so its top is at a negative y): a first start tiles the 13 windows on the main monitor; 40 moves across both monitors, a window across the seam, places at the very top and in the far corner of the raised monitor kept across stop, start and `nova restart`, and `nova layout save`, `apply` and `start --layout`, all with Option A and Option B.
+
+Fixed:
+
+- **`--accel qsv` fell back to software decoding with some cameras.** A camera may send its SPS/PPS only in the RTSP session description. `h264_qsv` looks for them inside the packets, answered `More data is required to decode header` to every packet and never delivered a picture, so after three keyframes software decoding took over. Keyframes that carry no parameter sets now get the stream's in front for the Quick Sync decoders.
+- **Quick Sync recordings lost frames and logged a traceback now and then.** `h264_qsv` and `hevc_qsv` use B-frames by default and compute each packet's decode time from the nominal frame rate. With the real, uneven frame times of a camera that time repeats or runs backwards, and the MP4 muxer refuses such a packet (`non monotonically increasing dts`). Quick Sync now encodes with `-bf 0` unless `-bf` is given, and the writer moves a decode time that does not increase just past the previous one, as the `ffmpeg` program does, with one warning.
+- **Every recording with `--ffmpeg` codec options logged `The "dc" option is deprecated`.** FFmpeg says that when a codec's options are read, which Nova does to route yours; nobody had given that option. On every platform.
+- **A place that is on no screen opens on the nearest monitor.** It went to the primary one: a place just past the bottom edge of the right monitor put the window in the corner of the left one.
+- **Tests**: the encoder-fallback test read its child's UTF-8 output with the system code page and failed on a Korean Windows.
+
+Documented: how large Quick Sync recordings get ([recording.md](docs/recording.md#quick-sync-how-large-the-files-get)). Without a rate option the encoder keeps the quantizer constant and the size follows the scene (one outdoor camera: 12.6 Mbit/s in the afternoon, 0.9 at night); the guide has the modes side by side, measured on the same pictures.
+
+Seen and left as it is:
+
+- Quick Sync's FFmpeg note `Using the constant quantization parameter (CQP) by default` at every recording start: it is the default described above.
+- The Intel driver on this laptop is six years old; the same tests with a current driver are still to do.
+
 ## 2026-11-11 — Windows on a real PC
 
 Until now Windows had only run on GitHub's runners, which have no GPU, no GPU driver and no sound device. This round is on a PC (AMD Ryzen 9 5900HX with its integrated Radeon graphics, AMD Software 26.5.2, Windows 11 Pro 26H2, two 3440x1440 monitors, driven over ssh), with both installs of the guide: Option A (python.org Python 3.13.17 and the `av` 19.0.2 wheel) and Option B (MSYS2 UCRT64: Python 3.14.10, Qt 6.12, `av` built against MSYS2's FFmpeg 9.0.2). Both install as written and pass the test suite.
