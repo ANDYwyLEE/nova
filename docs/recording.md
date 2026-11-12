@@ -15,6 +15,7 @@
 - `--headless -r` records without a window (servers, cron jobs); `nova record [ID ...]` is the shorthand for every enabled camera in `cameras.ini`.
 - Stopping Nova (window close, Ctrl-C, `nova stop`) closes the current segment cleanly.
 - **A failure does not end recording.** When the disk is full, the folder becomes unwritable or the encoder fails, the segment is closed and recording starts again after 5, 10, 20, 40 s and then every 60 s for as long as it is switched on; meanwhile the camera icon is gray and `nova status` shows `record waiting`. Free the space and the next attempt picks it up.
+- **Sound that stops is fetched again.** Some cameras stop sending the audio of a connection after minutes or hours while the video goes on, and send it again to a new connection. When audio that was flowing has been missing for 30 s, Nova reconnects (`no audio for 31 s while video keeps flowing; reconnecting` in the log; the picture pauses for a few seconds and the segment continues). A camera that drops its audio again soon after every connect is asked less and less often, up to once an hour; `NOVA_AUDIO_STALL` sets the wait in seconds, `0` leaves such recordings silent. A segment that got no sound at all is named in the log (`this segment has no sound`).
 - One process records into a camera's folder at a time (a lock file, `.nova-recording.lock`): a second Nova for the same camera (e.g. `nova run X` while `nova start` runs X) logs `not recording: … another Nova process (pid N)` and waits instead of writing into the same file.
 
 ## Files and segments
