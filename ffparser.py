@@ -32,6 +32,8 @@ import re
 import sys
 import shlex
 import argparse
+import contextlib
+import threading
 
 import ffopts_tables as T
 
@@ -182,6 +184,30 @@ def _candidate_codecs():
     return dec, enc
 
 
+_quiet_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def _quiet_ffmpeg():
+    """FFmpeg's log at FATAL while a codec's options are read: reading an option's default makes it warn
+    about every deprecated option ('The "dc" option is deprecated': dozens of lines for the tables, one
+    for each context asked). The level is one for the whole process, so one thread at a time changes it
+    and puts it back.  get_level() is None by default (no threshold), which set_level() takes back."""
+    with _quiet_lock:
+        try:
+            import av.logging
+            level, quiet = av.logging.get_level(), True
+            av.logging.set_level(av.logging.FATAL)
+        except Exception:
+            level, quiet = None, False
+        try:
+            yield
+        finally:
+            if quiet:
+                try: av.logging.set_level(level)
+                except Exception: pass
+
+
 def _index_from_pyav():
     """The codec tables of the PyAV build in use, or None when it cannot list them."""
     try:
@@ -195,15 +221,7 @@ def _index_from_pyav():
         return None
     generic, dec, enc = {}, {}, {}
     dec_names, enc_names = _candidate_codecs()
-    # Reading an option's default makes FFmpeg warn about every deprecated option ("The "dc" option
-    # is deprecated", dozens of lines): keep its log quiet while the tables are read.  get_level()
-    # is None by default (no threshold), which set_level() takes back.
-    try:
-        level, quiet = av.logging.get_level(), True
-        av.logging.set_level(av.logging.FATAL)
-    except Exception:
-        level, quiet = None, False
-    try:
+    with _quiet_ffmpeg():
         for names, mode, dst in ((dec_names, 'r', dec), (enc_names, 'w', enc)):
             for name in names:
                 if name not in available:
@@ -216,10 +234,6 @@ def _index_from_pyav():
                     generic = {o.name: _flags_str(o.flags) for o in so.generic}
                 for o in so.private:
                     _merge(dst, o.name, _flags_str(o.flags), name)
-    finally:
-        if quiet:
-            try: av.logging.set_level(level)
-            except Exception: pass
     if not generic:
         return None
     v = ".".join(str(x) for x in av.library_versions.get("libavcodec", ()))
@@ -317,8 +331,9 @@ def for_codec(ctx, opts: dict, what: str = "codec"):
     if not opts:
         return dict(opts), {}
     try:
-        so = ctx.supported_options
-        known = {o.name for o in so.generic} | {o.name for o in so.private}
+        with _quiet_ffmpeg():
+            so = ctx.supported_options
+            known = {o.name for o in so.generic} | {o.name for o in so.private}
     except Exception:
         return dict(opts), {}
     idx = codec_index()

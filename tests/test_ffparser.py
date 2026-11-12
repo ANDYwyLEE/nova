@@ -188,3 +188,22 @@ def test_options_of_other_codecs_are_left_out_for_the_codec_in_use():
     h264 = CodecContext.create("h264", "r")
     apply, skipped = for_codec(h264, {"skip_frame": "nokey", "resize": "640x360", "threads": "2"})
     assert apply == {"skip_frame": "nokey", "threads": "2"} and skipped == {"resize": "640x360"}
+
+
+def test_asking_a_codec_for_its_options_does_not_make_ffmpeg_warn(caplog):
+    """Reading a context's options makes FFmpeg warn 'The "dc" option is deprecated': every recording with
+    --ffmpeg options logged that line, about an option nobody gave."""
+    import logging
+    import av
+    import av.logging
+    from ffparser import for_codec
+    before = av.logging.get_level()
+    av.logging.set_level(av.logging.WARNING)
+    try:
+        caplog.set_level(logging.DEBUG)
+        ctx = av.CodecContext.create("libx264", "w")
+        assert for_codec(ctx, {"bf": "2", "cq": "28"}) == ({"bf": "2"}, {"cq": "28"})
+        assert av.logging.get_level() == av.logging.WARNING        # put back
+    finally:
+        av.logging.set_level(before)
+    assert not [r.getMessage() for r in caplog.records if "deprecated" in r.getMessage()]
