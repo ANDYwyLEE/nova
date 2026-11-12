@@ -123,9 +123,10 @@ Size ≈ bitrate × time: 4 Mbit/s is about 1.8 GB per hour and 43 GB per day pe
 | `h264_qsv` (Intel UHD 770 / 620) | 1.3 to 1.8 Mbit/s | 4 % / 8 % |
 | `h264_vaapi` (Intel UHD 770, custom FFmpeg build) | 1.8 Mbit/s | 5 % |
 | `libx264` | 2.0 Mbit/s | 47 % |
-| `h264_amf`, `h264_mf` (AMD) | about 2 Mbit/s (0.1 bit per pixel and frame) | 4 % |
+| `h264_amf` (AMD Radeon, Ryzen 5900HX) | 7.3 Mbit/s | 4 % |
+| `h264_mf` (Windows Media Foundation) | 2.1 Mbit/s: Nova asks for 0.1 bit per pixel and frame, the encoder has no default | |
 
-So on an NVIDIA machine `--ffmpeg "-b:v 2M"` cuts the disk use to a sixth, and `libx264` wants `-preset veryfast` when many cameras record on the CPU. Nova does not delete old recordings. A daily cron job keeps a rolling window:
+So on an NVIDIA machine `--ffmpeg "-b:v 2M"` cuts the disk use to a sixth (on an AMD one to a quarter), and `libx264` wants `-preset veryfast` when many cameras record on the CPU. Nova does not delete old recordings. A daily cron job keeps a rolling window:
 
 ```bash
 # keep 14 days

@@ -36,7 +36,7 @@ Fixed:
 - **`nova doctor` did not mention an Intel GPU.** Its GPU lines came from `nvidia-smi` alone. On Linux it now lists every GPU the kernel has, and where there is an Intel one, or `--accel qsv` in `cameras.ini`, it tries to start Quick Sync and names the two packages when that fails.
 - **Tests**: the encoder-fallback test read its child's UTF-8 output with the system code page and failed on a Korean Windows.
 
-Documented: what each encoder writes when you give no rate option (NVENC 11 to 12 Mbit/s for a camera that Quick Sync and x264 record at 2), and how large Quick Sync recordings get ([recording.md](docs/recording.md#quick-sync-how-large-the-files-get)). Without a rate option the encoder keeps the quantizer constant and the size follows the scene (one outdoor camera: 12.6 Mbit/s in the afternoon, 0.9 at night); the guide has the modes side by side, measured on the same pictures.
+Documented: what each encoder writes when you give no rate option (NVENC 11 to 12 Mbit/s and AMF 7 for a camera that Quick Sync, VAAPI and x264 record at 2), and how large Quick Sync recordings get ([recording.md](docs/recording.md#quick-sync-how-large-the-files-get)). Without a rate option the encoder keeps the quantizer constant and the size follows the scene (one outdoor camera: 12.6 Mbit/s in the afternoon, 0.9 at night); the guide has the modes side by side, measured on the same pictures.
 
 Seen and left as it is:
 
