@@ -258,7 +258,7 @@ What cameras send is decoded by the FFmpeg inside PyAV: G.711 µ-law and A-law, 
 
 ## Where settings are stored
 
-Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom region. They are written within 2 s of every move, resize or zoom change, and once more when the window closes, on Ctrl-C and on `nova stop`. A fullscreen or maximized window keeps its normal place on record, and a camera reconnect never changes the zoom. When a monitor is unplugged or drops out while asleep, the windows keep their places on record and go back once the monitor returns (unless you moved them meanwhile); a remembered place on a monitor that is not connected opens on the primary screen. A layout (`nova layout save`) is a named snapshot of these values in `layouts/NAME.json`.
+Per camera (keyed by a hash of the `-i` URL): window geometry and the zoom region. They are written within 2 s of every move, resize or zoom change, and once more when the window closes, on Ctrl-C and on `nova stop`. A fullscreen or maximized window keeps its normal place on record, and a camera reconnect never changes the zoom. When a monitor is unplugged or drops out while asleep, the windows keep their places on record and go back once the monitor returns (unless you moved them meanwhile); a remembered place that is on no screen (its monitor is not connected, or the monitors were rearranged) opens on the nearest screen. A layout (`nova layout save`) is a named snapshot of these values in `layouts/NAME.json`.
 
 | OS | Location |
 |---|---|

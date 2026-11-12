@@ -725,11 +725,31 @@ class Nova(QOpenGLWindow):
         super().moveEvent(e)
 
     # ------------------------------------------------------------------ screens
+    def _screens(self):
+        """(whole area, usable area) of every screen, the primary one first."""
+        primary = QGuiApplication.primaryScreen()
+        return [(s.geometry(), s.availableGeometry())
+                for s in sorted(QGuiApplication.screens(), key=lambda s: s is not primary)]
+
     def _screen_rects(self):
-        return [s.geometry() for s in QGuiApplication.screens()]
+        return [whole for whole, _ in self._screens()]
 
     def _primary_rect(self) -> QRect:
         return QGuiApplication.primaryScreen().availableGeometry()
+
+    def _nearest_usable(self, r: QRect) -> QRect:
+        """The usable area of the screen nearest to r: the one r overlaps most, else the one r is
+        closest to; among equals the primary screen."""
+        best, best_key = None, None
+        for whole, usable in self._screens():
+            i = r.intersected(whole)
+            overlap = max(0, i.width()) * max(0, i.height())
+            dx = max(whole.left() - r.right(), r.left() - whole.right(), 0)
+            dy = max(whole.top() - r.bottom(), r.top() - whole.bottom(), 0)
+            key = (-overlap, dx * dx + dy * dy)
+            if best_key is None or key < best_key:
+                best, best_key = usable, key
+        return best if best is not None else self._primary_rect()
 
     def _on_screen(self, r: QRect):
         """True when enough of r is on one screen to be seen and dragged."""
@@ -741,12 +761,13 @@ class Nova(QOpenGLWindow):
         return False
 
     def _fit_on_screen(self, x, y, w, h):
-        """(x, y, w, h) unchanged when the window would be visible, else moved onto the primary screen
+        """(x, y, w, h) unchanged when the window would be visible, else moved onto the nearest screen
         (shrunk with its aspect ratio kept if it is larger). A remembered place on a monitor that is gone
-        used to open the window where nobody can see or reach it."""
+        used to open the window where nobody can see or reach it; a place just past the edge of the second
+        monitor used to jump to the primary one."""
         if self._on_screen(QRect(x, y, w, h)):
             return x, y, w, h
-        p = self._primary_rect()
+        p = self._nearest_usable(QRect(x, y, w, h))
         f = min(1.0, p.width() / w if w > 0 else 1.0, p.height() / h if h > 0 else 1.0)
         w, h = max(1, int(w * f)), max(1, int(h * f))
         x = max(p.left(), min(x, p.left() + p.width() - w))

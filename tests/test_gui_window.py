@@ -322,6 +322,25 @@ def test_place_kept_while_its_monitor_sleeps_and_restored_when_it_returns(make, 
     assert w.geometry() == QRect(100, 100, 320, 180) and not w._geom_hold
 
 
+def test_a_place_off_every_screen_goes_to_the_nearest_monitor(make, monkeypatch):
+    """Two 3440x1440 monitors, the right one 121 px higher, a task bar of 48 px on each. A place below the
+    right monitor's bottom edge went to the primary (left) monitor's corner on a real PC."""
+    w, _ = make("100,100,320,180", None)
+    left = (QRect(0, 0, 3440, 1440), QRect(0, 0, 3440, 1392))
+    right = (QRect(3440, -121, 3440, 1440), QRect(3440, -121, 3440, 1392))
+    monkeypatch.setattr(w, "_screens", lambda: [left, right])
+    fit = w._fit_on_screen
+    assert fit(3840, -121, 640, 360) == (3840, -121, 640, 360)        # visible: untouched
+    assert fit(3140, 500, 640, 360) == (3140, 500, 640, 360)          # across the seam: untouched
+    assert fit(6640, 1300, 480, 270) == (6400, 1001, 480, 270)        # 19 px on the right monitor: its corner
+    assert fit(5000, -600, 640, 360) == (5000, -121, 640, 360)        # above the right monitor: its top edge
+    assert fit(-900, 200, 640, 360) == (0, 200, 640, 360)             # left of everything: the left monitor
+    assert fit(3300, 1420, 400, 300) == (3040, 1092, 400, 300)        # a sliver on the left one only: stays left
+    monkeypatch.setattr(w, "_screens", lambda: [left])                # the right monitor is gone
+    assert fit(4480, 300, 640, 360) == (2800, 300, 640, 360)
+    assert fit(6640, 1300, 480, 270) == (2960, 1122, 480, 270)
+
+
 def test_a_user_move_during_the_hold_wins(make, app):
     w, core = make("100,100,320,180", None)
     w._on_screens_changed()
