@@ -469,3 +469,16 @@ def test_shortcut_is_resolved_again_after_failures(qapp, monkeypatch):
 def test_stop_reports_whether_the_thread_ended(qapp):
     w = _worker()
     assert w.stop() is True                                # never started
+
+
+def test_accel_in_build_looks_at_the_decoders(monkeypatch):
+    """The arm64 wheel has no NVIDIA and no Intel decoder: `nova doctor` answered "--accel cuda has a
+    decoder in this FFmpeg build" from a table of names (seen on GitHub's ARM runner)."""
+    monkeypatch.setattr(videoworker, "HWACCELS", ["drm"])
+    monkeypatch.setattr(videoworker, "CODECS_AVAILABLE", {"h264", "h264_v4l2m2m", "hevc_v4l2m2m", "libx264"})
+    assert not videoworker.accel_in_build("cuda") and not videoworker.accel_in_build("qsv")
+    assert videoworker.accel_in_build("v4l2m2m") and videoworker.accel_in_build("drm") and videoworker.accel_in_build("")
+    assert not videoworker.accel_in_build("vaapi") and not videoworker.accel_in_build("nonsense")
+    assert videoworker.accel_supported("cuda")           # still a name Nova tries: software when it does not open
+    monkeypatch.setattr(videoworker, "CODECS_AVAILABLE", {"h264_cuvid"})
+    assert videoworker.accel_in_build("cuda") and videoworker.accel_in_build("nvdec")

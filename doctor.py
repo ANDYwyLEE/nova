@@ -712,9 +712,9 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                 accels.add(m.group(1).lower())
         if accels:
             try:
-                from videoworker import accel_supported
+                from videoworker import accel_in_build
                 for a in sorted(accels):
-                    if accel_supported(a):
+                    if accel_in_build(a):
                         out.append(("✓", f"--accel {a} has a decoder in this FFmpeg build"))
                     else:
                         out.append(("⚠", f"--accel {a} is in cameras.ini but this FFmpeg build has no {a} decoder: "

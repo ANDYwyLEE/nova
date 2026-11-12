@@ -16,7 +16,7 @@ Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Wind
 
 | | |
 |---|---|
-| [Installation](docs/install.md) | Linux / Windows / macOS, what the PyPI FFmpeg includes, GPU drivers |
+| [Installation](docs/install.md) | Linux (Ubuntu, Debian, Fedora, RHEL family, openSUSE, Arch; arm64, WSL2) / Windows / macOS, what the PyPI FFmpeg includes, GPU drivers |
 | [User guide](docs/user-guide.md) | `cameras.ini`, the `nova` launcher, every command-line option, **all keyboard and mouse controls**, layouts, zoom, audio, snapshots, where settings live |
 | [Recording](docs/recording.md) | segments, fragmented MP4, timestamps and A/V sync, encoder selection, tuning, housekeeping |
 | [Live streaming](docs/streaming.md) | YouTube RTMP and HLS (HEVC), Twitch, SRT, MPEG-TS, bitrate/latency, checklist |
@@ -30,7 +30,7 @@ Python · PySide6 (Qt 6) · PyAV (FFmpeg) · PyOpenGL · PyAudio — Linux, Wind
 ```bash
 git clone https://github.com/ANDYwyLEE/nova.git && cd nova
 python3 -m venv venv && . venv/bin/activate        # Windows: py -3.13 -m venv venv && venv\Scripts\activate
-pip install -U pip && pip install -r requirements.txt   # Linux first: the apt line of docs/install.md
+pip install -U pip && pip install -r requirements.txt   # Linux first: your distribution's package line in docs/install.md
 
 python nova.py --opengl --accel cuda -b -i "rtsp://user:pass@192.168.1.10:554/stream_0"
 ```

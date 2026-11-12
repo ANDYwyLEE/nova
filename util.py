@@ -73,6 +73,21 @@ def window_platform(env):
             else "")
     return "xcb", f"Wayland session: running under XWayland{note} (QT_QPA_PLATFORM = wayland in [env] for a native window)"
 
+def no_display(env):
+    """True when a camera window cannot open in this environment: Linux with neither DISPLAY nor
+    WAYLAND_DISPLAY (an ssh login, a service, cron) and no Qt platform asked for that draws without them
+    (eglfs, linuxfb, vnc, offscreen). Qt then aborts with advice about libxcb-cursor0 and reinstalling."""
+    if not LINUX or env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
+        return False
+    platform = (env.get("NOVA_QT_PLATFORM") or env.get("QT_QPA_PLATFORM") or "").split(":")[0].strip()
+    return platform in ("", "xcb", "wayland", "wayland-egl")
+
+
+NO_DISPLAY = ("no display in this session (DISPLAY and WAYLAND_DISPLAY are not set): a camera window cannot open. "
+              "`nova record` (nova.py --headless) runs cameras without windows; a window on the machine's own "
+              "screen is started from its desktop session, or with that session's DISPLAY")
+
+
 def is_msys():
     # MSYS2, Cygwin, Git Bash 등을 탐지
     term = os.environ.get("MSYSTEM", "").lower()

@@ -140,8 +140,21 @@ def _timeout_seconds() -> float:
     return max(1.0, _timeout_us() / 1_000_000)
 
 def accel_supported(accel: str) -> bool:
+    """A name Nova knows how to try (an unknown one ends the camera). Whether this FFmpeg build can do it
+    is accel_in_build's question; a known backend the build lacks falls back to software decoding."""
     a = (accel or "").lower()
     return (not a) or a in HWACCELS or a in SEPARATE_DECODER_SUFFIX
+
+
+def accel_in_build(accel: str) -> bool:
+    """Can this FFmpeg build decode with --accel at all: its device type (vaapi, d3d11va, ...) is in the
+    build, or at least one of its dedicated decoders (h264_cuvid, hevc_qsv, ...). The arm64 wheel has
+    neither NVIDIA's nor Intel's decoders; nova doctor said `--accel cuda has a decoder` there."""
+    a = (accel or "").lower()
+    if not a or a in HWACCELS:
+        return True
+    suffix = SEPARATE_DECODER_SUFFIX.get(a)
+    return bool(suffix) and any(n.endswith("_" + suffix) for n in CODECS_AVAILABLE)
 
 def _decoder_candidates(accel: str, codec_name: str) -> list[str]:
     """Dedicated HW decoder names for the requested backend, e.g. cuda+h264 -> ['h264_cuvid']."""

@@ -71,13 +71,15 @@ restart remembers each camera's mode and layout, not options typed after start: 
 
 sys.path.insert(0, HERE)
 try:
-    from util import mask_url, window_title, printable, parse_geom, parse_zoom
+    from util import mask_url, window_title, printable, parse_geom, parse_zoom, no_display, NO_DISPLAY
 except Exception:  # pragma: no cover - util.py missing only in a broken checkout
     def mask_url(u): return u
     def window_title(n): return f"Nova - {n}" if n else "Nova"
     def printable(t, limit=200): return str(t or "")[:limit].strip()
     def parse_geom(t): return t
     def parse_zoom(t): return t
+    def no_display(env): return False
+    NO_DISPLAY = ""
 
 MAX_ID_LEN = 64        # a camera id names a log file and a socket; longer ids are refused
 
@@ -770,6 +772,8 @@ def cmd_start(defaults, env, cams, args, record=False):
             failed += 1
             continue
         why = refusal(cam, defaults)
+        if not why and mode.startswith("window") and no_display(child_env(env)):
+            why = NO_DISPLAY if not failed else "no display in this session"       # the long form once
         if why:
             print(f"{cam.id}: refused - {why}")
             failed += 1

@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QMetaObject, QTimer, QSize
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QIcon
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
-from util import parse_time, mask_url, NATIVE_APP_ID, window_platform, utf8_stdio, MAC
+from util import parse_time, mask_url, NATIVE_APP_ID, window_platform, no_display, NO_DISPLAY, utf8_stdio, MAC
 from novaargs import build_parser
 
 ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
@@ -130,6 +130,9 @@ if __name__ == "__main__":
         # `nova record` dies with the desktop session and cannot start from ssh or cron
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
     else:
+        if no_display(os.environ):
+            logging.critical("❌ " + NO_DISPLAY[0].upper() + NO_DISPLAY[1:])
+            sys.exit(-1)
         platform, note = window_platform(os.environ)     # XWayland on a Wayland session, whatever the desktop exports
         if platform:
             os.environ["QT_QPA_PLATFORM"] = platform

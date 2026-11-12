@@ -69,6 +69,7 @@ def home(tmp_path, monkeypatch):
                         ("LAYOUTS", tmp_path / "layouts")):
         monkeypatch.setattr(cams, name, str(value))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    monkeypatch.setenv("DISPLAY", ":99")                  # `start` refuses windows in a session without a display
     monkeypatch.setattr(cams, "EARLY_EXIT_GRACE", 0.3)
     yield tmp_path
     for e in cams.read_pids().values():                 # never leave a fake camera behind
@@ -101,6 +102,28 @@ def test_start_refuses_xmeye_without_python_dvr(home, capsys, monkeypatch):
     with pytest.raises(SystemExit) as e:
         run(home, "run", "x")
     assert "refused - xmeye:// needs python-dvr" in str(e.value)
+
+
+@posix_only
+def test_start_without_a_display_says_so_and_record_still_runs(home, capsys, monkeypatch):
+    """`nova start` over ssh on a server: every camera aborted inside Qt, and the log tail advised
+    installing libxcb-cursor0 (which was there) and reinstalling the application."""
+    import util
+    monkeypatch.setattr(cams, "no_display", lambda env: util.no_display(env))
+    monkeypatch.setattr(util, "LINUX", True)
+    monkeypatch.delenv("DISPLAY"); monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False); monkeypatch.delenv("NOVA_QT_PLATFORM", raising=False)
+    assert run(home, "start", "a", "b") == 1
+    out = capsys.readouterr().out
+    assert "a: refused - no display in this session (DISPLAY and WAYLAND_DISPLAY are not set)" in out
+    assert "`nova record`" in out and "b: refused - no display in this session\n" in out and not cams.read_pids()
+    assert run(home, "record", "a") == 0 and set(cams.read_pids()) == {"a"}       # no window: nothing to refuse
+    run(home, "stop")
+    assert util.no_display({}) and not util.no_display({"DISPLAY": ":0"}) and not util.no_display({"WAYLAND_DISPLAY": "wayland-0"})
+    assert not util.no_display({"QT_QPA_PLATFORM": "eglfs"}) and not util.no_display({"NOVA_QT_PLATFORM": "offscreen"})
+    assert util.no_display({"QT_QPA_PLATFORM": "xcb"})
+    monkeypatch.setattr(util, "LINUX", False)
+    assert not util.no_display({})                        # Windows and macOS always have a window system
 
 
 def test_has_module_asks_the_interpreter():
