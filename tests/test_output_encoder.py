@@ -276,7 +276,66 @@ def test_pictures_are_converted_to_the_format_chosen_not_to_the_gpu_s():
     """Once an encoder that was handed a device is open, the stream's pix_fmt reads 'vaapi'."""
     from types import SimpleNamespace
     w = avwriter.AVWriter.__new__(avwriter.AVWriter)
-    w.v_stream, w._v_pix_fmt = SimpleNamespace(pix_fmt="vaapi"), "nv12"
+    w.v_stream, w._v_pix_fmt, w._colour = SimpleNamespace(pix_fmt="vaapi"), "nv12", None
     w.width, w.height, w.v_time_base = 320, 180, Fraction(1, 90000)
     f = w._fit(next(frames(1)), 9000)
     assert (f.format.name, f.width, f.height, f.pts) == ("nv12", 320, 180, 9000)
+
+
+# ---------------------------------------------------------------- the camera's colour range
+def _yuv_frames(n, fmt="nv12", rng=None, space=None, lo=0, hi=255):
+    """n pictures whose luma runs from lo to hi across the width, flagged as given."""
+    ramp = np.tile(np.linspace(lo, hi, 320).astype(np.uint8), (180, 1))
+    for i in range(n):
+        f = av.VideoFrame.from_ndarray(np.concatenate([ramp, np.full((90, 320), 128, np.uint8)]), format="nv12")
+        if fmt != "nv12":
+            f = f.reformat(format=fmt, src_color_range=2, dst_color_range=2)
+        if rng is not None: f.color_range = rng
+        if space is not None: f.colorspace = space
+        f.pts, f.time_base = i, Fraction(1, 25)
+        yield f
+
+
+def _recorded(tmp_path, name, source, **enc):
+    out = tmp_path / name
+    w = avwriter.AVWriter(None, path=str(out), width=320, height=180, fps=25, encoder="libx264",
+                          enc_v_opts={"preset": "ultrafast", "crf": "10", **enc}, audio_enable=False)
+    for f in source:
+        w.write_video(f)
+    w.close()
+    with av.open(str(out)) as c:
+        ctx = c.streams.video[0].codec_context
+        f = next(c.decode(video=0))
+        y = np.frombuffer(f.planes[0], np.uint8).reshape(f.height, -1)[:, :f.width]
+        return int(ctx.color_range), int(ctx.colorspace), int(y[90, 2]), int(y[90, 317])
+
+
+def test_frame_colour_reads_what_the_picture_says():
+    plain = next(_yuv_frames(1))
+    assert avwriter._frame_colour(plain) == (None, None, None, None)
+    assert avwriter._frame_colour(next(_yuv_frames(1, rng=2, space=1))) == (2, 1, None, None)
+    assert avwriter._frame_colour(next(_yuv_frames(1, rng=1))) == (1, None, None, None)
+    assert avwriter._frame_colour(next(_yuv_frames(1, fmt="yuvj420p")))[0] == 2      # the old name of full range
+
+
+def test_a_full_range_camera_is_recorded_as_full_range(tmp_path):
+    """A camera that sends full range (yuvj420p; 0-255) was recorded without a word about it: players take
+    such a file for limited range and clip its blacks and whites (6 of 255 off on average, 21 at worst,
+    through libx264, NVENC, Quick Sync and VAAPI alike)."""
+    rng, space, dark, bright = _recorded(tmp_path, "full.mp4", _yuv_frames(12, rng=2, space=1))
+    assert (rng, space) == (2, 1)                               # the file says full range, BT.709
+    assert dark <= 6 and bright >= 249                          # and the samples are the camera's own
+    rng, space, dark, bright = _recorded(tmp_path, "j.mp4", _yuv_frames(12, fmt="yuvj420p"))
+    assert rng == 2 and dark <= 6 and bright >= 249             # converted to yuv420p for x264, still full
+
+
+def test_limited_range_and_unsaid_stay_limited(tmp_path):
+    # (x264 writes no range flag for limited range unless it has other colour information to write:
+    #  1 and 0 both mean limited to a player)
+    assert _recorded(tmp_path, "tv.mp4", _yuv_frames(12, rng=1, lo=16, hi=235))[0] in (0, 1)
+    assert _recorded(tmp_path, "tv709.mp4", _yuv_frames(12, rng=1, space=1, lo=16, hi=235))[:2] == (1, 1)
+    assert _recorded(tmp_path, "unsaid.mp4", _yuv_frames(12, lo=16, hi=235))[0] == 0
+
+
+def test_a_colour_range_given_with_ffmpeg_options_wins(tmp_path):
+    assert _recorded(tmp_path, "forced.mp4", _yuv_frames(12, rng=2), color_range="tv")[0] != 2

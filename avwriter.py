@@ -88,6 +88,21 @@ def _hw_suffixes(accel):
     return base
 
 
+def _frame_colour(frame):
+    """(range, matrix, primaries, transfer) of a decoded picture as FFmpeg's numbers, None where the picture
+    does not say.  Range: 1 limited (16-235), 2 full (0-255, what the old yuvj420p format meant)."""
+    def val(name, unsaid):
+        try:
+            v = int(getattr(frame, name))
+        except Exception:
+            return None
+        return None if v in unsaid else v
+    rng = val("color_range", (0,))
+    if rng is None and frame.format.name.startswith("yuvj"):
+        rng = 2
+    return rng, val("colorspace", (0, 2)), val("color_primaries", (0, 2)), val("color_trc", (0, 2))
+
+
 def _make_hwaccel(device_type, device):
     from av.codec.hwaccel import HWAccel
     return HWAccel(device_type=device_type, device=device)
@@ -505,6 +520,7 @@ class AVWriter:
         self.v_frames = 0
         self.a_frames = 0
         self.last_v_pts = -1
+        self._colour = None             # (range, matrix, primaries, transfer) of the camera's pictures
         self._last_v_dts = None         # dts of the last video packet handed to the muxer
         self._dts_fixed = 0             # video packets whose dts had to be moved (see _monotonic)
         self.last_a_end = 0
@@ -885,7 +901,11 @@ class AVWriter:
     def _fit(self, frame, pts):
         target_pf = self._v_pix_fmt
         if frame.format.name != target_pf or frame.width != self.width or frame.height != self.height:
-            frame = frame.reformat(width=self.width, height=self.height, format=target_pf)
+            rng = (self._colour or _frame_colour(frame))[0]
+            # the sample values stay what they are (a full-range picture is not squeezed into 16-235):
+            # the encoder is told the range instead (_carry_colour)
+            kw = {"src_color_range": rng, "dst_color_range": rng} if rng else {}
+            frame = frame.reformat(width=self.width, height=self.height, format=target_pf, **kw)
         frame.pts = pts
         frame.time_base = self.v_time_base
         # decoded frames carry the *source* picture type (I/P/B); libx264/nvenc would treat it as
@@ -899,11 +919,14 @@ class AVWriter:
         if pts <= self.last_v_pts:
             pts = self.last_v_pts + 1
         self.last_v_pts = pts
+        if self._colour is None:
+            self._colour = _frame_colour(frame)
         while True:
             ctx, f = self.v_stream.codec_context, self._fit(frame, pts)
             if ctx.is_open:
                 packets = self.v_stream.encode(f)
                 break
+            self._carry_colour(ctx, f)
             try:
                 packets = self.v_stream.encode(f)        # the first call opens the encoder
                 break
@@ -915,6 +938,26 @@ class AVWriter:
         if not self._v_opts_checked:
             self._v_opts_checked = True
             self._report_unused(self.v_stream.codec_context, "video encoder", self._applied_v)
+
+    def _carry_colour(self, ctx, frame):
+        """Tell an encoder that is about to open what the camera's pictures are. Without it the file says
+        nothing, players assume limited range, and a camera that sends full range (yuvj420p) is played
+        with its blacks and whites clipped: 6 of 255 off on average, 21 at worst, through every encoder.
+        The matrix, primaries and transfer are passed on when the camera names them. An option the user
+        gave (--ffmpeg "-color_range tv") stays."""
+        given = getattr(ctx, "options", None) or {}
+        names = ("color_range", "colorspace", "color_primaries", "color_trc")
+        for name, value in zip(names, self._colour or ()):
+            if value is None or name in given:
+                continue
+            try:
+                setattr(ctx, name, value)
+                if name == "color_range":
+                    frame.color_range = value
+            except Exception as e:
+                logging.debug(f"[AVWriter] {name}={value} not settable: {e}")
+        if self._colour and self._colour[0] == 2:
+            logging.debug("[AVWriter] the camera sends full-range video: the recording says so")
 
     def _next_video_encoder(self, e):
         """The video encoder opens at its first frame, at the real size; the probe ran at 640x360 and
