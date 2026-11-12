@@ -14,7 +14,7 @@ from fractions import Fraction
 import av
 import logsync  # installs logging.verbose / logging.trace
 from ffparser import for_codec
-from util import WINDOWS, MAC, IS_PI, MSYS, get_os_type, short_err as _short_err
+from util import WINDOWS, MAC, IS_PI, MSYS, get_os_type, vaapi_node, short_err as _short_err
 
 try: from filelock import FileLock, Timeout
 except ImportError:
@@ -108,14 +108,13 @@ def _make_hwaccel(device_type, device):
     return HWAccel(device_type=device_type, device=device)
 
 
-def _encoder_hwaccel(encoder_name, gpu_idx=0):
+def _encoder_hwaccel(encoder_name, gpu_idx=None):
     """The hardware device an encoder has to be handed, or None.  The VAAPI encoders take pictures that live
     on the GPU: given the device, PyAV (19) puts Nova's system-memory pictures there itself.  The device is
-    the DRM render node that --gpu counts, as for decoding."""
+    the DRM render node that --gpu counts, as for decoding; with no --gpu (None) the first node that can
+    have VAAPI (util.vaapi_node)."""
     if encoder_name.lower().endswith("_vaapi"):
-        try: n = int(gpu_idx or 0)
-        except (TypeError, ValueError): n = 0
-        return _make_hwaccel("vaapi", f"/dev/dri/renderD{128 + n}")
+        return _make_hwaccel("vaapi", vaapi_node(gpu_idx))
     return None
 
 
@@ -168,7 +167,7 @@ class EncoderManager:
                 cls._instance._failed = {}       # encoder -> monotonic time of its last failed real open
                 cls._instance._warned = set()
                 cls._instance._lock_broken = False
-                cls._instance.gpu_idx = 0        # the camera's --gpu: the device of encoders that take one
+                cls._instance.gpu_idx = None     # the camera's --gpu when one was given: the device of encoders that take one
             return cls._instance
 
     def get_encoder(self, accel, user_encoder, source_codec, enc_opts, allowed=None):
@@ -280,7 +279,7 @@ class EncoderManager:
         return "libx264"
 
     @staticmethod
-    def _try_open(encoder_name, opts, gpu_idx=0):
+    def _try_open(encoder_name, opts, gpu_idx=None):
         """Returns None when the encoder opens with these options, else the error text."""
         ctx = None
         try:
@@ -494,7 +493,7 @@ class AVWriter:
             enc_a_opts=None,
             mux_opts=None,
             sample_rate=0, channels=0, audio_enable=True,
-            gpu_idx=0,
+            gpu_idx=0, gpu_given=True,
             v_tag=None, a_encoder=None,
             live=False,
             vf=None, metadata=None,
@@ -512,6 +511,7 @@ class AVWriter:
         self.sample_rate = int(sample_rate or 0)
         self.channels = int(channels or 0)
         self.gpu_idx = gpu_idx
+        self._device_gpu = gpu_idx if gpu_given else None     # None: no --gpu, the VAAPI node is looked for
         self.live = live
         self.run_flag = True
         self.first_packet_sent = False
@@ -581,7 +581,7 @@ class AVWriter:
         self.container = self._open_container()
 
         try:
-            EncoderManager().gpu_idx = self.gpu_idx
+            EncoderManager().gpu_idx = self._device_gpu
             self.v_encoder = EncoderManager().get_encoder(*self._enc_args)
             if encoder and allowed and _family(encoder) not in allowed and (encoder, fmt) not in _WARNED:
                 # e.g. -e hevc_nvenc in [defaults]: an RTMP stream in HEVC shows "no data" on YouTube
@@ -636,7 +636,7 @@ class AVWriter:
             raise OutputOpenError(f"cannot start: {self.open_failed}") from e
 
     def _setup_video(self, v_tag):
-        hw = _encoder_hwaccel(self.v_encoder, self.gpu_idx)
+        hw = _encoder_hwaccel(self.v_encoder, self._device_gpu)
         if hw is not None:
             self.v_stream = self.container.add_stream(self.v_encoder, rate=self.fps, hwaccel=hw)
         else:
@@ -965,6 +965,13 @@ class AVWriter:
         context must never be used again (a second avcodec_open2() on it segfaults), so the container
         is rebuilt around the next candidate, ending at libx264."""
         failed, err = self.v_encoder, _short_err(e)
+        if "nvenc" in failed and self.gpu_idx not in (0, None):
+            # --gpu N with fewer NVIDIA cards than that: the same encoder on GPU 0 before giving it up
+            logging.warning(f"[AVWriter] ⚠️ {failed} does not open on GPU {self.gpu_idx} ({err}); trying GPU 0 "
+                            f"(--gpu / NOVA_GPU_DEVICES count the NVIDIA cards, nvidia-smi lists them)")
+            self.gpu_idx = 0
+            self._rebuild(failed)
+            return
         self._tried.add(failed)
         mgr = EncoderManager()
         first = mgr.reject(failed)

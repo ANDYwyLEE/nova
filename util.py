@@ -1,5 +1,6 @@
 """Platform checks, password and stream-key masking for logs and terminals, small parsers shared by the
 launcher and the camera (geometry, zoom, intervals), and short forms of FFmpeg's error texts."""
+import glob
 import os
 import re
 import sys
@@ -199,6 +200,32 @@ def printable(text, limit=200):
     """A name as it may appear in a window title, a terminal or a log: terminal escape sequences and
     control characters (newlines included) removed, at most `limit` characters."""
     return _CONTROL_CHARS.sub("", _ANSI_SEQ.sub("", str(text or "")))[:limit].strip()
+
+DRM_ROOT = "/sys/class/drm"
+
+
+def vaapi_node(gpu_idx=None, root=None):
+    """The DRM render node --accel vaapi and the *_vaapi encoders use.  An index (--gpu N, or the launcher's
+    NOVA_GPU_DEVICES) names /dev/dri/renderD(128+N).  None, nothing asked for, is the first node that is
+    not an NVIDIA card, whose driver has no VAAPI: next to NVIDIA cards the integrated Intel or AMD GPU is
+    renderD128 on one machine and renderD129 on the next.  renderD128 when the kernel tells nothing."""
+    try:
+        if gpu_idx is not None:
+            return f"/dev/dri/renderD{128 + int(gpu_idx)}"
+    except (TypeError, ValueError):
+        pass
+    nodes = []
+    for p in glob.glob(os.path.join(root or DRM_ROOT, "renderD[0-9]*")):
+        try:
+            with open(os.path.join(p, "device", "vendor")) as f:
+                nodes.append((int(os.path.basename(p)[7:]), f.read().strip().lower()))
+        except (OSError, ValueError):
+            continue
+    for n, vendor in sorted(nodes):
+        if vendor != "0x10de":
+            return f"/dev/dri/renderD{n}"
+    return "/dev/dri/renderD128"
+
 
 def parse_geom(text):
     """'x,y,w,h' (a --geometry value, a layout entry, a control message) -> (x, y, w, h), w and h

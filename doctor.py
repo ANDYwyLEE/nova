@@ -25,7 +25,7 @@ from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from util import mask_url, find_secrets, LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI    # noqa: E402
+from util import mask_url, find_secrets, vaapi_node, LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI    # noqa: E402
 
 NVIDIA_MIN_DRIVER = 570          # the PyPI wheel's NVENC needs this (string in its libavcodec)
 LOW_DISK_GB = 20
@@ -128,6 +128,36 @@ def qt_line():
         return f"PySide6 {PySide6.__version__}, Qt {qVersion()}"
     except Exception as e:
         return f"PySide6 not importable ({e})"
+
+
+QT_MODULES = ("QtGui", "QtOpenGL", "QtNetwork")       # what Nova imports besides QtCore
+
+
+def qt_module_errors(modules=QT_MODULES):
+    """[(module, why)] for the Qt modules that do not load: each one needs system libraries the PySide6 wheel
+    does not bring (QtNetwork wants libgssapi_krb5, QtGui libEGL and libfontconfig, ...), and a minimal
+    system lacks some.  QtNetwork is the launcher's control channel: without it `nova start` starts nothing."""
+    import importlib
+    out = []
+    for m in modules:
+        try:
+            importlib.import_module("PySide6." + m)
+        except Exception as e:
+            out.append((m, " ".join(str(e).split())))
+    return out
+
+
+def qt_modules_check(errors):
+    """Check lines for Qt modules that do not load; none when PySide6 itself is missing (the Qt line says so)."""
+    out = []
+    for m, why in errors:
+        if "No module named 'PySide6'" in why:
+            return []
+        what = {"QtNetwork": "`nova start` and `nova record` cannot start cameras (their control channel)",
+                "QtGui": "no camera can start", "QtOpenGL": "no window can open"}.get(m, "Nova cannot start")
+        out.append(("⚠", f"PySide6.{m} does not load ({why[:110]}): {what}; a system library Qt needs is missing, "
+                         f"the packages are in docs/install.md"))
+    return out
 
 
 def gl_probe():
@@ -294,6 +324,63 @@ def drm_gpus(root="/sys/class/drm"):
     return out
 
 
+INTEL_PACKAGES = (        # package manager -> Intel's VA driver (with its encoders) and Quick Sync runtime
+    ("apt-get", "sudo apt install intel-media-va-driver-non-free libmfx-gen1.2"),
+)
+
+
+def intel_packages_hint():
+    """What to install for Quick Sync, in this distribution's words where they have been tried."""
+    for tool, line in INTEL_PACKAGES:
+        if shutil.which(tool):
+            return f"{line} (docs/install.md)"
+    return "install Intel's media driver (iHD, the build with encoders) and its Quick Sync runtime (docs/install.md)"
+
+
+def node_access(gpus, can=os.access):
+    """[(vendor, ids, node, group)] of the Intel/AMD GPUs whose render node this user cannot open.  A desktop
+    login is given the access (an ACL of the seat); over ssh, in a service or in a container it takes the
+    node's group, and without it VAAPI says only `No VA display found` and Quick Sync `Unknown error`."""
+    out = []
+    for vendor, ids, _driver, node in gpus:
+        path = f"/dev/dri/{node}"
+        if vendor == "NVIDIA" or not node.startswith("renderD") or can(path, os.R_OK | os.W_OK):
+            continue
+        try:
+            import grp
+            group = grp.getgrgid(os.stat(path).st_gid).gr_name
+        except (ImportError, KeyError, OSError):
+            group = "render"
+        out.append((vendor, ids, node, group))
+    return out
+
+
+def node_access_check(blocked, accels, user=None):
+    """Check lines for render nodes that are closed to the user: ⚠ when --accel asks for that GPU."""
+    if user is None:
+        try:
+            import getpass
+            user = getpass.getuser()
+        except Exception:
+            user = "you"
+    mark = "⚠" if accels & {"vaapi", "qsv"} else "ℹ"
+    return [(mark, f"/dev/dri/{node} ({vendor} {ids}) is closed to {user}: --accel vaapi and qsv cannot use that GPU "
+                   f"and decode in software. A desktop login is given the access; over ssh or in a service: "
+                   f"sudo usermod -aG {group} {user}, then log in again")
+            for vendor, ids, node, group in blocked]
+
+
+def nvidia_index_check(indexes, count, accels):
+    """A check line when --gpu / NOVA_GPU_DEVICES name an NVIDIA card this machine does not have (a
+    cameras.ini carried over from a machine with more cards): those cameras are moved to GPU 0."""
+    beyond = sorted(i for i in indexes if i is not None and i >= count)
+    if not count or not beyond or not accels & {"cuda", "nvdec"}:
+        return []
+    return [("⚠", f"--gpu / NOVA_GPU_DEVICES name GPU {', '.join(map(str, beyond))}, but this machine has {count} NVIDIA "
+                  f"card{'s' if count != 1 else ''} (0{'-' + str(count - 1) if count > 1 else ''}): those cameras use "
+                  f"GPU 0 and say so in their log")]
+
+
 def quick_sync_error():
     """None when h264_qsv opens on this machine, else why not ("" when the FFmpeg build has no h264_qsv).
     Opening it starts a Quick Sync session, which needs the Intel runtime and driver, not just FFmpeg."""
@@ -321,8 +408,7 @@ def quick_sync_check(accels, gpus, error):
         return ("⚠", "--accel qsv is in cameras.ini but this FFmpeg build has no h264_qsv") if wanted else None
     if error is None:
         return ("✓", "Quick Sync starts on this machine: --accel qsv decodes and records on the Intel GPU")
-    fix = ("sudo apt install intel-media-va-driver-non-free libmfx-gen1.2 (docs/install.md)" if LINUX
-           else "update the Intel graphics driver")
+    fix = (intel_packages_hint() if LINUX else "update the Intel graphics driver")
     short = " ".join(str(error).split("last error log:")[-1].split())[:90]      # FFmpeg's own words, when it has any
     if wanted:
         return ("⚠", f"--accel qsv is in cameras.ini but Quick Sync does not start ({short}): software decoding; {fix}")
@@ -348,36 +434,46 @@ def vaapi_error(node):
 
 
 def config_gpus(defaults, env, cameras):
-    """The GPU indexes the cameras are given: NOVA_GPU_DEVICES and every --gpu in an opts line, else 0."""
+    """The GPU indexes the cameras are given: NOVA_GPU_DEVICES and every --gpu in an opts line.  None is
+    among them when cameras get no index at all (no NOVA_GPU_DEVICES, no --gpu in [defaults]): VAAPI then
+    looks for its node (util.vaapi_node) and cuda takes GPU 0."""
     found = set()
     for text in [env.get("NOVA_GPU_DEVICES", "")] + [m for t in [defaults.get("opts", "")] + [c.opts for c in cameras if c.enabled]
                                                      for m in re.findall(r"--gpu[= ]+([\d,]+)", t)]:
         found |= {int(x) for x in re.findall(r"\d+", text)}
-    return found or {0}
+    if not env.get("NOVA_GPU_DEVICES") and not re.search(r"--gpu[= ]+[\d,]+", defaults.get("opts", "")):
+        found.add(None)
+    return found
 
 
-def vaapi_check(indexes, gpus, probe):
-    """Check lines for --accel vaapi: --gpu N means /dev/dri/renderD(128+N), and on a machine with several
-    GPUs not every node has VAAPI. A camera on a node without it decodes in software and says so only in
-    its own log."""
+def vaapi_check(indexes, gpus, probe, auto=None):
+    """Check lines for --accel vaapi: --gpu N means /dev/dri/renderD(128+N), no --gpu (None among the
+    indexes) the first node that is not an NVIDIA card (`auto`), and on a machine with several GPUs not
+    every node has VAAPI. A camera on a node without it decodes in software and says so only in its own log."""
     name = {g[3]: f"{g[0]} {g[1]}" for g in gpus}
-    tried = {i: (f"renderD{128 + i}", probe(f"/dev/dri/renderD{128 + i}")) for i in sorted(indexes)}
+    auto = auto or os.path.basename(vaapi_node(None))
+    how = lambda i: "found without --gpu" if i is None else f"--gpu {i}"
+    tried = {}
+    for i in sorted(indexes, key=lambda i: (i is not None, i or 0)):
+        n = auto if i is None else f"renderD{128 + i}"
+        tried[i] = (n, probe(f"/dev/dri/{n}"))
     if any(err == "" for _, err in tried.values()):
         return []                                         # a build without VAAPI: the --accel check says so
     good = [(i, n) for i, (n, err) in tried.items() if err is None]
     out = []
     if good:
-        out.append(("✓", "VAAPI opens on " + ", ".join(f"{n} ({name.get(n, 'GPU')}, --gpu {i})" for i, n in good)
+        out.append(("✓", "VAAPI opens on " + ", ".join(f"{n} ({name.get(n, 'GPU')}, {how(i)})" for i, n in good)
                     + ": --accel vaapi decodes and records there"))
     bad = [(i, n, err) for i, (n, err) in tried.items() if err is not None]
     if bad:
         elsewhere = [f"{g[3]} (--gpu {int(g[3][7:]) - 128})" for g in gpus
                      if g[3].startswith("renderD") and g[3] not in {n for n, _ in tried.values()}
                      and probe(f"/dev/dri/{g[3]}") is None]
-        works = [f"{n} (--gpu {i})" for i, n in good] + elsewhere
+        works = [f"{n} ({how(i)})" for i, n in good] + elsewhere
         for i, n, err in bad:
             short = " ".join(str(err).split("last error log:")[-1].split())[:70]
-            out.append(("⚠", f"--accel vaapi: GPU {i} is /dev/dri/{n} ({name.get(n, 'no GPU there')}), where VAAPI does not "
+            which = f"GPU {i} is" if i is not None else "without --gpu the node is"
+            out.append(("⚠", f"--accel vaapi: {which} /dev/dri/{n} ({name.get(n, 'no GPU there')}), where VAAPI does not "
                              f"start ({short}): cameras given that GPU decode in software"
                              + (f"; VAAPI answers on {', '.join(works)}" if works else "")))
     return out
@@ -567,6 +663,7 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                              f"encoding falls back to libx264"))
         else:
             out.append(("✓", f"NVIDIA driver {d} is recent enough for NVENC"))
+    out.extend(qt_modules_check(qt_module_errors()))
     # OpenGL
     if windows_service_session() and ("PyOpenGL cannot use it" in gl or re.search(r"llvmpipe|softpipe", gl, re.I)):
         out.append(("ℹ", "this runs in Windows session 0 (ssh or a service), which has no GPU: the OpenGL above is not "
@@ -588,6 +685,10 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         out.append(("ℹ", "Wayland session: windows run through XWayland, whatever QT_QPA_PLATFORM the desktop exports "
                          "(QT_QPA_PLATFORM = wayland in [env] for native windows); placement differs per compositor "
                          "(docs/user-guide.md, Layouts)"))
+    gpus = drm_gpus() if LINUX else []
+    blocked = node_access(gpus) if LINUX else []
+    closed = {b[2] for b in blocked}
+    accels = set()
     # cameras.ini
     if cfg is not None:
         if not WINDOWS and config_path and os.path.exists(config_path) and os.stat(config_path).st_mode & 0o077:
@@ -596,7 +697,6 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
             out.append(("✓", f"{os.path.basename(config_path)} is readable by you only" if not WINDOWS else
                         f"{os.path.basename(config_path)} found"))
         defaults, env, cs = cfg
-        accels = set()
         for text in [defaults.get("opts", "")] + [c.opts for c in cs if c.enabled]:
             for m in re.finditer(r"--accel[= ]+(\S+)", text):
                 accels.add(m.group(1).lower())
@@ -611,10 +711,12 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                                          f"software decoding (docs/install.md)"))
             except Exception as e:
                 out.append(("ℹ", f"--accel {' '.join(sorted(accels))}: could not check ({e})"))
-        gpus = drm_gpus() if LINUX else []
+        indexes = config_gpus(defaults, env, cs)
+        out.extend(nvidia_index_check(indexes, len(re.findall(r"\d+ [^,;]+, \d+ MiB", gpu)), accels))
         if LINUX and "vaapi" in accels:
-            out.extend(vaapi_check(config_gpus(defaults, env, cs), gpus, vaapi_error))
-        if "qsv" in accels or any(g[0] == "Intel" for g in gpus):
+            out.extend(vaapi_check(indexes, gpus, lambda node: "the node is closed to this user"
+                                   if os.path.basename(node) in closed else vaapi_error(node)))
+        if ("qsv" in accels or any(g[0] == "Intel" for g in gpus)) and not any(b[0] == "Intel" for b in blocked):
             line = quick_sync_check(accels, gpus, quick_sync_error())
             if line:
                 out.append(line)
@@ -625,6 +727,7 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
             else:
                 out.append(("⚠", f"{len(xm)} xmeye:// camera(s) but python-dvr is not installed: "
                                  f"{python or sys.executable} -m pip install python-dvr"))
+    out.extend(node_access_check(blocked, accels))
     # disk
     if free is not None:
         if free < LOW_DISK_GB * 1e9:

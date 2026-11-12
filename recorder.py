@@ -390,7 +390,7 @@ class AVRecorder(Player):
                     sample_rate=vw.get_sample_rate(), channels=vw.get_channels(),
                     audio_enable=not ff.no_audio,
                     audio_wait=0 if getattr(vw, 'has_audio', None) is False else None,
-                    gpu_idx=vw.get_gpu_idx(),
+                    gpu_idx=vw.get_gpu_idx(), gpu_given=getattr(vw, 'gpu_given', lambda: True)(),
                     v_tag=ff.v_tag, a_encoder=ff.a_encoder,
                     vf=ff.vf, metadata=ff.metadata,
                     live=False,

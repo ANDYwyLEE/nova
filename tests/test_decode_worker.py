@@ -189,6 +189,43 @@ def test_hw_open_failure_falls_back_to_software_at_once(qapp, caplog):
                for r in caplog.records)
 
 
+def test_an_nvidia_index_that_does_not_open_is_answered_with_gpu_0(qapp, caplog):
+    """NOVA_GPU_DEVICES = 0,1 carried to a machine with one card: the cameras dealt GPU 1 got "invalid
+    device ordinal", decoded in software and recorded with libx264, 30 % of a core each instead of 2."""
+    w = _worker(accel="cuda", gpu="1")
+    seen = []
+    def on(base, codec_name):
+        seen.append(w.gpu_idx)
+        return ("CTX", "h264_cuvid", None) if w.gpu_idx == 0 else (None, None, "h264_cuvid: Generic error")
+    w._open_hw_decoder_on = on
+    with caplog.at_level(logging.WARNING):
+        assert w._open_hw_decoder(None, "h264") == ("CTX", "h264_cuvid", None)
+    assert seen == [1, 0] and w.get_gpu_idx() == 0 and "GPU 1" in caplog.text and "using GPU 0" in caplog.text
+    w = _worker(accel="cuda", gpu="1")                      # GPU 0 does not open either: the index stays
+    w._open_hw_decoder_on = lambda base, codec_name: (None, None, "h264_cuvid: Generic error")
+    assert w._open_hw_decoder(None, "h264") == (None, None, "h264_cuvid: Generic error") and w.get_gpu_idx() == 1
+    w = _worker(accel="vaapi", gpu="1")                     # other devices are not NVIDIA indexes
+    calls = []
+    w._open_hw_decoder_on = lambda base, codec_name: calls.append(1) or (None, None, "no")
+    w._open_hw_decoder(None, "h264")
+    assert calls == [1]
+
+
+def test_vaapi_looks_for_its_node_unless_gpu_names_one(qapp, monkeypatch, tmp_path):
+    import util
+    for node, vendor in (("renderD128", "0x10de"), ("renderD129", "0x1002")):
+        (tmp_path / node / "device").mkdir(parents=True)
+        (tmp_path / node / "device" / "vendor").write_text(vendor)
+    monkeypatch.setattr(util, "DRM_ROOT", str(tmp_path))
+    monkeypatch.delenv("NOVA_GPU_DEVICES", raising=False)
+    w = _worker(accel="vaapi")
+    assert w._hw_device("vaapi") == "/dev/dri/renderD129" and not w.gpu_given()
+    w = _worker(accel="vaapi", gpu="0")
+    assert w._hw_device("vaapi") == "/dev/dri/renderD128" and w.gpu_given()
+    monkeypatch.setenv("NOVA_GPU_DEVICES", "0")
+    assert _worker(accel="vaapi")._hw_device("vaapi") == "/dev/dri/renderD128"
+
+
 def test_hw_without_frames_switches_to_software_in_session(qapp):
     w = _worker(accel="cuda")
     hw, sw = FakeCtx("h264_cuvid", out=lambda p: []), FakeCtx()

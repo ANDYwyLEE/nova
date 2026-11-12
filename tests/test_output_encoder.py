@@ -239,15 +239,21 @@ def test_an_encoder_asked_for_that_does_not_open_is_named(monkeypatch, caplog):
 
 
 # ---------------------------------------------------------------- encoders that are handed a device
-def test_vaapi_encoders_are_handed_the_render_node_gpu_counts(monkeypatch):
+def test_vaapi_encoders_are_handed_the_render_node_gpu_counts(monkeypatch, tmp_path):
     """The VAAPI encoders take pictures that live on the GPU: without a device they never opened, and
-    recording with --accel vaapi went to the CPU. PyAV 19 uploads the pictures once the encoder has one."""
+    recording with --accel vaapi went to the CPU. PyAV 19 uploads the pictures once the encoder has one.
+    Without --gpu (None) the node is looked for: here the NVIDIA card is renderD128, the AMD GPU renderD129."""
+    import util
+    for node, vendor in (("renderD128", "0x10de"), ("renderD129", "0x1002")):
+        (tmp_path / node / "device").mkdir(parents=True)
+        (tmp_path / node / "device" / "vendor").write_text(vendor)
+    monkeypatch.setattr(util, "DRM_ROOT", str(tmp_path))
     made = []
     monkeypatch.setattr(avwriter, "_make_hwaccel", lambda kind, device: made.append((kind, device)) or "HW")
     assert avwriter._encoder_hwaccel("h264_vaapi", 0) == "HW" and avwriter._encoder_hwaccel("hevc_VAAPI", 2) == "HW"
     assert avwriter._encoder_hwaccel("av1_vaapi", None) == "HW" and avwriter._encoder_hwaccel("vp9_vaapi", "x") == "HW"
     assert made == [("vaapi", "/dev/dri/renderD128"), ("vaapi", "/dev/dri/renderD130"),
-                    ("vaapi", "/dev/dri/renderD128"), ("vaapi", "/dev/dri/renderD128")]
+                    ("vaapi", "/dev/dri/renderD129"), ("vaapi", "/dev/dri/renderD129")]
     del made[:]
     for name in ("h264_qsv", "h264_nvenc", "h264_amf", "libx264", "h264_videotoolbox"):
         assert avwriter._encoder_hwaccel(name, 1) is None
@@ -267,6 +273,32 @@ def test_the_probe_uses_the_camera_s_gpu(tmp_path, monkeypatch):
                           audio_enable=False, gpu_idx=1)
     try:
         assert avwriter.EncoderManager().gpu_idx == 1
+    finally:
+        w.open_failed = "not opened in this test"
+        w.close()
+    w = avwriter.AVWriter(None, path=str(tmp_path / "h.mp4"), width=320, height=180, fps=25, encoder="libx264",
+                          audio_enable=False, gpu_idx=0, gpu_given=False)
+    try:
+        assert avwriter.EncoderManager().gpu_idx is None and w.gpu_idx == 0     # no --gpu: the VAAPI node is looked for
+    finally:
+        w.open_failed = "not opened in this test"
+        w.close()
+
+
+def test_nvenc_on_a_gpu_that_is_not_there_is_tried_on_gpu_0(tmp_path, monkeypatch, caplog):
+    """--gpu 1 (or NOVA_GPU_DEVICES = 0,1 from a bigger machine) on a machine with one NVIDIA card: every
+    nvenc encoder failed with "Generic error in an external library" and the camera recorded with libx264."""
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    w = avwriter.AVWriter(None, path=str(tmp_path / "n.mp4"), width=320, height=180, fps=25, encoder="libx264",
+                          audio_enable=False, gpu_idx=1)
+    rebuilt = []
+    try:
+        w.v_encoder = "h264_nvenc"
+        monkeypatch.setattr(w, "_rebuild", rebuilt.append)
+        with caplog.at_level(logging.WARNING):
+            w._next_video_encoder(RuntimeError("Generic error in an external library"))
+        assert rebuilt == ["h264_nvenc"] and w.gpu_idx == 0 and "h264_nvenc" not in w._tried
+        assert "does not open on GPU 1" in caplog.text and "trying GPU 0" in caplog.text
     finally:
         w.open_failed = "not opened in this test"
         w.close()

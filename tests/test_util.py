@@ -87,3 +87,26 @@ def test_utf8_stdio_into_a_file_or_pipe():
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, env=env, cwd=root, timeout=60)
     assert b"Logging error" not in r.stderr, r.stderr
     assert r.stdout.decode("utf-8").strip() == "⚡ \U0001f680 ok"
+
+
+def _render_nodes(root, nodes):
+    for name, vendor in nodes:
+        (root / name / "device").mkdir(parents=True)
+        (root / name / "device" / "vendor").write_text(vendor + "\n")
+
+
+def test_vaapi_node_is_the_first_one_that_is_not_an_nvidia_card(tmp_path):
+    """--accel vaapi without --gpu opened renderD128 whatever was there: on a machine whose first node is
+    an NVIDIA card (an RTX 4060 before the Ryzen's own GPU) that meant software decoding until someone
+    found --gpu 1."""
+    import util
+    _render_nodes(tmp_path, [("renderD128", "0x10de"), ("renderD129", "0x1002"), ("renderD130", "0x8086")])
+    (tmp_path / "card0").mkdir(); (tmp_path / "renderD131").mkdir()        # no vendor file: skipped
+    assert util.vaapi_node(None, str(tmp_path)) == "/dev/dri/renderD129"
+    assert util.vaapi_node(0, str(tmp_path)) == "/dev/dri/renderD128"       # an index given is taken at its word
+    assert util.vaapi_node("2", str(tmp_path)) == "/dev/dri/renderD130"
+    assert util.vaapi_node("x", str(tmp_path)) == "/dev/dri/renderD129"     # not a number: as if not given
+    only_nvidia = tmp_path / "n"
+    _render_nodes(only_nvidia, [("renderD128", "0x10de")])
+    assert util.vaapi_node(None, str(only_nvidia)) == "/dev/dri/renderD128"
+    assert util.vaapi_node(None, str(tmp_path / "nothing")) == "/dev/dri/renderD128"

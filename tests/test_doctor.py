@@ -189,8 +189,12 @@ def test_quick_sync_check_says_what_is_missing(monkeypatch):
     assert check({"cuda"}, [nvidia, intel], None)[0] == "✓"
     mark, text = check({"cuda"}, [nvidia, intel], err)                # an unused Intel GPU: good to know
     assert mark == "ℹ" and "intel-media-va-driver-non-free libmfx-gen1.2" in text and "MFX session: -9" in text
+    monkeypatch.setattr(doctor.shutil, "which", lambda tool: "/usr/bin/" + tool)
     mark, text = check({"qsv"}, [intel], err)                         # asked for and not working: worth fixing
     assert mark == "⚠" and "software decoding" in text and "apt install" in text
+    monkeypatch.setattr(doctor.shutil, "which", lambda tool: None)    # Fedora, Arch, openSUSE: no apt to name
+    assert "apt" not in check({"qsv"}, [intel], err)[1] and "Quick Sync runtime" in check({"qsv"}, [intel], err)[1]
+    monkeypatch.setattr(doctor.shutil, "which", lambda tool: "/usr/bin/" + tool)
     assert check({"qsv"}, [], "")[0] == "⚠" and check(set(), [intel], "") is None      # a build without h264_qsv
     monkeypatch.setattr(doctor, "LINUX", False)
     assert "Intel graphics driver" in check({"qsv"}, [], err)[1]
@@ -211,6 +215,16 @@ def test_vaapi_check_names_the_gpu_without_vaapi():
     assert [m for m, _ in only_bad] == ["⚠"] and "VAAPI answers on renderD128 (--gpu 0)" in only_bad[0][1]
     assert doctor.vaapi_check({0}, gpus, probe)[0][0] == "✓" and len(doctor.vaapi_check({0}, gpus, probe)) == 1
     assert doctor.vaapi_check({0}, gpus, lambda node: "") == []        # a build without VAAPI
+    # no --gpu anywhere: the node Nova looks for itself (here an AMD GPU behind an NVIDIA card)
+    gpus = [("NVIDIA", "10de:2882", "nvidia", "renderD128"), ("AMD", "1002:13c0", "amdgpu", "renderD129")]
+    probe = lambda node: None if node.endswith("renderD129") else "OSError: Failed to initialise VAAPI connection"
+    lines = doctor.vaapi_check({None}, gpus, probe, auto="renderD129")
+    assert [m for m, _ in lines] == ["✓"] and "renderD129 (AMD 1002:13c0, found without --gpu)" in lines[0][1]
+    lines = doctor.vaapi_check({None, 0}, gpus, probe, auto="renderD129")
+    assert [m for m, _ in lines] == ["✓", "⚠"] and "GPU 0 is /dev/dri/renderD128 (NVIDIA 10de:2882)" in lines[1][1]
+    assert "VAAPI answers on renderD129 (found without --gpu)" in lines[1][1]
+    lines = doctor.vaapi_check({None}, gpus, lambda node: "the node is closed to this user", auto="renderD129")
+    assert lines[0][0] == "⚠" and "without --gpu the node is /dev/dri/renderD129" in lines[0][1]
 
 
 def test_the_gpu_indexes_of_a_configuration():
@@ -218,4 +232,42 @@ def test_the_gpu_indexes_of_a_configuration():
     cams = [C(opts="--gpu 2", enabled=True), C(opts="--gpu 5", enabled=False), C(opts="-r", enabled=True)]
     assert doctor.config_gpus({"opts": "--opengl --accel vaapi"}, {"NOVA_GPU_DEVICES": "0,1"}, cams) == {0, 1, 2}
     assert doctor.config_gpus({"opts": "--accel vaapi --gpu=3"}, {}, []) == {3}
-    assert doctor.config_gpus({}, {}, []) == {0}
+    assert doctor.config_gpus({}, {}, []) == {None}                    # nothing named: VAAPI looks, cuda takes 0
+    assert doctor.config_gpus({"opts": "--accel vaapi"}, {}, cams) == {None, 2}
+
+
+def test_a_render_node_closed_to_the_user_is_said(monkeypatch):
+    """Over ssh on a machine without a desktop login the user had no access to /dev/dri/renderD129 (group
+    render): --accel vaapi answered "No VA display found" and decoded in software, doctor said nothing."""
+    gpus = [("NVIDIA", "10de:2882", "nvidia", "renderD128"), ("AMD", "1002:13c0", "amdgpu", "renderD129"),
+            ("Intel", "8086:a780", "i915", "no render node")]
+    assert doctor.node_access(gpus, can=lambda path, mode: True) == []
+    blocked = doctor.node_access(gpus, can=lambda path, mode: False)
+    assert [(b[0], b[2]) for b in blocked] == [("AMD", "renderD129")]         # NVIDIA does not go through the node
+    blocked = [("AMD", "1002:13c0", "renderD129", "render")]
+    (mark, text), = doctor.node_access_check(blocked, {"vaapi"}, user="cam")
+    assert mark == "⚠" and "/dev/dri/renderD129 (AMD 1002:13c0) is closed to cam" in text
+    assert "sudo usermod -aG render cam" in text
+    assert doctor.node_access_check(blocked, {"cuda"}, user="cam")[0][0] == "ℹ"
+    assert doctor.node_access_check([], {"vaapi"}) == []
+
+
+def test_an_nvidia_index_beyond_the_cards_is_said():
+    check = doctor.nvidia_index_check
+    (mark, text), = check({0, 1}, 1, {"cuda"})
+    assert mark == "⚠" and "name GPU 1, but this machine has 1 NVIDIA card (0)" in text and "GPU 0" in text
+    assert "2 NVIDIA cards (0-1)" in check({0, 3}, 2, {"cuda"})[0][1]
+    assert check({0, 1}, 2, {"cuda"}) == [] and check({None, 0}, 1, {"cuda"}) == []
+    assert check({1}, 1, {"vaapi"}) == [] and check({1}, 0, {"cuda"}) == []    # render nodes; no NVIDIA card at all
+
+
+def test_qt_modules_that_do_not_load_are_named():
+    """openSUSE's minimal system has no libgssapi_krb5: QtNetwork did not load, and `nova start` started
+    cameras that died at once; nova.py by hand ran fine, so nothing pointed at the library."""
+    assert doctor.qt_module_errors(("QtCore",)) == []
+    (m, why), = doctor.qt_module_errors(("QtNoSuchModule",))
+    assert m == "QtNoSuchModule" and "QtNoSuchModule" in why
+    (mark, text), = doctor.qt_modules_check([("QtNetwork", "libgssapi_krb5.so.2: cannot open shared object file")])
+    assert mark == "⚠" and "PySide6.QtNetwork does not load (libgssapi_krb5.so.2" in text and "nova start" in text
+    assert doctor.qt_modules_check([("QtGui", "No module named 'PySide6'")]) == []     # the Qt line says that
+    assert doctor.qt_modules_check([]) == []

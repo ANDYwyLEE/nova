@@ -21,7 +21,7 @@ from PySide6.QtCore import QThread, Signal
 
 import logsync  # installs logging.verbose / logging.trace
 from mytools import Skipper, FrameRator, Clock
-from util import LINUX, MAC, WSL, mask_url, display_url, short_err as _short_err
+from util import LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err as _short_err
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS
@@ -500,6 +500,7 @@ class VideoWorker(QThread):
     def set_stream_on(self, v: bool): self.stream_on = bool(v)
     def set_audio_on(self, v: bool): self.audio_on = bool(v)
     def get_gpu_idx(self): return self.gpu_idx
+    def gpu_given(self): return self._gpu_given     # --gpu or NOVA_GPU_DEVICES named one
     def get_stream_codec(self): return self.codec_name
     def get_ffopts(self): return self.ffopts
 
@@ -621,7 +622,7 @@ class VideoWorker(QThread):
     def _hw_device(self, accel):
         if self.ffopts.hw_device: return str(self.ffopts.hw_device)
         if accel in ("cuda", "nvdec"): return str(self.gpu_idx)
-        if accel == "vaapi": return f"/dev/dri/renderD{128 + self.gpu_idx}"
+        if accel == "vaapi": return vaapi_node(self.gpu_idx if self._gpu_given else None)
         # adapter index; only when asked for, so a single-GPU setup keeps FFmpeg's default adapter
         if accel in ("d3d11va", "dxva2", "d3d12va") and self._gpu_given: return str(self.gpu_idx)
         if self._gpu_given: self._warn_gpu_ignored(accel)
@@ -823,7 +824,23 @@ class VideoWorker(QThread):
         return bool(self.accel) and self._hw_fail is not None and time.monotonic() >= self._hw_retry_at
 
     def _open_hw_decoder(self, base, codec_name):
-        """(ctx, label, None) for an opened hardware decoder, else (None, None, reason)."""
+        """(ctx, label, None) for an opened hardware decoder, else (None, None, reason).  An NVIDIA index
+        that does not open (--gpu 1 on a machine with one card, a cameras.ini carried over from a machine
+        with more) is answered with GPU 0, not with software decoding and libx264 for that camera."""
+        ctx, label, reason = self._open_hw_decoder_on(base, codec_name)
+        if ctx is None and self.accel in ("cuda", "nvdec") and self.gpu_idx != 0 and not self.ffopts.hw_device:
+            asked, self.gpu_idx = self.gpu_idx, 0
+            ctx, label, _ = self._open_hw_decoder_on(base, codec_name)
+            if ctx is None:
+                self.gpu_idx = asked
+            else:
+                reason = None
+                logging.warning(f"[VideoWorker] ⚠️ GPU {asked} (--gpu / NOVA_GPU_DEVICES) does not open on this "
+                                f"machine; using GPU 0 (nvidia-smi lists the cards there are)")
+        return ctx, label, reason
+
+    def _open_hw_decoder_on(self, base, codec_name):
+        """_open_hw_decoder on the GPU self.gpu_idx names."""
         errors = []
         # 1) dedicated HW decoder (h264_cuvid, hevc_qsv, h264_rkmpp, ...)
         for d_name in _decoder_candidates(self.accel, codec_name):

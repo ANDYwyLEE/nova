@@ -50,9 +50,10 @@ def build_parser():
         type=str,
         default=None,
         help="GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). "
-             "Default: NOVA_GPU_DEVICES, else 0. It counts NVIDIA cards for cuda and NVENC and DRM render "
-             "nodes for vaapi (N is /dev/dri/renderD(128+N)); Quick Sync, AMF and the Windows decoders use "
-             "the system's GPU whatever it says."
+             "Default: NOVA_GPU_DEVICES, else 0. It counts NVIDIA cards for cuda and NVENC (an index this "
+             "machine does not have falls back to 0) and DRM render nodes for vaapi (N is "
+             "/dev/dri/renderD(128+N); without --gpu, the first node that is not an NVIDIA card); "
+             "Quick Sync, AMF and the Windows decoders use the system's GPU whatever it says."
     )
     parser.add_argument(
         "-f", "--fps",
