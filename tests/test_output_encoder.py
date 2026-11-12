@@ -236,3 +236,47 @@ def test_an_encoder_asked_for_that_does_not_open_is_named(monkeypatch, caplog):
     assert mgr.get_encoder(None, "h264_nothere", "h264", {}, ("h264",)) == "libx264"     # cached: said once
     assert mgr.get_encoder(None, "libx264", "h264", {}, ("h264",)) == "libx264"          # the one asked for: nothing
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+# ---------------------------------------------------------------- encoders that are handed a device
+def test_vaapi_encoders_are_handed_the_render_node_gpu_counts(monkeypatch):
+    """The VAAPI encoders take pictures that live on the GPU: without a device they never opened, and
+    recording with --accel vaapi went to the CPU. PyAV 19 uploads the pictures once the encoder has one."""
+    made = []
+    monkeypatch.setattr(avwriter, "_make_hwaccel", lambda kind, device: made.append((kind, device)) or "HW")
+    assert avwriter._encoder_hwaccel("h264_vaapi", 0) == "HW" and avwriter._encoder_hwaccel("hevc_VAAPI", 2) == "HW"
+    assert avwriter._encoder_hwaccel("av1_vaapi", None) == "HW" and avwriter._encoder_hwaccel("vp9_vaapi", "x") == "HW"
+    assert made == [("vaapi", "/dev/dri/renderD128"), ("vaapi", "/dev/dri/renderD130"),
+                    ("vaapi", "/dev/dri/renderD128"), ("vaapi", "/dev/dri/renderD128")]
+    del made[:]
+    for name in ("h264_qsv", "h264_nvenc", "h264_amf", "libx264", "h264_videotoolbox"):
+        assert avwriter._encoder_hwaccel(name, 1) is None
+    assert made == []
+
+
+def test_a_vaapi_probe_that_cannot_get_its_device_is_a_failed_probe(monkeypatch):
+    def no_device(kind, device):
+        raise ValueError(f"no {kind} in this build")
+    monkeypatch.setattr(avwriter, "_make_hwaccel", no_device)
+    assert avwriter.EncoderManager._try_open("h264_vaapi", {}, 1) is not None      # an error text, not an exception
+
+
+def test_the_probe_uses_the_camera_s_gpu(tmp_path, monkeypatch):
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    w = avwriter.AVWriter(None, path=str(tmp_path / "g.mp4"), width=320, height=180, fps=25, encoder="libx264",
+                          audio_enable=False, gpu_idx=1)
+    try:
+        assert avwriter.EncoderManager().gpu_idx == 1
+    finally:
+        w.open_failed = "not opened in this test"
+        w.close()
+
+
+def test_pictures_are_converted_to_the_format_chosen_not_to_the_gpu_s():
+    """Once an encoder that was handed a device is open, the stream's pix_fmt reads 'vaapi'."""
+    from types import SimpleNamespace
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)
+    w.v_stream, w._v_pix_fmt = SimpleNamespace(pix_fmt="vaapi"), "nv12"
+    w.width, w.height, w.v_time_base = 320, 180, Fraction(1, 90000)
+    f = w._fit(next(frames(1)), 9000)
+    assert (f.format.name, f.width, f.height, f.pts) == ("nv12", 320, 180, 9000)

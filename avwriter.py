@@ -88,6 +88,22 @@ def _hw_suffixes(accel):
     return base
 
 
+def _make_hwaccel(device_type, device):
+    from av.codec.hwaccel import HWAccel
+    return HWAccel(device_type=device_type, device=device)
+
+
+def _encoder_hwaccel(encoder_name, gpu_idx=0):
+    """The hardware device an encoder has to be handed, or None.  The VAAPI encoders take pictures that live
+    on the GPU: given the device, PyAV (19) puts Nova's system-memory pictures there itself.  The device is
+    the DRM render node that --gpu counts, as for decoding."""
+    if encoder_name.lower().endswith("_vaapi"):
+        try: n = int(gpu_idx or 0)
+        except (TypeError, ValueError): n = 0
+        return _make_hwaccel("vaapi", f"/dev/dri/renderD{128 + n}")
+    return None
+
+
 def parse_bitrate(v):
     """'48k', '0.5M', '48000' -> bit/s; None when v is not a number."""
     s = str(v).strip().lower()
@@ -137,6 +153,7 @@ class EncoderManager:
                 cls._instance._failed = {}       # encoder -> monotonic time of its last failed real open
                 cls._instance._warned = set()
                 cls._instance._lock_broken = False
+                cls._instance.gpu_idx = 0        # the camera's --gpu: the device of encoders that take one
             return cls._instance
 
     def get_encoder(self, accel, user_encoder, source_codec, enc_opts, allowed=None):
@@ -230,7 +247,7 @@ class EncoderManager:
                 logging.debug(f"[EncoderManager] skipping {encoder_name}: failed at a real open "
                               f"{int(FAILED_RETRY_S - (skipped[encoder_name] - time.monotonic()))} s ago")
                 continue
-            err = self._try_open(encoder_name, test_opts)
+            err = self._try_open(encoder_name, test_opts, self.gpu_idx)
             if err is None:
                 logging.verbose(f"[EncoderManager] 🚀 using {encoder_name}")
                 if asked is not None:
@@ -240,7 +257,7 @@ class EncoderManager:
             logging.debug(f"[EncoderManager] ❌ {encoder_name}: {err}")
             if encoder_name == user_encoder and asked is None:
                 asked = " ".join(str(err).split())[:140]
-            if test_opts and self._try_open(encoder_name, {}) is None:
+            if test_opts and self._try_open(encoder_name, {}, self.gpu_idx) is None:
                 # the encoder itself works: the user's options are what it rejects
                 logging.warning(f"[EncoderManager] ⚠️ {encoder_name} rejects your --ffmpeg options {test_opts}: {err}. "
                                 f"Trying the next encoder (preset/tune names differ per encoder: nvenc p1-p7, x264 ultrafast..veryslow).")
@@ -248,12 +265,13 @@ class EncoderManager:
         return "libx264"
 
     @staticmethod
-    def _try_open(encoder_name, opts):
+    def _try_open(encoder_name, opts, gpu_idx=0):
         """Returns None when the encoder opens with these options, else the error text."""
         ctx = None
         try:
             codec = av.Codec(encoder_name, "w")
-            ctx = av.CodecContext.create(codec)
+            hw = _encoder_hwaccel(encoder_name, gpu_idx)
+            ctx = av.CodecContext.create(codec, hwaccel=hw) if hw is not None else av.CodecContext.create(codec)
             ctx.width = 640
             ctx.height = 360
             ctx.pix_fmt = opts.get('pix_fmt') or _get_best_pix_fmt(encoder_name)
@@ -547,6 +565,7 @@ class AVWriter:
         self.container = self._open_container()
 
         try:
+            EncoderManager().gpu_idx = self.gpu_idx
             self.v_encoder = EncoderManager().get_encoder(*self._enc_args)
             if encoder and allowed and _family(encoder) not in allowed and (encoder, fmt) not in _WARNED:
                 # e.g. -e hevc_nvenc in [defaults]: an RTMP stream in HEVC shows "no data" on YouTube
@@ -601,7 +620,11 @@ class AVWriter:
             raise OutputOpenError(f"cannot start: {self.open_failed}") from e
 
     def _setup_video(self, v_tag):
-        self.v_stream = self.container.add_stream(self.v_encoder, rate=self.fps)
+        hw = _encoder_hwaccel(self.v_encoder, self.gpu_idx)
+        if hw is not None:
+            self.v_stream = self.container.add_stream(self.v_encoder, rate=self.fps, hwaccel=hw)
+        else:
+            self.v_stream = self.container.add_stream(self.v_encoder, rate=self.fps)
         self.v_stream.width = self.width
         self.v_stream.height = self.height
         self.v_stream.pix_fmt = _get_best_pix_fmt(self.v_encoder)
@@ -615,6 +638,10 @@ class AVWriter:
                 logging.warning(f"[AVWriter] {c_name} does not support -pix_fmt {user_pf} (supported: {', '.join(supported)}); keeping {self.v_stream.pix_fmt}")
             else:
                 self.v_stream.pix_fmt = user_pf
+
+        # what Nova's pictures are converted to. Remembered here: once a hardware encoder that was handed a
+        # device is open, the stream names the GPU format (vaapi), which no picture can be converted to.
+        self._v_pix_fmt = self.v_stream.pix_fmt
 
         # fine-grained timestamps: real frame timing is kept even when the camera's declared
         # frame rate is wrong; `framerate` still tells the encoder the nominal rate.
@@ -632,8 +659,9 @@ class AVWriter:
 
         final_v_opts = {}
         if "nvenc" in c_name:
-            # the one encoder with a device option; qsv, amf, vaapi and mf take theirs from a hardware
-            # context (-qsv_device / -vaapi_device / -hwaccel_device are options of the ffmpeg program)
+            # the one encoder with a device option. The VAAPI encoders get their device as a hardware
+            # context (_encoder_hwaccel); qsv, amf and mf open on the system's default device
+            # (-qsv_device / -vaapi_device / -hwaccel_device are options of the ffmpeg program)
             final_v_opts['gpu'] = str(self.gpu_idx)
         # options of other encoders (-cq for libx264, -crf for nvenc) are meant for them, not for this one
         self._applied_v, skipped = for_codec(v_ctx, self.enc_v_opts)
@@ -855,7 +883,7 @@ class AVWriter:
             self._fill_silence(out_t)
 
     def _fit(self, frame, pts):
-        target_pf = self.v_stream.pix_fmt
+        target_pf = self._v_pix_fmt
         if frame.format.name != target_pf or frame.width != self.width or frame.height != self.height:
             frame = frame.reformat(width=self.width, height=self.height, format=target_pf)
         frame.pts = pts
