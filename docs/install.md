@@ -4,6 +4,7 @@ Nova needs Python 3.12 or newer and the packages in `requirements.txt`. Nothing 
 
 What a camera costs, measured on a 13-window wall (Ubuntu 26.04, two RTX 4090, `--opengl --accel cuda -f 30`): a live 1080p H.264 camera takes 4–11 % of one core (0.85 and 18 Mbit/s streams), about 375 MB of RAM and 430–460 MiB of VRAM; recording it adds about 250 MB and 500 MiB (the NVENC session); a window whose camera is unreachable idles at 220 MB without a GPU context. Software decoding of the 18 Mbit/s stream costs 40 % of a core. Thirteen windows together: 0.4 cores and 4 GB. The window is up within a second of launch, the first frame follows in 2–6 s.
 - [What the PyPI FFmpeg can do](#what-the-pypi-ffmpeg-can-do)
+- [What has run on real hardware](#what-has-run-on-real-hardware)
 - [Linux](#linux-ubuntu-2404-and-2604)
 - [Windows](#windows)
 - [macOS](#macos)
@@ -31,6 +32,24 @@ python -c "import av; av.open('srt://127.0.0.1:1', timeout=0.3)"    # 'Protocol 
 ```
 
 If you need SRT or VAAPI, build FFmpeg yourself: [custom-ffmpeg.md](custom-ffmpeg.md).
+
+## What has run on real hardware
+
+Every combination below was run with real cameras, most of them recording several at once; anything not listed has only been through the tests on GitHub's runners, which have no GPU.
+
+| system | GPU | install | decoding (`--accel`) | recording |
+|---|---|---|---|---|
+| Ubuntu 26.04 | NVIDIA RTX 4090 (driver 595) | wheel | `cuda` | `h264_nvenc`, `hevc_nvenc` |
+| Ubuntu 26.04 | Intel UHD 770 (13th generation) | wheel + two packages | `qsv` | `h264_qsv`, `hevc_qsv` |
+| Ubuntu 26.04 | Intel UHD 770 | [custom FFmpeg](custom-ffmpeg.md) | `vaapi` | `h264_vaapi`, `hevc_vaapi` |
+| Windows 11 | Intel UHD 620 (8th generation; drivers of 2020 and 2022) | Option A and Option B | `qsv`, `d3d11va`, `dxva2`, `d3d12va` | `h264_qsv`, `hevc_qsv` |
+| Windows 11 | AMD Radeon (Ryzen 9 5900HX) | Option A and Option B | `d3d11va`, `dxva2`, `amf` | `h264_amf`, `h264_mf` |
+| macOS 15 | Intel iMac 2019 (Radeon Pro 555X) | MacPorts | `videotoolbox` | `h264_videotoolbox` |
+| any of them | none | wheel | software | `libx264` |
+
+Not run on hardware: NVIDIA on Windows, an AMD GPU on Linux, Apple Silicon outside CI, AV1 encoding on any GPU (the Intel GPUs above have no AV1 encoder).
+
+The Linux commands of the next section are also run as written, by an ordinary user, in fresh `ubuntu:24.04`, `ubuntu:26.04` and `debian:13` images (Python 3.12, 3.14 and 3.13) each week: install, `nova doctor`, a recording, a window on a virtual screen and the tests.
 
 ## Linux (Ubuntu 24.04 and 26.04)
 

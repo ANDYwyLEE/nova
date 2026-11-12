@@ -35,9 +35,14 @@ Fixed:
 - **A place that is on no screen opens on the nearest monitor.** It went to the primary one: a place just past the bottom edge of the right monitor put the window in the corner of the left one.
 - **`libva info:` lines filled the log.** On Linux Quick Sync runs on libva, which prints four lines to stderr at every device open, whatever `-l` says: 36 lines for one recording camera. libva's own messages now follow `-l` (all of them from `DEBUG` down, errors up to `ERROR`, nothing at `CRITICAL`); a `LIBVA_MESSAGING_LEVEL` you set stays.
 - **`nova doctor` did not mention an Intel GPU.** Its GPU lines came from `nvidia-smi` alone. On Linux it now lists every GPU the kernel has, and where there is an Intel one, or `--accel qsv` in `cameras.ini`, it tries to start Quick Sync and names the two packages when that fails.
+- **The install guide did not install on a fresh Linux.** Its apt line had no compiler, and PyAudio, which has no Linux wheel, is compiled by `pip install`: `No such file or directory: 'x86_64-linux-gnu-gcc'`. With that added, the libraries Qt loads at run time were missing on anything that is not a desktop (`libglib2.0-0`, `libdbus-1-3`, `libfontconfig1` and three xcb libraries). Every machine the guide had been checked on had them already. A new workflow runs the guide's own lines in fresh Ubuntu 24.04, Ubuntu 26.04 and Debian 13 images, as an ordinary user, through to a recording, a window on a virtual screen and the tests.
+- **VideoToolbox's `Color range not set` at every recording start** is FFmpeg's note for a camera that names no range; it is no longer shown as a warning.
 - **Tests**: the encoder-fallback test read its child's UTF-8 output with the system code page and failed on a Korean Windows.
+- **Tests**: links and heading anchors between README, changelog and guides are followed, so a renamed heading cannot break one silently.
 
 Documented: what each encoder writes when you give no rate option (NVENC 11 to 12 Mbit/s and AMF 7 for a camera that Quick Sync, VAAPI and x264 record at 2), and how large Quick Sync recordings get ([recording.md](docs/recording.md#quick-sync-how-large-the-files-get)). Without a rate option the encoder keeps the quantizer constant and the size follows the scene (one outdoor camera: 12.6 Mbit/s in the afternoon, 0.9 at night); the guide has the modes side by side, measured on the same pictures.
+
+Also run, without finding anything: the network fault matrix (source gone, server stalled or killed, another size, another codec, long GOP, no audio, wrong password) through Quick Sync, where every case comes back on the hardware decoder and every segment decodes; RTMP streaming to a local server through libx264, NVENC, Quick Sync and VAAPI, read back with picture and sound; an Intel iMac whose four windows had been up for 47 hours without an error, then updated, tested and recorded with VideoToolbox (no B-frames there, decode times in order).
 
 Seen and left as it is:
 
