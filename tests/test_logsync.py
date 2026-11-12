@@ -114,6 +114,7 @@ def test_noise_is_demoted_or_dropped(root_handler):
     h264.error("Could not find ref with POC 12")
     h264.warning("SEI type 5 overread by 8 bits")
     logging.getLogger("libav.flv").warning("Failed to update header with correct duration.")
+    logging.getLogger("libav.h264_videotoolbox").warning("Color range not set for nv12. Using MPEG range.")
     h264.error("a real error")
     logging.getLogger("other").error("non-existing PPS 0 referenced")   # not FFmpeg's: untouched
     assert records == ["40 libav.h264 a real error", "40 other non-existing PPS 0 referenced"]

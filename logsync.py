@@ -131,6 +131,9 @@ AV_NOISE = (
     ("Qavg:", DEMOTE),
     # FLV to an RTMP server cannot rewrite its header on close; a file could (flvenc.c; AV_LOG_WARNING)
     ("Failed to update header with correct", DEMOTE),
+    # VideoToolbox, at every recording start of a camera that names no colour range: limited (MPEG) range is
+    # what such a picture is (videotoolboxenc.c; AV_LOG_WARNING). A camera that names one is passed on.
+    ("Color range not set for", DEMOTE),
     # one line per NAL unit (h2645_parse.c; AV_LOG_DEBUG): 30+ a second per camera at -l TRACE
     ("nal_unit_type:", DROP),
 )
