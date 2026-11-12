@@ -1,0 +1,78 @@
+name: Install guide
+
+# docs/install.md, Linux: its commands as they are written, in a distribution image that has nothing
+# installed yet (the runners themselves come with a compiler, Python and half of the libraries, so CI
+# cannot tell when the guide forgets a package). By hand, weekly, and when the guide or the requirements change.
+on:
+  schedule:
+    - cron: "30 3 * * 1"          # Mondays 03:30 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - docs/install.md
+      - requirements.txt
+      - requirements-dev.txt
+      - .github/workflows/install-guide.yml
+
+jobs:
+  linux:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "ubuntu:26.04", "debian:13"]
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: The guide's apt line
+        run: |
+          apt-get update
+          apt-get install -y git python3 python3-venv python3-dev portaudio19-dev \
+              libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0
+      - uses: actions/checkout@v5
+      - name: The guide's venv and pip lines
+        run: |
+          python3 --version
+          python3 -m venv venv && . venv/bin/activate
+          pip install -U pip && pip install -r requirements.txt
+      - name: nova.py --help, the launcher, doctor
+        run: |
+          . venv/bin/activate
+          python nova.py --help > /dev/null
+          cp cameras.example.ini cameras.ini && chmod 600 cameras.ini
+          ./nova -h > /dev/null
+          ./nova list
+          QT_QPA_PLATFORM=offscreen ./nova doctor
+      - name: A camera, headless, recorded for ten seconds (the wheel's own codecs, no GPU)
+        run: |
+          . venv/bin/activate
+          python - <<'PY'
+          import av, numpy as np
+          from fractions import Fraction
+          with av.open("clip.mp4", "w") as c:
+              s = c.add_stream("libx264", rate=10); s.width, s.height, s.pix_fmt = 640, 360, "yuv420p"
+              for i in range(300):
+                  f = av.VideoFrame.from_ndarray(np.full((360, 640, 3), (i * 3) % 255, np.uint8), format="rgb24")
+                  f.pts, f.time_base = i, Fraction(1, 10)
+                  for p in s.encode(f): c.mux(p)
+              for p in s.encode(): c.mux(p)
+          PY
+          timeout -s INT 14 python nova.py -i clip.mp4 --headless -r --recording-dir rec -l INFO > nova.log 2>&1 || true
+          grep -E "First frame|AVWriter|saved" nova.log
+          python - <<'PY'
+          import av, glob
+          files = glob.glob("rec/**/*.mp4", recursive=True)
+          assert files, "no recording"
+          n = sum(1 for _ in av.open(files[0]).decode(video=0))
+          print(files[0], n, "frames")
+          assert n > 30
+          PY
+      - name: The tests
+        run: |
+          . venv/bin/activate
+          pip install -r requirements-dev.txt
+          pytest -q
