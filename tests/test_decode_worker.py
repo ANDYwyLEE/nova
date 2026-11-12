@@ -258,6 +258,80 @@ def test_failed_retry_backs_off(qapp):
     assert w._hw_backoff == 2 * videoworker.HW_RETRY_S and not dec.is_hw
 
 
+# ---------------------------------------------------------------- parameter sets for Quick Sync
+SPS_PPS = b"\x00\x00\x00\x01\x67\x4d\x00\x28\x9a" + b"\x00\x00\x00\x01\x68\xee\x3c\x80"
+IDR, PFRAME = b"\x00\x00\x00\x01\x65\x88\x84\x00\x33", b"\x00\x00\x00\x01\x41\x9a\x24\x6c"
+
+
+def _real_pkt(data, pts, key=False):
+    p = av.Packet(data)
+    p.pts = p.dts = pts
+    p.time_base, p.duration, p.is_keyframe = Fraction(1, 90000), 9000, key
+    return p
+
+
+def test_parameter_sets_are_found_before_the_first_slice():
+    has = videoworker._has_param_sets
+    assert has(SPS_PPS + IDR, False) and not has(IDR, False) and not has(PFRAME, False)
+    assert has(b"\x00\x00\x01\x09\xf0" + SPS_PPS + IDR, False)              # after an access unit delimiter
+    assert has(b"\x00\x00\x01\x06\x05\x01\x80" + SPS_PPS + IDR, False)        # after an SEI
+    assert not has(b"\x00\x00\x01\x06\x05\x01\x80" + IDR, False)
+    assert not has(IDR + SPS_PPS, False)                                      # behind the slice: too late
+    assert not has(b"", False) and not has(b"\x00\x00\x01", False)
+    vps, sps, idr_w_radl = b"\x00\x00\x00\x01\x40\x01\x0c", b"\x00\x00\x00\x01\x42\x01\x01", b"\x00\x00\x00\x01\x26\x01\xaf"
+    assert has(vps + sps + idr_w_radl, True) and not has(idr_w_radl, True)
+    assert has(b"\x00\x00\x00\x01\x4e\x01\x05" + vps + idr_w_radl, True)      # prefix SEI (39) first
+
+
+def _qsv_feed(qapp, name, extradata, packets, codec="h264"):
+    """What decoder `name` is fed when the stream's extradata is `extradata`."""
+    fed = []
+    hw = FakeCtx(name, out=lambda p: fed.append((bytes(p), p.pts, p.dts, p.is_keyframe)) or [_frame(p.pts)])
+    sw = FakeCtx(codec)
+    sw.extradata = extradata
+    dec, _ = _decode(_worker(accel="qsv"), sw, [(hw, name, None)])
+    dec.open()
+    for p in packets:
+        dec.decode(p)
+    return fed
+
+
+def test_quick_sync_keyframes_get_the_parameter_sets_the_camera_left_out(qapp, caplog):
+    """A camera that sends SPS/PPS in the RTSP session description only: h264_qsv answered "More data is
+    required to decode header" to every packet and software decoding took over (Intel UHD 620)."""
+    caplog.set_level(logging.DEBUG)
+    fed = _qsv_feed(qapp, "h264_qsv", SPS_PPS, [_real_pkt(IDR, 0, True), _real_pkt(PFRAME, 9000),
+                                               _real_pkt(IDR, 18000, True), _real_pkt(SPS_PPS + IDR, 27000, True)])
+    assert fed[0] == (SPS_PPS + IDR, 0, 0, True)
+    assert fed[1][0] == PFRAME
+    assert fed[2] == (SPS_PPS + IDR, 18000, 18000, True)      # every keyframe: a decoder reset finds them too
+    assert fed[3][0] == SPS_PPS + IDR                         # the camera's own: left alone
+    assert len([r for r in caplog.records if "no parameter sets inside the stream" in r.getMessage()]) == 1
+
+
+def test_parameter_sets_are_added_for_quick_sync_and_annex_b_only(qapp):
+    pkts = lambda: [_real_pkt(IDR, 0, True)]
+    assert _qsv_feed(qapp, "h264_cuvid", SPS_PPS, pkts())[0][0] == IDR         # cuvid reads the extradata itself
+    avcc = b"\x01\x4d\x00\x28\xff\xe1\x00\x05" + SPS_PPS[4:9]
+    assert _qsv_feed(qapp, "h264_qsv", avcc, pkts())[0][0] == IDR              # MP4-style: the decoder's own filter
+    assert _qsv_feed(qapp, "h264_qsv", None, pkts())[0][0] == IDR              # nothing to add
+    assert _qsv_feed(qapp, "vp9_qsv", SPS_PPS, pkts(), codec="vp9")[0][0] == IDR
+
+
+def test_a_quick_sync_retry_gets_the_parameter_sets_too(qapp):
+    w = _worker(accel="qsv")
+    fed = []
+    hw = FakeCtx("h264_qsv", out=lambda p: fed.append(bytes(p)) or [_frame(p.pts)])
+    sw = FakeCtx(out=lambda p: [_frame(p.pts)])
+    sw.extradata = SPS_PPS
+    dec, _ = _decode(w, sw, [(None, None, "h264_qsv: device busy"), (hw, "h264_qsv", None)])
+    dec.open()
+    dec.decode(_real_pkt(IDR, 0, True))
+    w._hw_retry_at = 0
+    dec.decode(_real_pkt(IDR, 9000, True))                    # the trial starts on this keyframe
+    assert dec.is_hw and fed == [SPS_PPS + IDR]
+
+
 def test_rawvideo_with_accel_decodes_in_software(qapp, tmp_path):
     """--accel with a stream no hardware can decode (a webcam's rawvideo) used to fail av.open() every 10 s."""
     raw = _write_clip(tmp_path / "raw.nut", frames=10, codec="rawvideo")

@@ -44,6 +44,11 @@ SEPARATE_DECODER_SUFFIX = {
 # hwaccel device types that are never attached to the standard decoder (CodecContext with hwaccel=);
 # they are only used through their separate decoders.
 HWACCEL_DEDICATED_ONLY = {"qsv", "vulkan", "drm", "opencl"}
+# Decoders that look for the stream's parameter sets (SPS/PPS, VPS) inside the packets only. A camera may
+# send them in the RTSP session description alone, where FFmpeg keeps them as extradata: h264_qsv then
+# answers "More data is required to decode header" to every packet and never delivers a picture
+# (Intel UHD 620, November 2026). Their keyframes get the parameter sets in front.
+INBAND_HEADER_DECODERS = ("_qsv",)
 # schemes whose host is probed with a plain TCP connect before av.open(), and their default ports
 PROBE_PORTS = {"rtsp": 554, "rtsps": 322, "rtmp": 1935, "rtmps": 443, "http": 80, "https": 443, "tcp": None}
 _CONNECT_IN_PROGRESS = {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
@@ -185,6 +190,26 @@ def _copy_codec_params(ctx, base):
             pass
 
 
+def _has_param_sets(data, hevc):
+    """Does this Annex B access unit carry parameter sets (H.264 SPS/PPS, HEVC VPS/SPS/PPS) before its
+    first slice?"""
+    i = 0
+    while True:
+        j = data.find(b"\x00\x00\x01", i)
+        if j < 0 or j + 3 >= len(data):
+            return False
+        h = data[j + 3]
+        if hevc:
+            t = (h >> 1) & 0x3f
+            if t in (32, 33, 34): return True
+            if t < 32: return False                 # a slice: nothing came before it
+        else:
+            t = h & 0x1f
+            if t in (7, 8): return True
+            if 1 <= t <= 5: return False
+        i = j + 3
+
+
 class _Reconnect(Exception):
     """Ends the current connection; the text says why."""
 
@@ -217,10 +242,13 @@ class _VideoDecode:
         self.errors = 0          # packets in a row the decoder rejected
         self.last_err = ""       # the last rejection, for the give-up message
         self.wait_kf = False     # the decoder (re)starts at the next keyframe
+        self.headers = None      # parameter sets the decoder in use needs in its keyframes (else None)
         self.trial = None        # hardware decoder on trial, fed alongside the software one
         self.trial_name = ""
+        self.trial_headers = None
         self.trial_kf = 0
         self.trial_errors = 0
+        self._headers_told = None
         self.skip_upto = None    # after a switch: drop pictures the previous decoder already delivered
         self.skipped = 0
         self.last_pts = None
@@ -239,6 +267,37 @@ class _VideoDecode:
     def _use(self, ctx, is_hw, name):
         self.ctx, self.is_hw, self.name = ctx, is_hw, name
         self.kf, self.got, self.errors, self.last_err = 0, False, 0, ""
+        self.headers = self._headers_for(name) if is_hw else None
+
+    def _headers_for(self, name):
+        """The stream's parameter sets when decoder `name` has to find them inside the packets, else None.
+        Only Annex B streams (RTSP, MPEG-TS): for MP4-style packets the decoder's own bitstream filter
+        inserts them."""
+        if not name.endswith(INBAND_HEADER_DECODERS) or self.codec_name not in ("h264", "hevc"):
+            return None
+        ed = bytes(getattr(self.base, "extradata", None) or b"")
+        if ed[:4] != b"\x00\x00\x00\x01" and ed[:3] != b"\x00\x00\x01":
+            return None
+        return ed
+
+    def _with_headers(self, packet, headers):
+        """The keyframe `packet` as a decoder of INBAND_HEADER_DECODERS needs it: with the parameter sets
+        in front, unless the camera put them there itself."""
+        data = bytes(packet)
+        if _has_param_sets(data, self.codec_name == "hevc"):
+            return packet
+        if headers is not self._headers_told:
+            self._headers_told = headers
+            logging.debug(f"[VideoWorker] the camera sends no parameter sets inside the stream: "
+                          f"adding the {len(headers)} bytes of the session description to each keyframe")
+        p = av.Packet(headers + data)
+        p.pts, p.dts = packet.pts, packet.dts
+        if packet.time_base is not None:
+            p.time_base = packet.time_base
+        if packet.duration:
+            p.duration = packet.duration
+        p.is_keyframe = True
+        return p
 
     def _use_sw(self):
         b = self.base
@@ -292,7 +351,7 @@ class _VideoDecode:
                 self.fallback_sw(f"{self.name} produced no frames after {self.kf} keyframes{why}", key)
             self.kf += 1
         try:
-            frames = self.ctx.decode(packet)
+            frames = self.ctx.decode(self._with_headers(packet, self.headers) if key and self.headers else packet)
         except av.error.FFmpegError as e:
             return self._rejected(packet, key, e)
         self.errors = 0
@@ -335,12 +394,14 @@ class _VideoDecode:
             return
         logging.debug(f"[VideoWorker] trying {name} again, alongside the software decoder")
         self.trial, self.trial_name, self.trial_kf, self.trial_errors = ctx, name, 0, 0
+        self.trial_headers = self._headers_for(name)
 
     def _feed_trial(self, packet, key):
         if key:
             self.trial_kf += 1
         try:
-            frames = self.trial.decode(packet)
+            frames = self.trial.decode(self._with_headers(packet, self.trial_headers)
+                                       if key and self.trial_headers else packet)
         except av.error.FFmpegError as e:
             self.trial_errors += 1
             if self.trial_errors >= GIVE_UP_KEYFRAMES:
