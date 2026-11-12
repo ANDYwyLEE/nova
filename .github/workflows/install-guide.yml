@@ -60,6 +60,15 @@ jobs:
             timeout -s INT 14 python nova.py -i clip.mp4 --headless -r --recording-dir rec --snapshot-dir snap -l INFO > nova.log 2>&1 || true
             grep -E "First frame|AVWriter|saved" nova.log
             python tools/ci_clip.py --check rec'
+      - name: A window on a virtual screen (Qt's xcb plugin with the guide's libraries; Xvfb is not part of the guide)
+        run: |
+          apt-get install -y xvfb xauth > /dev/null
+          runuser -u tester -- bash -ec '
+            . venv/bin/activate
+            xvfb-run -a -s "-screen 0 1280x720x24" timeout -s INT 12 python nova.py -i clip.mp4 --snapshot-dir snap -l INFO > win.log 2>&1 || true
+            tail -4 win.log
+            grep -q "First frame" win.log
+            ! grep -qE "Could not load the Qt platform plugin|Traceback|CRITICAL" win.log'
       - name: The tests
         run: |
           runuser -u tester -- bash -ec '
