@@ -146,7 +146,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 | `-n, --name, --camera-name` | Camera name: the window title becomes 'Nova - NAME', recordings go to videos/NAME/ and snapshots are named NAME_<time>.png. |
 | `--opengl` | Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended). |
 | `--accel` | Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m ...). |
-| `--gpu` | GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). Default: NOVA_GPU_DEVICES, else 0. |
+| `--gpu` | GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). Default: NOVA_GPU_DEVICES, else 0. It counts NVIDIA cards for `cuda` and NVENC, and DRM render nodes for `vaapi` (N is `/dev/dri/renderD(128+N)`); Quick Sync, AMF and the Windows decoders use the system's GPU whatever it says. |
 | `-f, --fps` | Target display frame rate. Default: 30. |
 | `-b, --border` | Enable the colored window border. |
 | `-g, --grid-size` | Grid size for window alignment in pixels. Default: 20. |

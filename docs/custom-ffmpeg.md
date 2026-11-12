@@ -3,9 +3,10 @@
 The `av` wheel from PyPI bundles an FFmpeg (9.0.2 in av 19.0.1 and 19.0.2) with NVENC/NVDEC, Quick Sync (libvpl), AMF, x264/x265/SVT-AV1, libopus and TLS. Build your own only if you need something it lacks:
 
 - the **SRT** protocol (`srt://` input or `-t srt://…` output)
-- **VAAPI** decoding on Intel/AMD Linux machines without an NVIDIA GPU
+- **VAAPI** decoding on Linux: an AMD GPU, or an Intel GPU older than the 11th generation (a newer Intel GPU has Quick Sync through the wheel: [install.md](install.md#linux-ubuntu-2404-and-2604))
 - CUDA filters (`scale_npp`, `scale_cuda`) or a newer FFmpeg than the wheel ships
-- on MSYS2 Windows: a tweak the packaged FFmpeg does not have (e.g. `QSV_MAX_SURFACES`)
+
+Quick Sync is not a reason: the wheel has it on Linux and Windows, and so does MSYS2's FFmpeg package.
 
 The recipes install into `~/deps`. A PyAV built against it needs `~/deps/lib` at run time: set it in the `[env]` section of `cameras.ini` (`LD_LIBRARY_PATH = /home/you/deps/lib`; `DYLD_LIBRARY_PATH` on macOS; `PATH` on Windows) and the launcher passes it to every camera process. Remove the line to fall back to the wheel.
 
@@ -29,7 +30,7 @@ Output protocol options (SRT `latency`, `passphrase`, …) still go in the URL q
 
 ## Linux (Ubuntu 26.04): NVIDIA + SRT + VAAPI
 
-Checked on 2026-10-14 (Ubuntu 26.04.1, driver 595, two RTX 4090): FFmpeg 9.0.2 configures and builds in about two minutes on 32 cores, `pip install --no-binary av` against it in one; the result has the cuvid/nvenc/vaapi codecs, `hwdevices_available() == ['vdpau', 'cuda', 'vaapi', 'drm']` and the SRT protocol.
+Checked on 2026-10-14 and again on 2026-11-12 (Ubuntu 26.04.1, NVIDIA driver 595, two RTX 4090 and the integrated Intel UHD 770): FFmpeg 9.0.2 configures and builds in under a minute on 32 cores, `pip install --no-binary av` against it in another; the result has the cuvid/nvenc/vaapi codecs, `hwdevices_available() == ['vdpau', 'cuda', 'vaapi', 'drm']` and the SRT protocol.
 
 ```bash
 sudo apt install -y git curl pkg-config build-essential nasm yasm libx264-dev libx265-dev \
@@ -37,7 +38,9 @@ sudo apt install -y git curl pkg-config build-essential nasm yasm libx264-dev li
 # CUDA filters only: sudo apt install -y nvidia-cuda-toolkit   (nvcc; add the three cuda lines below)
 
 mkdir -p ~/deps && cd ~/deps
-git clone --depth 1 https://git.videolan.org/git/ffmpeg/nv-codec-headers.git      # NVENC/NVDEC headers (header-only)
+# NVENC/NVDEC headers (header-only). Take the release your driver supports, not the newest: n13.0.19.1 needs
+# driver 570, n13.1.15.0 (and the main branch) driver 610. Each release's README names its minimum driver.
+git clone --depth 1 --branch n13.0.19.1 https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
 make -C nv-codec-headers install PREFIX=$HOME/deps
 export PKG_CONFIG_PATH=$HOME/deps/lib/pkgconfig
 
@@ -61,7 +64,16 @@ LD_LIBRARY_PATH=$HOME/deps/lib python -c "import av; print(av.library_versions)"
 
 Without an NVIDIA GPU drop the `nv-codec-headers` lines and `--enable-nvenc --enable-nvdec --enable-cuvid`.
 
-## Windows (MSYS2 UCRT64): Quick Sync via libvpl
+What to expect from the result:
+
+- **NVENC headers newer than the driver** build without a word and fail when a recording starts: `Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0` in the log at `-l DEBUG`, and the recording goes to `libx264` (a 1080p camera at 10 fps: 47 % of a core where NVENC takes 5 %). The log line `[AVWriter] libx264 …` is the sign; rebuild with the older headers.
+- **VAAPI decodes, it does not record.** `--accel vaapi` attaches the device to the standard decoder (`HW decoder: h264 + vaapi hwaccel`); an Intel GPU needs its VA driver for that (`intel-media-va-driver-non-free` was installed here). The `*_vaapi` encoders accept only pictures that already live on the GPU, which Nova's do not, so they never open: recording takes NVENC or Quick Sync where the build and the machine have them, else `libx264`. `-e h264_vaapi` is answered with `-e h264_vaapi does not open here (…); using …`.
+- **Which GPU**: `--gpu N` (or the launcher's `NOVA_GPU_DEVICES`) selects `/dev/dri/renderD(128+N)` for VAAPI. On a machine with several GPUs that has to be the VAAPI one: here `renderD128` is the Intel GPU and `renderD129`, an NVIDIA card, answers `Failed to initialise VAAPI connection`, after which the camera decodes in software. `nova doctor` lists which GPU is behind which node.
+- Measured with VAAPI decoding on the Intel GPU: a 1080p window at 10 fps 2.4 % of a core, at 20 fps 5.8 %; recording through NVENC 5 %.
+
+## Windows (MSYS2 UCRT64)
+
+Not needed for Quick Sync: the packaged FFmpeg of [Option B](install.md#option-b-msys2-ucrt64) has it (checked on an Intel UHD 620, November 2026). This is the recipe for a newer FFmpeg than MSYS2 packages; it builds with libvpl (Quick Sync) and without NVENC and AMF.
 
 ```bash
 pacman -S --needed mingw-w64-ucrt-x86_64-{nasm,yasm,cmake,toolchain,x264,x265,onevpl}
@@ -72,8 +84,7 @@ export PKG_CONFIG_PATH=$HOME/deps/lib/pkgconfig:/ucrt64/lib/pkgconfig
 export CFLAGS="-I$HOME/deps/include -I/ucrt64/include -DMS_WIN64"
 export LDFLAGS="-L$HOME/deps/lib -L/ucrt64/lib -lportaudio"
 ./configure --prefix=$HOME/deps --enable-shared --disable-static --enable-gpl --enable-nonfree \
-    --enable-libx264 --enable-libx265 --enable-libvpl --disable-vulkan \
-    --extra-cflags="-DQSV_MAX_SURFACES=64"
+    --enable-libx264 --enable-libx265 --enable-libvpl --disable-vulkan
 make -j"$(nproc)" && make install
 export PATH=$HOME/deps/bin:$PATH
 
