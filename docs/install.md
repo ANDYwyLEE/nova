@@ -68,6 +68,12 @@ cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # then edit it: se
 ./nova start                                # a window per enabled camera; ./nova -h lists the commands
 ```
 
+- **Fedora** (and its relatives): the same steps with these packages in place of the apt line.
+
+  ```bash
+  sudo dnf install -y git python3 python3-devel gcc portaudio-devel mesa-libGL mesa-libEGL \
+      glib2 dbus-libs fontconfig libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms
+  ```
 - Ubuntu 24.04's `python3` is 3.12, which is enough: it installs the same `av` wheel, with the same NVIDIA/Intel/AMD codecs, as a newer Python. Ubuntu 22.04 (Python 3.10) needs a newer interpreter first (e.g. the deadsnakes PPA).
 - PyAudio has no Linux wheel and is compiled during `pip install`: that is what `build-essential`, `python3-dev` and `portaudio19-dev` are for (without a compiler: `No such file or directory: 'x86_64-linux-gnu-gcc'`). The `lib…` packages are what Qt loads at run time and does not bring itself; a desktop has most of them already, a server, a container or WSL does not (`ImportError: libglib-2.0.so.0`, or `Could not load the Qt platform plugin "xcb"`). These lines are run as written in fresh Ubuntu 24.04, Ubuntu 26.04 and Debian 13 images by the [Install guide](../.github/workflows/install-guide.yml) workflow.
 - **NVIDIA**: the proprietary driver is all that is required (`libnvcuvid.so`, `libnvidia-encode.so` come with it); the CUDA toolkit is not needed. Use `--accel cuda`. The wheel's NVENC needs **driver 570.0 or newer** (`The minimum required Nvidia driver for nvenc is 570.0` in the log otherwise): Ubuntu 26.04 ships that, on 24.04 pick `nvidia-driver-570` or newer rather than the 535/550 series. With an older driver Nova still runs and records, but encodes with libx264 on the CPU.

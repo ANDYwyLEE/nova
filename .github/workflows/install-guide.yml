@@ -25,20 +25,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ["ubuntu:24.04", "ubuntu:26.04", "debian:13"]
+        image: ["ubuntu:24.04", "ubuntu:26.04", "debian:13", "fedora:latest"]
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
       - uses: actions/checkout@v5
-      - name: The guide's apt line, read from docs/install.md
+      - name: The guide's package line, read from docs/install.md
         run: |
-          apt-get update
-          line=$(awk '/^## Linux/{f=1} f && /^sudo apt install/{p=1} p{print} p && !/\\$/{exit}' docs/install.md | sed -e 's/^sudo //' -e 's/\\$//' | tr '\n' ' ')
+          if command -v apt-get > /dev/null; then apt-get update; tool=apt; else tool=dnf; fi
+          line=$(awk -v pat="^ *sudo $tool install" '$0 ~ pat {p=1} p{print} p && !/\\$/{exit}' docs/install.md | sed -e 's/^ *sudo //' -e 's/\\$//' | tr '\n' ' ')
           echo "$line"
-          case "$line" in "apt install -y "*) ;; *) echo "could not read the apt line from the guide"; exit 1;; esac
+          case "$line" in "$tool install -y "*) ;; *) echo "could not read the $tool line from the guide"; exit 1;; esac
           $line
       - name: An ordinary user, as on a desktop
         run: |
+          command -v runuser > /dev/null || dnf install -y util-linux > /dev/null
           useradd -m tester
           chown -R tester "$GITHUB_WORKSPACE"
       - name: The guide's venv and pip lines
@@ -62,7 +63,7 @@ jobs:
             python tools/ci_clip.py --check rec'
       - name: A window on a virtual screen (Qt's xcb plugin with the guide's libraries; Xvfb is not part of the guide)
         run: |
-          apt-get install -y xvfb xauth > /dev/null
+          if command -v apt-get > /dev/null; then apt-get install -y xvfb xauth > /dev/null; else dnf install -y xorg-x11-server-Xvfb xauth > /dev/null; fi
           runuser -u tester -- bash -ec '
             . venv/bin/activate
             xvfb-run -a -s "-screen 0 1280x720x24" timeout -s INT 12 python nova.py -i clip.mp4 --snapshot-dir snap -l INFO > win.log 2>&1 || true
