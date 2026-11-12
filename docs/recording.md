@@ -70,9 +70,10 @@ Defaults applied unless you override them: keyframe interval 2 s (`-g`), `hvc1` 
 All of these go into `--ffmpeg "…"` (details and the full table: [ffmpeg-options.md](ffmpeg-options.md)):
 
 ```bash
--b:v 4M -maxrate 4M -bufsize 8M     # capped bitrate (both encoders)
+-b:v 4M -maxrate 4M -bufsize 8M     # capped bitrate (every encoder)
 -crf 23 -preset veryfast            # libx264 quality mode
 -rc vbr -cq 28 -preset p5           # NVENC quality mode
+-global_quality 28                  # Quick Sync quality mode (a higher number: smaller file)
 -g 50 -bf 0                         # keyframe every 50 frames, no B-frames
 -r 10                               # keep 10 frames per second (drops frames, audio untouched)
 -s 1280x720                         # downscale before encoding
@@ -90,11 +91,31 @@ Examples:
 python nova.py -i rtsp://... -r --record-interval 1h --ffmpeg "-r 10 -b:v 1M"
 # HEVC with NVENC
 python nova.py -i rtsp://... -r -e hevc_nvenc
+# Intel Quick Sync at about 2 Mbit/s, whatever the scene
+python nova.py -i rtsp://... --accel qsv -r --ffmpeg "-b:v 2M"
 ```
+
+### Quick Sync: how large the files get
+
+Without a rate option the Quick Sync encoders keep the quantizer constant (FFmpeg says so at every start: `Using the constant quantization parameter (CQP) by default`). The quality is then fixed and the size follows the scene: one outdoor 1080p25 camera wrote 12.6 Mbit/s in the afternoon and 0.9 Mbit/s after dark, a quiet indoor 1080p10 camera 1.3 to 1.8 Mbit/s. For a size you can plan with, give a bitrate; for a constant but lower quality, a quality number. The same pictures through each setting at once (Intel UHD 620, November 2026):
+
+| `--ffmpeg "…"` | Quick Sync mode | indoor 1080p10 | outdoor 1080p25, at night |
+|---|---|---|---|
+| nothing | constant quantizer (CQP) | 1.29 Mbit/s | 0.85 Mbit/s |
+| `-global_quality 23` | constant quality (ICQ) | 1.11 | 3.06 |
+| `-global_quality 26` | ICQ | 0.89 | 1.46 |
+| `-global_quality 30` | ICQ | 0.67 | 0.63 |
+| `-b:v 2M` | variable bitrate | 1.95 | 1.84 |
+| `-b:v 4M` | variable bitrate | 3.94 | 3.77 |
+| `-b:v 4M -maxrate 4M -bufsize 8M` | constant bitrate | 3.99 | 3.96 |
+| `-e hevc_qsv` | CQP | 1.48 | 1.00 |
+| `-e hevc_qsv --ffmpeg "-global_quality 26"` | ICQ | 0.98 | 0.71 |
+
+A bitrate is used up even where the scene needs less (the indoor camera's own stream is 0.5 Mbit/s), so pick it per camera: `opts = --ffmpeg "-b:v 1M"` in that camera's section of `cameras.ini`, or in `[defaults]` for all of them.
 
 ## Disk usage and housekeeping
 
-Size ≈ bitrate × time: 4 Mbit/s is about 1.8 GB per hour and 43 GB per day per camera; `-b:v`/`-cq` and `-r` are the levers. Nova does not delete old recordings. A daily cron job keeps a rolling window:
+Size ≈ bitrate × time: 4 Mbit/s is about 1.8 GB per hour and 43 GB per day per camera; `-b:v`/`-cq`/`-global_quality` and `-r` are the levers. Nova does not delete old recordings. A daily cron job keeps a rolling window:
 
 ```bash
 # keep 14 days
