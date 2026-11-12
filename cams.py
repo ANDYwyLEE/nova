@@ -1058,7 +1058,11 @@ def main(argv=None):
     if cmd == "doctor":
         child = doctor_child(config)
         if child:                                    # the machine as the cameras see it: [env], [defaults] python
-            return subprocess.call(child[0], env=child[1])
+            try:
+                return subprocess.call(child[0], env=child[1])
+            except OSError as e:                     # `python =` in [defaults] names a Python that is not there
+                print(f"note: cannot run {child[0][0]} ({e}); the report below is from {sys.executable}, "
+                      f"without the [env] of {os.path.basename(config)}\n")
         import doctor                                # works without cameras.ini, so before load()
         sys.stdout.write(doctor.report(config if config != INI or os.path.exists(INI) else INI))
         return 0

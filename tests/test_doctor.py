@@ -91,6 +91,17 @@ def test_doctor_runs_as_a_camera_would(tmp_path, monkeypatch):
     assert cams.doctor_child(str(ini), {}) is None
 
 
+def test_doctor_with_a_python_that_is_not_there_still_reports(tmp_path, monkeypatch, capsys):
+    ini = tmp_path / "cameras.ini"
+    ini.write_text("[defaults]\npython = /no/such/python\n\n[a]\nurl = rtsp://10.0.0.1/s\n")
+    if os.name != "nt":
+        os.chmod(ini, 0o600)
+    monkeypatch.setattr(doctor, "gl_line", lambda python=None: "n/a (test)")
+    assert (cams.main(["-c", str(ini), "doctor"]) or 0) == 0
+    out = capsys.readouterr().out
+    assert "cannot run" in out and "no" in out and "Nova doctor" in out
+
+
 def test_xmeye_cameras_need_python_dvr(tmp_path, monkeypatch):
     p = tmp_path / "cameras.ini"
     p.write_text(INI + "\n[gate]\nurl = xmeye://admin:S3cretC@10.0.0.3\n")

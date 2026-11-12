@@ -857,7 +857,7 @@ class VideoWorker(QThread):
         that does not open (--gpu 1 on a machine with one card, a cameras.ini carried over from a machine
         with more) is answered with GPU 0, not with software decoding and libx264 for that camera."""
         ctx, label, reason = self._open_hw_decoder_on(base, codec_name)
-        if ctx is None and self.accel in ("cuda", "nvdec") and self.gpu_idx != 0 and not self.ffopts.hw_device:
+        if ctx is None and self.accel in ("cuda", "cuvid", "nvdec") and self.gpu_idx != 0 and not self.ffopts.hw_device:
             asked, self.gpu_idx = self.gpu_idx, 0
             ctx, label, _ = self._open_hw_decoder_on(base, codec_name)
             if ctx is None:
