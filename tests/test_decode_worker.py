@@ -482,3 +482,44 @@ def test_accel_in_build_looks_at_the_decoders(monkeypatch):
     assert videoworker.accel_supported("cuda")           # still a name Nova tries: software when it does not open
     monkeypatch.setattr(videoworker, "CODECS_AVAILABLE", {"h264_cuvid"})
     assert videoworker.accel_in_build("cuda") and videoworker.accel_in_build("nvdec")
+
+
+def test_audio_that_stops_while_video_flows_reconnects_when_it_is_used(qapp, tmp_path, monkeypatch, caplog):
+    """Two of five cameras in a 12-hour soak stopped sending audio on their RTSP connection after 10 and 23
+    minutes (video alone on the wire, audio again for a new client): the recordings went on without sound
+    until the wall was stopped, and the log said nothing."""
+    clip = _write_clip(tmp_path / "quiet.nut", frames=100, audio_s=1)       # 4 s of video, 1 s of audio
+    monkeypatch.setenv("NOVA_AUDIO_STALL", "0.5")
+    caplog.set_level(logging.DEBUG)
+
+    def play(**on):
+        w = _worker(str(clip))
+        for k, v in on.items():
+            setattr(w, k, v)
+        del caplog.records[:]
+        with av.open(str(clip)) as c:
+            w._stream_loop(SlowContainer(c, 0.01), "quiet")
+        return w, any("no audio for" in r.getMessage() and "reconnecting" in r.getMessage() for r in caplog.records)
+
+    w, said = play(rec_on=True)
+    assert said and w._a_stall_wait == 1.0             # dropped early: the next wait is twice as long
+    assert play(audio_on=True)[1] and play(stream_on=True)[1]
+    assert not play()[1]                               # nobody listens and nothing records: no reconnect
+    w = _worker(str(clip)); w.rec_on = True; w.ffopts.no_audio = True      # recording with -an
+    with av.open(str(clip)) as c:
+        del caplog.records[:]
+        w._stream_loop(SlowContainer(c, 0.01), "quiet")
+    assert not any("no audio for" in r.getMessage() for r in caplog.records)
+    monkeypatch.setenv("NOVA_AUDIO_STALL", "0")        # switched off
+    assert not play(rec_on=True)[1]
+    monkeypatch.setenv("NOVA_AUDIO_STALL", "nonsense")
+    assert videoworker._audio_stall_s() == videoworker.AUDIO_STALL_S
+
+
+def test_a_stream_without_audio_never_waits_for_it(qapp, clip, monkeypatch, caplog):
+    monkeypatch.setenv("NOVA_AUDIO_STALL", "0.01")
+    caplog.set_level(logging.DEBUG)
+    w = _worker(str(clip)); w.rec_on = True
+    with av.open(str(clip)) as c:
+        w._stream_loop(SlowContainer(c, 0.005), "silent")
+    assert not any("no audio for" in r.getMessage() for r in caplog.records)

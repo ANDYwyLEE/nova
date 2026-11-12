@@ -60,6 +60,8 @@ GIVE_UP_KEYFRAMES = 3       # a decoder with no picture after this many keyframe
 MAX_DECODE_ERRORS = 30      # video packets in a row the decoder rejects before it is given up
 MAX_AUDIO_ERRORS = 100      # audio packets in a row before audio is ignored until the next connection
 VIDEO_STALL_S = 10.0        # no video packet for this long (audio still flowing): reconnect
+AUDIO_STALL_S = 30.0        # audio that flowed on this connection silent this long (video still flowing): reconnect
+AUDIO_STALL_MAX_S = 3600.0  # the wait doubles up to this while a camera keeps dropping its audio early
 FIRST_PICTURE_S = 60.0      # no picture at all this long after connecting: reconnect
 GOP_UNKNOWN_S = 20.0        # keyframe interval assumed until two keyframes have been seen
 FPS_MAX = 120               # a larger "frame rate" is a clock rate (90000), not frames
@@ -108,6 +110,15 @@ def _pick_gpu_index(spec=None, default_idx=0):
     except Exception:
         logging.warning(f"[VideoWorker] invalid GPU list {v!r}; using GPU {default_idx}")
         return default_idx
+
+def _audio_stall_s() -> float:
+    """NOVA_AUDIO_STALL in seconds (default 30; 0 never reconnects for missing audio)."""
+    v = os.getenv("NOVA_AUDIO_STALL", "")
+    try:
+        return max(0.0, float(v)) if v.strip() else AUDIO_STALL_S
+    except ValueError:
+        return AUDIO_STALL_S
+
 
 _bad_timeout_warned = False
 
@@ -480,6 +491,7 @@ class VideoWorker(QThread):
         self.rec_on = False
         self.stream_on = False
         self.audio_on = False
+        self._a_stall_wait = _audio_stall_s()   # how long audio may be missing before a reconnect (0: never)
         self.run_flag = True
         self.gpu_idx = _pick_gpu_index(gpu)
         self._gpu_given = gpu not in (None, "") or bool(os.getenv("NOVA_GPU_DEVICES"))
@@ -512,6 +524,10 @@ class VideoWorker(QThread):
     def set_rec_on(self, v: bool): self.rec_on = bool(v)
     def set_stream_on(self, v: bool): self.stream_on = bool(v)
     def set_audio_on(self, v: bool): self.audio_on = bool(v)
+
+    def _audio_wanted(self):
+        """Something uses this camera's sound: it is played, or a recording or stream carries it."""
+        return self.audio_on or ((self.rec_on or self.stream_on) and not getattr(self.ffopts, "no_audio", False))
     def get_gpu_idx(self): return self.gpu_idx
     def gpu_given(self): return self._gpu_given     # --gpu or NOVA_GPU_DEVICES named one
     def get_stream_codec(self): return self.codec_name
@@ -976,6 +992,7 @@ class VideoWorker(QThread):
         t_vpkt = t_start            # last video packet
         t_vframe = None             # last decoded video frame on this connection
         t_key = None                # last video keyframe packet
+        t_afirst = t_apkt = None    # first and last audio packet on this connection
         try:
             for packet in container.demux(*streams):
                 if not self.run_flag: break
@@ -1022,6 +1039,9 @@ class VideoWorker(QThread):
                         self.img_sig.emit()
 
                 elif packet.stream.type == 'audio':
+                    if t_apkt is None:
+                        t_afirst = now
+                    t_apkt = now
                     aframes = []
                     if audio_context is not None:
                         try:
@@ -1062,6 +1082,16 @@ class VideoWorker(QThread):
                         raise _Reconnect(reason)
                     dec.fallback_sw(f"{dec.name}: {reason}", False)
                     t_vframe = now
+                # the other way round: some cameras stop sending the audio of a connection after minutes or
+                # hours (the RTSP session then carries video alone) and send it again to a new one. A recording
+                # went on without sound for the rest of the night, with nothing in the log.
+                wait = self._a_stall_wait
+                if t_apkt is not None and wait and now - t_apkt > wait and self._audio_wanted():
+                    # audio that lasted: the next silence is waited for as long as this one; a camera that
+                    # drops it soon after every connect is asked less and less often
+                    lasted = t_apkt - t_afirst > 10 * wait
+                    self._a_stall_wait = _audio_stall_s() if lasted else min(AUDIO_STALL_MAX_S, wait * 2)
+                    raise _Reconnect(f"no audio for {now - t_apkt:.0f} s while video keeps flowing")
             if self.run_flag:                # the demuxer hit the end of the stream (EOF)
                 logging.info(f"[VideoWorker] stream ended after {time.monotonic() - t_start:.0f} s; reconnecting [{u_disp}]")
         except _Reconnect as r:
