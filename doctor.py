@@ -269,6 +269,66 @@ def ffmpeg_lines():
     return lines
 
 
+DRM_VENDORS = {"0x8086": "Intel", "0x1002": "AMD", "0x10de": "NVIDIA"}
+
+
+def drm_gpus(root="/sys/class/drm"):
+    """[(vendor, 'vvvv:dddd', kernel driver, render node)] of the GPUs the Linux kernel has: the integrated
+    one next to the NVIDIA cards too, which nvidia-smi does not list."""
+    out = []
+    for card in sorted(glob.glob(os.path.join(root, "card[0-9]*"))):
+        if "-" in os.path.basename(card):                 # card1-HDMI-A-1: a connector, not a GPU
+            continue
+        dev = os.path.join(card, "device")
+        try:
+            with open(os.path.join(dev, "vendor")) as f: vendor = f.read().strip()
+            with open(os.path.join(dev, "device")) as f: device = f.read().strip()
+        except OSError:
+            continue
+        try:
+            driver = os.path.basename(os.readlink(os.path.join(dev, "driver")))
+        except OSError:
+            driver = "no driver"
+        node = next((os.path.basename(n) for n in sorted(glob.glob(os.path.join(dev, "drm", "renderD*")))), "no render node")
+        out.append((DRM_VENDORS.get(vendor, vendor), f"{vendor[2:]}:{device[2:]}", driver, node))
+    return out
+
+
+def quick_sync_error():
+    """None when h264_qsv opens on this machine, else why not ("" when the FFmpeg build has no h264_qsv).
+    Opening it starts a Quick Sync session, which needs the Intel runtime and driver, not just FFmpeg."""
+    try:
+        import av
+        if "h264_qsv" not in av.codecs_available:
+            return ""
+        import logsync
+        from avwriter import EncoderManager
+        os.environ.setdefault("LIBVA_MESSAGING_LEVEL", "0")       # libva prints to stderr by itself
+        with logsync.av_quiet():
+            return EncoderManager._try_open("h264_qsv", {})
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def quick_sync_check(accels, gpus, error):
+    """The check line for Quick Sync, or None when it is of no interest here: asked for with --accel qsv,
+    or an Intel GPU is in the machine (Linux, where the runtime is two packages away)."""
+    wanted = "qsv" in accels
+    intel = [g for g in gpus if g[0] == "Intel"]
+    if not wanted and not intel:
+        return None
+    if error == "":
+        return ("⚠", "--accel qsv is in cameras.ini but this FFmpeg build has no h264_qsv") if wanted else None
+    if error is None:
+        return ("✓", "Quick Sync starts on this machine: --accel qsv decodes and records on the Intel GPU")
+    fix = ("sudo apt install intel-media-va-driver-non-free libmfx-gen1.2 (docs/install.md)" if LINUX
+           else "update the Intel graphics driver")
+    short = " ".join(str(error).split("last error log:")[-1].split())[:90]      # FFmpeg's own words, when it has any
+    if wanted:
+        return ("⚠", f"--accel qsv is in cameras.ini but Quick Sync does not start ({short}): software decoding; {fix}")
+    return ("ℹ", f"the Intel GPU could decode and record with --accel qsv, but Quick Sync does not start ({short}): {fix}")
+
+
 def gpu_lines():
     lines = []
     if shutil.which("nvidia-smi"):
@@ -280,6 +340,9 @@ def gpu_lines():
         else:
             lines.append(("GPU", "nvidia-smi present but gave no answer"))
     if LINUX:
+        for vendor, ids, driver, node in drm_gpus():
+            if vendor != "NVIDIA" or not lines:           # the NVIDIA cards are listed above, with their memory
+                lines.append(("GPU", f"{vendor} {ids} ({driver}), {node}"))
         nodes = sorted(os.path.basename(p) for p in glob.glob("/dev/dri/renderD*"))
         lines.append(("DRM nodes", " ".join(nodes) if nodes else "none (/dev/dri: no render node, VAAPI impossible)"))
     if not lines:
@@ -494,6 +557,11 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                                          f"software decoding (docs/install.md)"))
             except Exception as e:
                 out.append(("ℹ", f"--accel {' '.join(sorted(accels))}: could not check ({e})"))
+        gpus = drm_gpus() if LINUX else []
+        if "qsv" in accels or any(g[0] == "Intel" for g in gpus):
+            line = quick_sync_check(accels, gpus, quick_sync_error())
+            if line:
+                out.append(line)
         xm = [c for c in cs if c.enabled and c.url.lower().startswith("xmeye://")]
         if xm:
             if _can_import(python, "dvrip"):

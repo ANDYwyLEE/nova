@@ -156,3 +156,41 @@ def test_tls_from_the_system_is_not_listed_as_missing(monkeypatch):
     assert doctor._tls_works() is True
     monkeypatch.setattr(av, "open", no_protocol)
     assert doctor._tls_works() is False
+
+
+def _drm_tree(root, cards):
+    """A /sys/class/drm look-alike: cards = [(name, vendor, device, driver, render node)]."""
+    for name, vendor, device, driver, node in cards:
+        dev = root / name / "device"
+        (dev / "drm" / node).mkdir(parents=True)
+        (dev / "vendor").write_text(vendor + "\n")
+        (dev / "device").write_text(device + "\n")
+        (root / "drivers" / driver).mkdir(parents=True, exist_ok=True)
+        os.symlink(root / "drivers" / driver, dev / "driver")
+    (root / "card1-HDMI-A-1").mkdir()                     # a connector, not a GPU
+
+
+def test_the_integrated_gpu_next_to_nvidia_cards_is_listed(tmp_path):
+    _drm_tree(tmp_path, [("card0", "0x10de", "0x2684", "nvidia", "renderD130"),
+                         ("card1", "0x8086", "0xa780", "i915", "renderD128"),
+                         ("card2", "0x10de", "0x2684", "nvidia", "renderD129")])
+    assert doctor.drm_gpus(str(tmp_path)) == [("NVIDIA", "10de:2684", "nvidia", "renderD130"),
+                                              ("Intel", "8086:a780", "i915", "renderD128"),
+                                              ("NVIDIA", "10de:2684", "nvidia", "renderD129")]
+    assert doctor.drm_gpus(str(tmp_path / "nothing")) == []
+
+
+def test_quick_sync_check_says_what_is_missing(monkeypatch):
+    monkeypatch.setattr(doctor, "LINUX", True)
+    intel, nvidia = ("Intel", "8086:a780", "i915", "renderD128"), ("NVIDIA", "10de:2684", "nvidia", "renderD129")
+    err = "[Errno 1313558101] Unknown error occurred; last error log: [h264_qsv] Error creating a MFX session: -9."
+    check = doctor.quick_sync_check
+    assert check(set(), [nvidia], err) is None                        # no Intel GPU, not asked for: no line
+    assert check({"cuda"}, [nvidia, intel], None)[0] == "✓"
+    mark, text = check({"cuda"}, [nvidia, intel], err)                # an unused Intel GPU: good to know
+    assert mark == "ℹ" and "intel-media-va-driver-non-free libmfx-gen1.2" in text and "MFX session: -9" in text
+    mark, text = check({"qsv"}, [intel], err)                         # asked for and not working: worth fixing
+    assert mark == "⚠" and "software decoding" in text and "apt install" in text
+    assert check({"qsv"}, [], "")[0] == "⚠" and check(set(), [intel], "") is None      # a build without h264_qsv
+    monkeypatch.setattr(doctor, "LINUX", False)
+    assert "Intel graphics driver" in check({"qsv"}, [], err)[1]
