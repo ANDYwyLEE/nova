@@ -63,7 +63,7 @@ Encoders are probed once per process, in this order, and the first that opens is
 
 Order: `-e` / `-c:v` (only if the output can carry that codec: `-e hevc_nvenc` is ignored with a warning for RTMP), then with `--accel` the matching hardware encoders (`cuda` → NVENC, `qsv` → Quick Sync, `videotoolbox`, AMF, and on Windows last the GPU's Media Foundation encoder: `h264_mf` with `hw_encoding=1`, at 0.1 bit per pixel and frame unless you give `-b:v`) for each allowed family, then `libx264` and the other software encoders (`libx265`, `libsvtav1`). Without `--accel` only software encoders are used. An encoder that passed the probe but does not open at the real size (NVENC's session limit, a GPU fault) is skipped for an hour and the writer continues with the next one, so no frame is lost (`X does not open at WxH; using Y`); an audio encoder that cannot open leaves the audio track out. A hardware encoder that rejects your `--ffmpeg` options is skipped with a warning (`h264_nvenc rejects your --ffmpeg options …`).
 
-Defaults applied unless you override them: keyframe interval 2 s (`-g`), `hvc1` tag for HEVC in MP4, pixel format `nv12` for hardware encoders and `yuv420p` for software ones.
+Defaults applied unless you override them: keyframe interval 2 s (`-g`), `hvc1` tag for HEVC in MP4, pixel format `nv12` for hardware encoders and `yuv420p` for software ones, and no B-frames for Quick Sync (`-bf 0`): its encoders work out each packet's decode time from the nominal frame rate, which does not fit a camera's real frame times. With `-bf 2` they still record (a decode time that would run backwards is moved, with one warning), at the price of a frame shown a few milliseconds off now and then.
 
 ## Tuning
 

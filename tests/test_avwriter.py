@@ -1,4 +1,8 @@
-"""AVWriter helpers that need no real container: bitrate parsing, the AAC bitrate cap, network deadlines, open errors."""
+"""AVWriter helpers that need no real container: bitrate parsing, the AAC bitrate cap, network deadlines, open errors,
+the video dts guard."""
+import logging
+from types import SimpleNamespace
+
 import avwriter
 
 
@@ -63,7 +67,7 @@ class Container:
 
 def test_a_failed_first_packet_is_an_open_error_later_ones_are_not():
     w = avwriter.AVWriter.__new__(avwriter.AVWriter)
-    w.first_packet_sent, w.open_failed, w.timeout = False, None, (30.0, 10.0)
+    w.first_packet_sent, w.open_failed, w.timeout, w.v_stream = False, None, (30.0, 10.0), None
     w.container = Container(ConnectionRefusedError(111, "Connection refused"))
     try:
         w._write("p1")
@@ -71,7 +75,7 @@ def test_a_failed_first_packet_is_an_open_error_later_ones_are_not():
     except avwriter.OutputOpenError as e:
         assert "Connection refused" in str(e)
     w = avwriter.AVWriter.__new__(avwriter.AVWriter)    # (that writer is done: see test_output_openfail)
-    w.first_packet_sent, w.open_failed, w.timeout = False, None, (30.0, 10.0)
+    w.first_packet_sent, w.open_failed, w.timeout, w.v_stream = False, None, (30.0, 10.0), None
     w.container = Container(None)
     w._write("p1")
     assert w.first_packet_sent and w.container.muxed == ["p1"]
@@ -81,3 +85,35 @@ def test_a_failed_first_packet_is_an_open_error_later_ones_are_not():
         assert False, "no BrokenPipeError"
     except BrokenPipeError:
         pass
+
+
+def test_video_dts_is_kept_increasing(caplog):
+    """A muxer refuses a packet whose dts does not increase, and the packet is lost. Quick Sync with
+    B-frames makes such packets from a camera's uneven frame times: the dts is moved, like ffmpeg does."""
+    caplog.set_level(logging.DEBUG)
+    avwriter.AVWriter._dts_warned.discard("h264_test")
+    vs, other = object(), object()
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)
+    w.first_packet_sent, w.open_failed, w.timeout, w.v_stream = True, None, None, vs
+    w._last_v_dts, w._dts_fixed, w.v_encoder, w.container = None, 0, "h264_test", Container(None)
+    P = lambda pts, dts, stream=vs: SimpleNamespace(pts=pts, dts=dts, stream=stream)
+    for p in (P(0, -9000), P(27000, 0), P(9000, 9000), P(18000, 18000),
+              P(54000, 12000),            # dts behind the previous one: moved, its pts is still ahead
+              P(18000, 18000),            # equal to the dts before that: moved, and the pts with it
+              P(5, 5, other),             # audio: not touched
+              P(36000, 36000), P(45000, None)):
+        w._write(p)
+    video = [(p.pts, p.dts) for p in w.container.muxed if p.stream is vs]
+    assert video == [(0, -9000), (27000, 0), (9000, 9000), (18000, 18000), (54000, 18001), (18002, 18002),
+                     (36000, 36000), (45000, None)]
+    assert [(p.pts, p.dts) for p in w.container.muxed if p.stream is other] == [(5, 5)]
+    assert w._dts_fixed == 2
+    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warns) == 1 and "h264_test" in warns[0] and "12000 after 18000" in warns[0] and "-bf 0" in warns[0]
+
+    w2 = avwriter.AVWriter.__new__(avwriter.AVWriter)      # the next segment's writer: no second warning
+    w2.first_packet_sent, w2.open_failed, w2.timeout, w2.v_stream = True, None, None, vs
+    w2._last_v_dts, w2._dts_fixed, w2.v_encoder, w2.container = None, 0, "h264_test", Container(None)
+    for p in (P(0, 0), P(9000, 0)):
+        w2._write(p)
+    assert w2._dts_fixed == 1 and len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1

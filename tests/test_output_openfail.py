@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,10 +59,12 @@ def test_failed_open_is_remembered_and_close_skips_the_flush():
     w = avwriter.AVWriter.__new__(avwriter.AVWriter)
     w.first_packet_sent, w.open_failed, w.timeout, w.run_flag = False, None, None, True
     w.v_frames, w.a_frames, w.v_stream, w.a_stream, w._held_audio = 5, 3, object(), object(), ["a"]
+    w._last_v_dts, w._dts_fixed = None, 0
     w.container = Container(OSError(28, "No space left on device"))
+    packet = SimpleNamespace(stream=w.v_stream, pts=0, dts=0)
     for _ in range(3):
         with pytest.raises(avwriter.OutputOpenError, match="No space left"):
-            w._write("p")
+            w._write(packet)
     assert w.container.muxed == 1                   # only the first attempt reached the muxer
     c = w.container
     w.close()                                       # would call v_stream.encode() (an object()) if it flushed

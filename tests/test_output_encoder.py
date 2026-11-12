@@ -109,9 +109,9 @@ SCRIPT = textwrap.dedent("""
 
 
 def test_failed_encoder_opens_never_crash(tmp_path):
-    env = dict(os.environ, PYTHONPATH=ROOT)
+    env = dict(os.environ, PYTHONPATH=ROOT, PYTHONIOENCODING="utf-8")     # not the ANSI code page (cp949, ...)
     out = subprocess.run([sys.executable, "-c", SCRIPT, str(tmp_path)], cwd=ROOT, env=env,
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, encoding="utf-8", errors="replace", timeout=120)
     assert out.returncode == 0, f"exit {out.returncode}\n{out.stdout}\n{out.stderr}"
     assert "video refused 5" in out.stdout and "does not open at 320x180" in out.stdout, out.stdout
     assert "audio track None video frames 25" in out.stdout, out.stdout
@@ -170,3 +170,54 @@ def test_h264_mf_opens_for_a_real_recording(tmp_path, caplog, monkeypatch):
     with av.open(str(out)) as c:
         assert c.streams.video[0].codec_context.name == "h264"
         assert sum(1 for _ in c.decode(video=0)) == 50
+
+
+# ---------------------------------------------------------------- dts
+def test_quick_sync_gets_no_b_frames_unless_asked(tmp_path, monkeypatch):
+    """Quick Sync reorders by default and computes dts from pts and the nominal frame rate; with a camera's
+    real frame times that dts runs backwards (Intel UHD 620: h264_qsv and hevc_qsv, not with -bf 0)."""
+    if "h264_qsv" not in av.codecs_available:
+        pytest.skip("no h264_qsv in this FFmpeg build")
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    monkeypatch.setattr(avwriter.EncoderManager, "_perform_hw_test", lambda self, *a: "h264_qsv")
+
+    def options(**enc):
+        w = avwriter.AVWriter("qsv", path=str(tmp_path / "q.mp4"), width=320, height=180, fps=10,
+                              enc_v_opts=enc, audio_enable=False)
+        try:
+            return w.v_encoder, dict(w.v_stream.codec_context.options)
+        finally:
+            w.open_failed = "not opened in this test"         # nothing to flush
+            w.close()
+
+    assert options() == ("h264_qsv", {"bf": "0"})
+    assert options(bf="2")[1]["bf"] == "2"                    # the user's choice stays
+
+
+def test_a_dts_that_does_not_increase_costs_no_frame(tmp_path, caplog):
+    """The mp4 muxer answers EINVAL to such a packet; the writer moves the dts instead of losing the frame."""
+    caplog.set_level(logging.WARNING)
+    avwriter.AVWriter._dts_warned.discard("libx264")
+    out = tmp_path / "d.mp4"
+    w = avwriter.AVWriter(None, path=str(out), width=320, height=180, fps=25, encoder="libx264",
+                          enc_v_opts={"preset": "ultrafast", "bf": "0", "tune": "zerolatency"}, audio_enable=False)
+    real, seen = w._write, []
+
+    def write(packet):                                        # an encoder whose dts stands still now and then
+        if packet.stream is w.v_stream:
+            seen.append(packet.dts)
+            if len(seen) in (10, 30):
+                packet.dts = seen[-2]
+        real(packet)
+
+    w._write = write
+    for f in frames(50):
+        w.write_video(f)
+    w.close()
+    assert w._dts_fixed == 2
+    with av.open(str(out)) as c:
+        pk = [p for p in c.demux(video=0) if p.dts is not None]
+        assert len(pk) == 50 and all(b.dts > a.dts for a, b in zip(pk, pk[1:]))
+    with av.open(str(out)) as c:
+        assert sum(1 for _ in c.decode(video=0)) == 50
+    assert len([r for r in caplog.records if "does not increase" in r.getMessage()]) == 1

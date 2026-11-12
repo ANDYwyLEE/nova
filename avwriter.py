@@ -481,6 +481,8 @@ class AVWriter:
         self.v_frames = 0
         self.a_frames = 0
         self.last_v_pts = -1
+        self._last_v_dts = None         # dts of the last video packet handed to the muxer
+        self._dts_fixed = 0             # video packets whose dts had to be moved (see _monotonic)
         self.last_a_end = 0
         self.a_time_base = None
         self.silence = False
@@ -640,6 +642,11 @@ class AVWriter:
             final_v_opts[k] = v
         if c_name == "libx265" and 'x265-params' not in final_v_opts:
             final_v_opts['x265-params'] = 'log-level=warning'     # x265 is very chatty at INFO
+        if c_name.endswith("_qsv") and not any(k in final_v_opts for k in ('bf', 'max_b_frames')):
+            # Quick Sync uses B-frames by default and derives each packet's dts from its pts and the nominal
+            # frame rate. Frames keep the camera's real times here, so that dts runs backwards whenever two
+            # frames come closer together than nominal or one is late (Intel UHD 620: 2 to 26 of 400 packets).
+            final_v_opts['bf'] = '0'
         if c_name.endswith("_mf"):
             final_v_opts = _mf_opts(c_name, final_v_opts)
             if not any(k in final_v_opts for k in ('b', 'bit_rate')):
@@ -762,14 +769,41 @@ class AVWriter:
                     continue
             self._write(packet)
 
+    _dts_warned = set()             # encoders whose dts has been reported (once per process)
+
+    def _monotonic(self, packet):
+        """Keep the video dts increasing. A muxer refuses a packet whose dts does not ("non monotonically
+        increasing dts", EINVAL): the packet is lost, and with it every picture that refers to it. An
+        encoder that derives dts from pts and the nominal frame rate (Quick Sync with B-frames) makes such
+        packets out of a camera's real frame times. Like the ffmpeg program: move the dts just past the
+        previous one, and the pts with it where it would fall behind."""
+        if self.v_stream is None or packet.stream is not self.v_stream:
+            return
+        dts, last = packet.dts, self._last_v_dts
+        if dts is None:
+            return
+        if last is not None and dts <= last:
+            new = last + 1
+            if not self._dts_fixed and self.v_encoder not in AVWriter._dts_warned:
+                AVWriter._dts_warned.add(self.v_encoder)
+                logging.warning(f"[AVWriter] {self.v_encoder} gave a dts that does not increase ({dts} after {last}); "
+                                f"moved to {new}. With B-frames and a camera's uneven frame times, try -bf 0")
+            self._dts_fixed += 1
+            if packet.pts is not None and packet.pts < new:
+                packet.pts = new
+            packet.dts = dts = new
+        self._last_v_dts = dts
+
     def _write(self, packet):
         if self.first_packet_sent:
+            self._monotonic(packet)
             self.container.mux(packet)
             return
         if self.open_failed:
             # PyAV would run avformat_write_header() a second time on a context whose first header
             # write failed (ENOSPC on a new segment, a publish refused after connect): a segfault
             self._refuse()
+        self._monotonic(packet)
         try:
             self.container.mux(packet)     # the first packet opens the output: connect, handshake, header
         except av.error.ExitError as e:
@@ -1033,7 +1067,8 @@ class AVWriter:
             try: self.container.close()
             except Exception as e: logging.debug(f"[AVWriter] container close: {e}")
             self._release()
-        logging.debug(f"[AVWriter] closed ({self.v_frames} video / {self.a_frames} audio frames)")
+        fixed = f", {self._dts_fixed} dts moved" if self._dts_fixed else ""
+        logging.debug(f"[AVWriter] closed ({self.v_frames} video / {self.a_frames} audio frames{fixed})")
 
     def _release(self):
         """Free the codecs, filter graphs and resamplers now, not hours later.  PyAV's AudioResampler
