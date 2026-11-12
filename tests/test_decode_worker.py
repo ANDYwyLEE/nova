@@ -516,10 +516,12 @@ def test_audio_that_stops_while_video_flows_reconnects_when_it_is_used(qapp, tmp
     assert videoworker._audio_stall_s() == videoworker.AUDIO_STALL_S
 
 
-def test_a_stream_without_audio_never_waits_for_it(qapp, clip, monkeypatch, caplog):
+def test_a_stream_without_audio_never_waits_for_it(qapp, tmp_path, monkeypatch, caplog):
+    silent = _write_clip(tmp_path / "silent.nut", frames=50)                # video alone
     monkeypatch.setenv("NOVA_AUDIO_STALL", "0.01")
     caplog.set_level(logging.DEBUG)
-    w = _worker(str(clip)); w.rec_on = True
-    with av.open(str(clip)) as c:
+    w = _worker(str(silent)); w.rec_on = True
+    with av.open(str(silent)) as c:
+        assert not c.streams.audio
         w._stream_loop(SlowContainer(c, 0.005), "silent")
     assert not any("no audio for" in r.getMessage() for r in caplog.records)
