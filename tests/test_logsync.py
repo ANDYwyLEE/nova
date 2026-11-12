@@ -1,6 +1,7 @@
 """The masking log filter and the excepthooks: no password reaches a log line or a traceback; FFmpeg's
 log threshold follows -l and known noise is demoted or dropped."""
 import logging
+import os
 import sys
 import threading
 
@@ -145,3 +146,20 @@ def test_av_quiet_restores_the_threshold(root_handler):
     with logsync.av_quiet():
         pass
     assert av.logging.get_level() is None
+
+
+def test_libva_s_own_messages_follow_the_level(monkeypatch):
+    """Quick Sync on Linux runs on libva, which prints four "libva info:" lines to stderr at every device
+    open: 36 raw lines in the log of one recording camera, whatever -l said."""
+    monkeypatch.delenv("LIBVA_MESSAGING_LEVEL", raising=False)
+    monkeypatch.setattr(logsync, "_libva_level_ours", False)
+    for level, want in ((logsync.TRACE_LEVEL, "2"), (logging.DEBUG, "2"), (logsync.VERBOSE_LEVEL, "1"),
+                        (logging.INFO, "1"), (logging.ERROR, "1"), (logging.CRITICAL, "0")):
+        logsync.libva_level(level)
+        assert os.environ["LIBVA_MESSAGING_LEVEL"] == want, level
+    logsync.libva_level(logging.CRITICAL, raw=True)              # NOVA_AV_LOG: everything
+    assert os.environ["LIBVA_MESSAGING_LEVEL"] == "2"
+    monkeypatch.setattr(logsync, "_libva_level_ours", False)     # set by the user before Nova started
+    monkeypatch.setenv("LIBVA_MESSAGING_LEVEL", "2")
+    logsync.libva_level(logging.CRITICAL)
+    assert os.environ["LIBVA_MESSAGING_LEVEL"] == "2"

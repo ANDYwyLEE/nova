@@ -188,6 +188,21 @@ def av_quiet(level=av.logging.FATAL):
         av.logging.set_level(old)
 
 
+_libva_level_ours = False
+
+
+def libva_level(level, raw=False):
+    """libva's own messages follow -l too. VAAPI, and Quick Sync on Linux, which runs on it, print
+    "libva info: VA-API version ..." and three more lines straight to stderr at every device open
+    (36 lines for one recording camera): LIBVA_MESSAGING_LEVEL is 2 (info) from DEBUG down and with
+    NOVA_AV_LOG, 1 (errors) up to ERROR, 0 at CRITICAL.  A value the user set stays."""
+    global _libva_level_ours
+    if "LIBVA_MESSAGING_LEVEL" in os.environ and not _libva_level_ours:
+        return
+    os.environ["LIBVA_MESSAGING_LEVEL"] = "2" if raw or level <= logging.DEBUG else "1" if level < logging.CRITICAL else "0"
+    _libva_level_ours = True
+
+
 def setup_av_logging():
     """FFmpeg's log follows -l: the threshold from AV_THRESHOLDS, the libav logger at the Nova level
     (PyAV pins it to WARNING at import), AVNoiseFilter and CredentialMaskFilter on every root
@@ -208,6 +223,7 @@ def setup_av_logging():
             handler.addFilter(AVNoiseFilter())
         handler.addFilter(CredentialMaskFilter())     # masks every record, PyAV's included
     av.logging.set_level(threshold)
+    libva_level(level, bool(raw))
     libav = logging.getLogger("libav")
     libav.setLevel(1 if raw else level)
     libav.propagate = True
