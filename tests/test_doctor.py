@@ -71,6 +71,26 @@ def test_launcher_verb(monkeypatch, capsys, tmp_path):
     assert "Nova doctor" in out and "not found" in out and "n/a (test)" in out
 
 
+def test_doctor_runs_as_a_camera_would(tmp_path, monkeypatch):
+    """`nova doctor` looked at the machine with its own environment, not the cameras': with a PyAV built
+    against a private FFmpeg (LD_LIBRARY_PATH in [env]) or GALLIUM_DRIVER = d3d12 under WSL it reported
+    a wheel-less PyAV and llvmpipe for cameras that ran on the GPU."""
+    ini = tmp_path / "cameras.ini"
+    ini.write_text("[defaults]\nopts = -l ERROR\n\n[a]\nurl = rtsp://10.0.0.1/s\n")
+    monkeypatch.setattr(cams, "python_exe", lambda defaults: sys.executable)
+    assert cams.doctor_child(str(ini), {}) is None                       # nothing to apply: this process will do
+    assert cams.doctor_child(str(tmp_path / "none.ini"), {}) is None
+    ini.write_text("[defaults]\nopts = -l ERROR\n\n[env]\nGALLIUM_DRIVER = d3d12\n\n[a]\nurl = rtsp://10.0.0.1/s\n")
+    argv, env = cams.doctor_child(str(ini), {})
+    assert argv[0] == sys.executable and argv[1].endswith("doctor.py") and argv[-2:] == ["-c", str(ini)]
+    assert env["GALLIUM_DRIVER"] == "d3d12"
+    assert cams.doctor_child(str(ini), {"GALLIUM_DRIVER": "d3d12"}) is None       # already there
+    monkeypatch.setattr(cams, "python_exe", lambda defaults: os.path.join(os.sep, "opt", "py", "python"))
+    assert cams.doctor_child(str(ini), {"GALLIUM_DRIVER": "d3d12"})[0][0].endswith("python")   # another Python
+    ini.write_text("[a]\nurl = rtsp://h/x\nenabled = nope\n")                    # does not parse: doctor reports it
+    assert cams.doctor_child(str(ini), {}) is None
+
+
 def test_xmeye_cameras_need_python_dvr(tmp_path, monkeypatch):
     p = tmp_path / "cameras.ini"
     p.write_text(INI + "\n[gate]\nurl = xmeye://admin:S3cretC@10.0.0.3\n")
@@ -107,6 +127,20 @@ def test_opengl_in_windows_session_0_is_not_blamed_on_the_driver(monkeypatch, tm
     out = doctor.report(config=str(tmp_path / "none.ini"))
     assert "session 0" in out and "from the desktop" in out
     assert "--opengl cannot work here" not in out and "install the GPU driver" not in out
+
+
+def test_software_opengl_under_wsl_names_the_direct3d_driver(monkeypatch, tmp_path):
+    """A fresh Ubuntu 26.04 under WSL2 drew Nova's windows with llvmpipe, 38 % of a core where Mesa's
+    Direct3D 12 driver takes 15: Mesa has the driver and did not choose it."""
+    line = "xcb: Mesa / llvmpipe (LLVM 21.1.8, 256 bits) / 4.5 (Core Profile) Mesa 26.0.8 (context 4.5)"
+    monkeypatch.setattr(doctor, "gl_line", lambda python=None: line)
+    monkeypatch.setattr(doctor, "windows_service_session", lambda: False)
+    monkeypatch.setattr(doctor, "WSL", True)
+    monkeypatch.setattr(doctor.os.path, "exists", lambda p, real=os.path.exists: True if p == "/dev/dxg" else real(p))
+    assert "GALLIUM_DRIVER = d3d12" in doctor.report(config=str(tmp_path / "none.ini"))
+    monkeypatch.setattr(doctor, "WSL", False)
+    out = doctor.report(config=str(tmp_path / "none.ini"))
+    assert "GALLIUM_DRIVER" not in out and "rendered in software (no GPU driver in use)" in out
 
 
 def test_no_opengl_context_says_windows_need_one(monkeypatch, tmp_path):

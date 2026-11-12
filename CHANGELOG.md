@@ -16,6 +16,8 @@ An AMD GPU on Linux had never run Nova. It has now, on a second machine: a Ryzen
 
 Mesa's AMD encoder writes 9.7 Mbit/s at its default quality where Intel's writes 1.8; `--ffmpeg "-b:v 2M"` brings it to 1.9. `av1_nvenc` records on both NVIDIA cards tried (RTX 4090 and 4060).
 
+Nova also ran under WSL2 for the first time (a fresh Ubuntu 26.04 instance on the Windows 11 laptop of the last round): the guide's lines, a recording, the launcher, windows through WSLg, the tests. OpenGL there is Mesa's software renderer until `GALLIUM_DRIVER = d3d12` is set (an `--opengl` window then took 15 % of a core instead of 38 %); `nova doctor` says so.
+
 The main machine moved from NVIDIA driver 595 to 615.71.09 (the open kernel modules): `nova doctor`, the tests, a wall of 13 windows on OpenGL, a native Wayland window in a nested sway, and headless recording through `h264_nvenc` and `hevc_nvenc` at 1.6 to 2.9 % of a core per camera. The custom build was redone with the newest NVENC headers, which need driver 610: all three NVENC encoders record.
 
 Fixed:
@@ -25,6 +27,8 @@ Fixed:
 - **`nova record --help` started every camera.** Help asked after a command was passed on to each camera, which printed the option list into its log and exited; the launcher reported fourteen cameras that `exited right after start`. It prints the launcher's usage now, for every command.
 - **The custom-FFmpeg recipe left the wheel in place.** In a venv made by the install guide, `pip install --no-binary av av` answers `Requirement already satisfied`, and the build looked done while `--accel vaapi` still was not there. The recipes say `--force-reinstall`, and their last line prints the hardware devices, which tell a build from the wheel (the library versions are the same).
 - **The NVENC headers of the recipe were pinned to an old release** because the machine it was written on had driver 595. The doc now lists the release for each driver range, from each release's own README, with 13.1 for driver 610 and later.
+- **A camera started by the launcher died when the runtime directory was another user's.** `su`, `sudo -u` and `runuser` keep `XDG_RUNTIME_DIR`, and the camera stopped at `PermissionError: '/run/user/0/nova'` when it made its control socket there (met under WSL, as root's directory). The launcher now takes that directory only when it is writable, and a camera that cannot make its socket runs without the control channel instead of ending.
+- **`nova doctor` did not see what the cameras see.** It ran with its own environment, not with the `[env]` section of `cameras.ini` that every camera gets: with a PyAV built against a private FFmpeg (`LD_LIBRARY_PATH` there) it stopped at `Error: av is required`, and under WSL it reported the software renderer after `GALLIUM_DRIVER = d3d12` had been set for the cameras. It now runs itself with that environment and with the Python of `[defaults]`.
 - **`nova doctor` said nothing about a GPU the user may not open.** Over ssh, in a service or in a container, `/dev/dri/renderD*` belongs to the group `render`, and without it VAAPI says only `No VA display found` and Quick Sync `Unknown error occurred`. Doctor now names the node, the user and the group to join; it also names a Qt module that does not load and the library it misses, and it checks the VAAPI node Nova would pick by itself.
 
 ## 2026-11-12 — Quick Sync on real Intel GPUs (Windows and Linux), two monitors on Windows

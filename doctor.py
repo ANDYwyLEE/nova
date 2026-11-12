@@ -678,7 +678,12 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                          "(on Windows: no GPU driver, Qt fell back to its software opengl32sw.dll), and an --opengl "
                          "window closes at start; leave --opengl out of opts, or install the GPU driver"))
     elif re.search(r"llvmpipe|softpipe|swrast|Software Rasterizer", gl, re.I):
-        out.append(("⚠", "OpenGL is rendered in software (no GPU driver in use): --opengl will cost CPU; check the driver"))
+        if WSL and os.path.exists("/dev/dxg"):
+            # Mesa has a Direct3D 12 driver for WSL's GPU and does not always choose it by itself
+            out.append(("⚠", "OpenGL is rendered in software: under WSL, Mesa draws on the GPU when told to; "
+                             "put GALLIUM_DRIVER = d3d12 into [env] of cameras.ini (or export it) and run nova doctor again"))
+        else:
+            out.append(("⚠", "OpenGL is rendered in software (no GPU driver in use): --opengl will cost CPU; check the driver"))
     elif gl.startswith("n/a") or "no OpenGL" in gl:
         # both renderers draw into a QOpenGLWindow (QPainter on OpenGL without --opengl)
         out.append(("ℹ", "no OpenGL context here: Nova windows need one with or without --opengl; "
@@ -795,6 +800,8 @@ def main(argv=None):
         argv = argv[2:]
     if argv:
         sys.exit("usage: python doctor.py [-c cameras.ini] [--gl]")
+    import util
+    util.utf8_stdio()                 # check marks and emoji, also into a pipe or a Windows console
     sys.stdout.write(report(config))
     return 0
 

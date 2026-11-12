@@ -130,3 +130,19 @@ def test_drop_of_a_socket_already_deleted(app):
     shiboken6.delete(s)
     srv._drop(s)
     assert s not in srv._buffers
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a named pipe needs no directory")
+def test_a_runtime_directory_of_another_user_does_not_end_the_camera(app, tmp_path, monkeypatch, caplog):
+    """`su`, `sudo -u` and `runuser` keep XDG_RUNTIME_DIR, another user's /run/user/N: the camera died at
+    start on PermissionError when it made its socket there (seen as root's directory under WSL)."""
+    import logging
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "not-there"))
+    a = cams.control_address("cam1")                      # the launcher looks elsewhere ...
+    assert not a.startswith(str(tmp_path)) and f"nova-{os.getuid()}" in a
+    blocker = tmp_path / "file"
+    blocker.write_text("")                                # ... and a camera that cannot make the directory runs on
+    s = ControlServer(str(blocker / "nova" / "cam1.sock"), "cam1", Core(), View(), lambda: None)
+    with caplog.at_level(logging.WARNING):
+        assert s.listen() is False
+    assert "no control channel" in caplog.text

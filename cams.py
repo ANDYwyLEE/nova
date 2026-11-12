@@ -300,6 +300,25 @@ def launch_argv(cam, defaults, extra, config, control, record=False, layout=None
     return argv + layout_flags(layout, cam) + list(extra)
 
 
+def doctor_child(config, environ=None):
+    """(argv, env) to run `nova doctor` again as a camera would run, or None when this process already is
+    that: the Python of [defaults] and the [env] section of cameras.ini. A PyAV built against a private
+    FFmpeg is found through LD_LIBRARY_PATH there, Mesa's driver under WSL through GALLIUM_DRIVER: the
+    report said "PyAV not importable" and "llvmpipe" about cameras that ran fine."""
+    environ = os.environ if environ is None else environ
+    if not os.path.exists(config):
+        return None
+    try:
+        defaults, env, _ = load(config, quiet=True)
+    except SystemExit:                               # a cameras.ini that does not parse: doctor says what it finds
+        return None
+    python = python_exe(defaults)
+    differs = any(environ.get(k) != str(v) for k, v in env.items())
+    if not differs and os.path.abspath(python) == os.path.abspath(sys.executable):
+        return None
+    return [python, os.path.join(HERE, "doctor.py"), "-c", config], child_env(env)      # doctor.py itself: no way back here
+
+
 def has_flag(argv, flags):
     return any(a in flags or a.split("=", 1)[0] in flags for a in argv[3:])   # skip python -u nova.py
 
@@ -459,7 +478,11 @@ def control_address(cid):
     if WINDOWS:
         user = re.sub(r"\W", "_", os.environ.get("USERNAME", "user"))
         return f"nova-{user}-{tag}"
-    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(tempfile.gettempdir(), f"nova-{os.getuid()}")
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if not base or not os.access(base, os.W_OK | os.X_OK):
+        # unset (ssh without a session), or another user's, kept by `su`, `sudo -u` and `runuser`:
+        # the camera died on PermissionError when it made its socket there
+        base = os.path.join(tempfile.gettempdir(), f"nova-{os.getuid()}")
     path = os.path.join(base, "nova", f"{tag}.sock")
     if len(path.encode()) > 100:                    # sun_path holds 104 bytes on macOS, 108 on Linux
         path = os.path.join("/tmp", f"nova-{os.getuid()}", f"{tag[-40:]}.sock")
@@ -1023,6 +1046,9 @@ def main(argv=None):
         print(USAGE.rstrip()); return 0
     cmd, tokens = argv[0], argv[1:]
     if cmd == "doctor":
+        child = doctor_child(config)
+        if child:                                    # the machine as the cameras see it: [env], [defaults] python
+            return subprocess.call(child[0], env=child[1])
         import doctor                                # works without cameras.ini, so before load()
         sys.stdout.write(doctor.report(config if config != INI or os.path.exists(INI) else INI))
         return 0

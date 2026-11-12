@@ -133,7 +133,7 @@ def _encoder_lock_path():
     another local user, and every probe then waited the lock's 15 s and ended at libx264.
     None: no private place for it (probe without the lock)."""
     rt = os.environ.get("XDG_RUNTIME_DIR")
-    if rt and os.path.isdir(rt):
+    if rt and os.path.isdir(rt) and os.access(rt, os.W_OK | os.X_OK):      # not another user's, kept by su/sudo -u
         return os.path.join(rt, "nova_encoder_init.lock")      # 0700, the user's own (systemd)
     base = tempfile.gettempdir()
     if not hasattr(os, "getuid"):

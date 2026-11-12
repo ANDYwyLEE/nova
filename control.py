@@ -48,7 +48,11 @@ class ControlServer(QObject):
                             f"this one has no control channel")
             return False
         if os.path.isabs(self.address):
-            os.makedirs(os.path.dirname(self.address), mode=0o700, exist_ok=True)
+            try:
+                os.makedirs(os.path.dirname(self.address), mode=0o700, exist_ok=True)
+            except OSError as e:                         # the camera runs; `nova stop` falls back to a signal
+                logging.warning(f"[Control] no control channel: cannot make {os.path.dirname(self.address)} ({e})")
+                return False
         QLocalServer.removeServer(self.address)          # a socket left by a crashed run
         if not self.server.listen(self.address):
             logging.warning(f"[Control] cannot listen on {self.address}: {self.server.errorString()}")
