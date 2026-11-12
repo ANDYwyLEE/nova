@@ -224,6 +224,7 @@ class EncoderManager:
         logging.debug(f"[EncoderManager] OS:{get_os_type()} accel:{accel} source:{source_codec} allowed:{allowed}")
         test_opts = {k: v for k, v in enc_opts.items() if k not in NON_CODEC_OPTS}
         skipped = self._skipped()
+        asked = None                    # why the encoder the user asked for (-e) did not open
         for encoder_name in self._candidates(accel, user_encoder, source_codec, allowed):
             if encoder_name in skipped:
                 logging.debug(f"[EncoderManager] skipping {encoder_name}: failed at a real open "
@@ -232,8 +233,13 @@ class EncoderManager:
             err = self._try_open(encoder_name, test_opts)
             if err is None:
                 logging.verbose(f"[EncoderManager] 🚀 using {encoder_name}")
+                if asked is not None:
+                    # a silent libx264 in place of the hardware encoder asked for costs ten times the CPU
+                    logging.warning(f"[EncoderManager] ⚠️ -e {user_encoder} does not open here ({asked}); using {encoder_name}")
                 return encoder_name
             logging.debug(f"[EncoderManager] ❌ {encoder_name}: {err}")
+            if encoder_name == user_encoder and asked is None:
+                asked = " ".join(str(err).split())[:140]
             if test_opts and self._try_open(encoder_name, {}) is None:
                 # the encoder itself works: the user's options are what it rejects
                 logging.warning(f"[EncoderManager] ⚠️ {encoder_name} rejects your --ffmpeg options {test_opts}: {err}. "

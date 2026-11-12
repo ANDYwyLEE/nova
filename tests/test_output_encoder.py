@@ -221,3 +221,18 @@ def test_a_dts_that_does_not_increase_costs_no_frame(tmp_path, caplog):
     with av.open(str(out)) as c:
         assert sum(1 for _ in c.decode(video=0)) == 50
     assert len([r for r in caplog.records if "does not increase" in r.getMessage()]) == 1
+
+
+def test_an_encoder_asked_for_that_does_not_open_is_named(monkeypatch, caplog):
+    """`-e h264_vaapi` on a build that cannot feed it, `-e hevc_nvenc` without the driver: the recording went
+    to another encoder (in the end libx264, at ten times the CPU) with nothing above DEBUG to say so."""
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    mgr = avwriter.EncoderManager()
+    assert mgr.get_encoder(None, "h264_nothere", "h264", {}, ("h264",)) == "libx264"
+    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warns) == 1 and "-e h264_nothere does not open here" in warns[0] and "using libx264" in warns[0]
+    caplog.clear()
+    assert mgr.get_encoder(None, "h264_nothere", "h264", {}, ("h264",)) == "libx264"     # cached: said once
+    assert mgr.get_encoder(None, "libx264", "h264", {}, ("h264",)) == "libx264"          # the one asked for: nothing
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
