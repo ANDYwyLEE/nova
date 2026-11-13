@@ -72,3 +72,37 @@ def test_headless_recording(test_clip, tmp_path):
     assert max(counts) >= 25, (counts, out)
     assert "Traceback" not in out, out
     assert "[AVRecorder] saved" in out, out
+
+
+def test_frame_threads_survive_the_end_of_a_connection(test_clip, tmp_path):
+    """--ffmpeg "-thread_type frame": PyAV frees a decoder while it holds the interpreter lock, FFmpeg
+    waits there for its frame threads, and a thread with a line for the log waits for that lock: the
+    process stood still at the first or second end of a connection, deaf to SIGINT.  A file is a
+    connection that ends at once, so a few seconds are several of them (_VideoDecode.release)."""
+    log = tmp_path / "out.log"
+    cmd = [sys.executable, "-u", os.path.join(ROOT, "nova.py"), "--headless", "-i", str(test_clip), "-n", "threads",
+           "--ffmpeg", "-thread_type frame -threads 4", "-l", "INFO"]
+    kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {}
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONPATH=ROOT)
+
+    def ends():
+        return log.read_text(encoding="utf-8", errors="replace").count("stream ended")
+
+    with open(log, "w") as f:
+        p = subprocess.Popen(cmd, cwd=tmp_path, env=env, stdout=f, stderr=subprocess.STDOUT, **kw)
+    try:
+        deadline = time.time() + 60
+        while time.time() < deadline and p.poll() is None and ends() < 4:
+            time.sleep(0.5)
+        assert p.poll() is None, "nova.py exited early:\n" + log.read_text(errors="replace")
+        assert ends() >= 4, "stood still after a connection ended:\n" + log.read_text(errors="replace")
+        p.send_signal(signal.CTRL_BREAK_EVENT if WINDOWS else signal.SIGINT)
+        try:
+            p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            assert WINDOWS, "nova.py did not quit on SIGINT:\n" + log.read_text(errors="replace")
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    assert "Traceback" not in log.read_text(errors="replace")

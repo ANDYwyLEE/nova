@@ -612,3 +612,136 @@ def test_audio_that_stops_when_the_camera_s_clock_starts_again_is_fetched_within
     assert not play(at=30, back=1.0)[1]                                    # a second back is no new clock: the usual wait
     monkeypatch.setenv("NOVA_AUDIO_STALL", "0")                            # switched off stays switched off
     assert not play(at=30, back=2 ** 30 / 90000)[1]
+
+
+# ---------------------------------------------------------------- a CPU that one thread is not enough for
+def _feed(load, seconds, worked, every=None):
+    """Video packets for `seconds`, each taking `worked` s, one every `every` s (None: as fast as they
+    are done, which is what a thread that is behind sees).  The first verdict and when it came."""
+    t = 0.0
+    while t < seconds:
+        verdict = load.add(t, worked, 1)
+        if verdict is not None:
+            return verdict, t + worked
+        t += max(worked, every or 0.0)
+    return None, t
+
+
+def test_load_tells_a_thread_that_falls_behind_from_one_that_is_merely_busy():
+    # an Atom D525 on a 1080p camera at 25 fps: 58 ms a picture, 17 a second come out
+    verdict, when = _feed(videoworker._Load(25), 5, 0.058)
+    assert verdict == pytest.approx(0.058, rel=0.02) and 2.0 <= when < 2.2
+    # the same camera on a machine that decodes it in 5 ms: the thread waits most of the time
+    assert _feed(videoworker._Load(25), 10, 0.005, every=0.04) == (None, pytest.approx(10, abs=0.1))
+    # a file, or the burst a camera opens with: busy all the time, and far ahead of the frame rate
+    assert _feed(videoworker._Load(25), 10, 0.004)[0] is None
+    # a 10 fps camera whose pictures take 85 ms: it keeps up, with little to spare; at 95 ms it is at the limit
+    assert _feed(videoworker._Load(10), 10, 0.085, every=0.1)[0] is None
+    assert _feed(videoworker._Load(10), 10, 0.095, every=0.1)[0] == pytest.approx(0.095, rel=0.02)
+
+
+def test_load_judges_the_stretch_a_dropped_connection_cut_short():
+    load = videoworker._Load(25)
+    assert _feed(load, 1.5, 0.058)[0] is None            # the camera ended the connection after 1.5 s
+    assert load.end(1.5) == pytest.approx(0.058, rel=0.05)
+    assert load.end(1.6) is None                          # judged once
+    brief = videoworker._Load(25)
+    _feed(brief, 0.5, 0.058)
+    assert brief.end(0.5) is None                         # too short to say anything
+    assert videoworker._Load(25).end(3.0) is None         # no picture at all: not this question
+
+
+def test_a_decoder_that_falls_behind_gets_frame_threads_and_says_so(qapp, monkeypatch, caplog):
+    monkeypatch.setattr(videoworker.os, "cpu_count", lambda: 4)
+    caplog.set_level(logging.WARNING)
+    w = _worker()
+    assert w._slow(None, 25) is None and w._sw_threads == 0
+    said = w._slow(0.058, 25)        # 1.45 threads' worth of work, and half as much again
+    assert w._sw_threads == 3 and "58 ms" in said and "every 40 ms" in said and "gets 3 threads" in said
+    assert "gets 4 threads" in w._slow(0.045, 25) and w._sw_threads == 4       # then twice as many, up to the cores
+    assert w._slow(0.045, 25) is None and w._slow(0.045, 25) is None          # nothing left to add: one line, once
+    lines = [r.getMessage() for r in caplog.records if "does not keep up" in r.getMessage()]
+    assert len(lines) == 1 and "45 ms" in lines[0] and "on 4 threads" in lines[0], lines
+    assert "second (smaller) stream" in lines[0] and "--opengl" not in lines[0]     # headless: nothing is converted
+
+
+def test_threads_named_with_ffmpeg_are_left_as_they_are(qapp, monkeypatch, caplog):
+    monkeypatch.setattr(videoworker.os, "cpu_count", lambda: 8)
+    caplog.set_level(logging.WARNING)
+    w = _worker(headless=False)
+    w.dec_opts = {"threads": "2"}
+    assert w._slow(0.058, 25) is None and w._sw_threads == 0
+    lines = [r.getMessage() for r in caplog.records if "does not keep up" in r.getMessage()]
+    assert len(lines) == 1 and "--opengl" in lines[0] and " threads" not in lines[0].split("What needs less")[0]
+
+
+class RealTime(SlowContainer):
+    """demux() as a camera sends: packet k is there at k * delay, whether the reader was ready for it or not."""
+    def demux(self, *s):
+        t0 = time.monotonic()
+        for k, p in enumerate(self.c.demux(*s)):
+            wait = t0 + k * self.delay - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            yield p
+
+
+def test_a_connection_that_falls_behind_comes_back_with_frame_threads(qapp, tmp_path, monkeypatch, caplog):
+    """On an old CPU one thread could not decode a 1080p camera at 25 fps: the camera dropped packets and,
+    every few seconds, the connection, while three of four cores had nothing to do."""
+    clip = _write_clip(tmp_path / "busy.nut", frames=75)
+    monkeypatch.setattr(videoworker, "LOAD_JUDGE_S", 0.4)
+    monkeypatch.setattr(videoworker.os, "cpu_count", lambda: 4)
+    caplog.set_level(logging.INFO)
+    real = _VideoDecode.decode
+
+    def slow(self, packet):                  # 50 ms a picture, and the camera sends one every 40 ms
+        time.sleep(0.05)
+        return real(self, packet)
+
+    w = _worker(str(clip))
+    monkeypatch.setattr(_VideoDecode, "decode", slow)
+    with av.open(str(clip)) as c:
+        w._stream_loop(RealTime(c, 0.04), "busy")
+    said = [r.getMessage() for r in caplog.records]
+    assert w._sw_threads == 2, said
+    assert any("the decoder gets 2 threads from now on" in m and "reconnecting" in m for m in said), said
+    assert w._session_frames < 40            # it did not stay to the end of the clip
+
+    monkeypatch.setattr(_VideoDecode, "decode", real)
+    del caplog.records[:]
+    with av.open(str(clip)) as c:
+        w._stream_loop(RealTime(c, 0.04), "busy")
+    said = [r.getMessage() for r in caplog.records]
+    assert any("First frame (h264, SW, 2 threads)" in m for m in said), said
+    assert w._sw_threads == 2 and not any("threads from now on" in m for m in said), said
+
+
+def test_a_frame_threaded_decoder_is_drained_before_it_is_let_go(qapp, tmp_path):
+    """PyAV frees a decoder under the interpreter lock while FFmpeg waits for the frame threads: a thread
+    that still decodes and logs then stops the process for good.  release() leaves them without work."""
+    clip = _write_clip(tmp_path / "threads.nut", frames=50)
+    w = _worker(str(clip))
+    w._sw_threads = 4
+    with av.open(str(clip)) as c:
+        dec = _VideoDecode(w, c.streams.video[0])
+        dec.open()
+        assert dec.threads == 4 and dec.base.thread_type & videoworker.ThreadType.FRAME and dec.base.thread_count == 4
+        got = 0
+        for i, p in enumerate(c.demux(video=0)):
+            if p.dts is None or i >= 20:
+                break
+            got += len(dec.decode(p))
+        assert got < 20                                   # pictures are still inside the decoder's threads
+        dec.release()
+        with pytest.raises(av.error.EOFError):            # drained: it takes no more packets
+            dec.base.decode(p)
+        dec.release()                                     # and a second call is harmless
+
+
+def test_a_single_core_has_no_threads_to_add(qapp, monkeypatch, caplog):
+    monkeypatch.setattr(videoworker.os, "cpu_count", lambda: 1)
+    caplog.set_level(logging.WARNING)
+    w = _worker()
+    assert w._slow(0.058, 25) is None and w._sw_threads == 0          # no reconnect for nothing
+    assert sum("does not keep up" in r.getMessage() for r in caplog.records) == 1

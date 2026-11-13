@@ -3,6 +3,7 @@ decoder selection with software fallback and retry, reconnection, frames fanned 
 recorder and the streamer."""
 
 import os
+import math
 from urllib.parse import urlparse
 import socket
 import selectors
@@ -28,6 +29,7 @@ from dispframe import DisplayFrame, GL_DIRECT_FORMATS
 
 import av
 from av.codec.hwaccel import HWAccel, hwdevices_available
+from av.codec.context import ThreadType
 
 HWACCELS = [str(x) for x in hwdevices_available()]
 try:
@@ -72,6 +74,9 @@ GAP_SAID_S = 5.0            # picture or sound that comes back on its connection
 FIRST_PICTURE_S = 60.0      # no picture at all this long after connecting: reconnect
 GOP_UNKNOWN_S = 20.0        # keyframe interval assumed until two keyframes have been seen
 FPS_MAX = 120               # a larger "frame rate" is a clock rate (90000), not frames
+LOAD_JUDGE_S = 2.0          # the software decoder's thread is judged over stretches of this long ...
+LOAD_BUSY = 0.9             # ... and does not keep up when its pictures take this share of the time
+LOAD_THREADS_MAX = 16       # frame threads the software decoder gets at most (FFmpeg's limit for its own choice)
 RERESOLVE_AFTER = 3         # connection attempts without a picture before onvif:// etc. are resolved again
 RERESOLVE_MIN_S = 60.0
 
@@ -245,6 +250,43 @@ class _Reconnect(Exception):
     """Ends the current connection; the text says why."""
 
 
+class _Load:
+    """Does the connection's thread keep up with the camera?  It decodes a picture, converts it and hands
+    it on before it reads the next packet, so a thread that works nearly all the time while no more
+    pictures come out of it than the camera sends is falling behind: the camera's packets pile up, and
+    the camera drops some and then the connection.  (A file, or the burst a camera opens with, is read
+    faster than the frame rate: busy as well, and not behind.)"""
+
+    def __init__(self, fps):
+        self.fps = fps
+        self.t0 = None          # start of the stretch being judged
+        self.busy = 0.0         # seconds of it spent on video packets
+        self.pictures = 0
+
+    def add(self, now, worked, pictures):
+        """A video packet that arrived at `now` and took `worked` seconds.  Returns the seconds a picture
+        takes when the stretch that ends here was too much for the thread, else None."""
+        if self.t0 is None:
+            self.t0 = now
+        self.busy += worked
+        self.pictures += pictures
+        return self._judge(now + worked, LOAD_JUDGE_S)
+
+    def end(self, now):
+        """The same for the stretch the end of the connection cut short: an overloaded connection may not
+        live long enough for a whole one."""
+        return self._judge(now, LOAD_JUDGE_S / 2)
+
+    def _judge(self, now, least):
+        if self.t0 is None or now - self.t0 < least:
+            return None
+        span, busy, n = now - self.t0, self.busy, self.pictures
+        self.t0, self.busy, self.pictures = now, 0.0, 0
+        if n and busy >= LOAD_BUSY * span and n <= self.fps * span * 1.1:
+            return busy / n
+        return None
+
+
 class _VideoDecode:
     """The video decoder of one connection: hardware when it works, software otherwise.
 
@@ -274,6 +316,7 @@ class _VideoDecode:
         self.last_err = ""       # the last rejection, for the give-up message
         self.wait_kf = False     # the decoder (re)starts at the next keyframe
         self.headers = None      # parameter sets the decoder in use needs in its keyframes (else None)
+        self.threads = 0         # frame threads the worker gave the software decoder (0: FFmpeg's default)
         self.trial = None        # hardware decoder on trial, fed alongside the software one
         self.trial_name = ""
         self.trial_headers = None
@@ -294,6 +337,24 @@ class _VideoDecode:
                 return
             w._hw_failed(err, self.codec_name)
         self._use_sw()
+
+    def release(self):
+        """To be called when the connection is over, before its objects are let go.  PyAV frees a decoder
+        while it holds the interpreter lock, and FFmpeg waits there for the decoder's frame threads
+        (--ffmpeg "-thread_type frame"): a thread that is still decoding a picture and has a line for
+        the log waits for that same lock, and the process stands still for good, Ctrl-C and `nova stop`
+        included.  So the pictures in flight are decoded out first, with the lock released as in every
+        decode call; threads that have no work left say nothing when they are ended."""
+        seen = []
+        for ctx in (self.base, self.ctx, self.trial):
+            if ctx is None or any(ctx is c for c in seen):
+                continue
+            seen.append(ctx)
+            try:
+                if ctx.is_open and ctx.thread_type & ThreadType.FRAME:
+                    ctx.decode(None)
+            except Exception as e:
+                logging.debug(f"[VideoWorker] decoder not drained: {_short_err(e)}")
 
     def _use(self, ctx, is_hw, name):
         self.ctx, self.is_hw, self.name = ctx, is_hw, name
@@ -337,7 +398,14 @@ class _VideoDecode:
         else:
             opts = _dec_opts_for(b, self.w.dec_opts)
             b.options.update(opts)
-            logging.debug(f"[VideoWorker] software decoder {self.codec_name} options={b.options}")
+            if self.w._sw_threads:          # one thread was not enough for this camera (VideoWorker._slow)
+                try:
+                    b.thread_type, b.thread_count = ThreadType.FRAME, self.w._sw_threads
+                    self.threads = self.w._sw_threads
+                except Exception as e:
+                    logging.debug(f"[VideoWorker] frame threads not set: {_short_err(e)}")
+            logging.debug(f"[VideoWorker] software decoder {self.codec_name} options={b.options}"
+                          + (f", {self.threads} frame threads" if self.threads else ""))
             try:
                 b.open()
                 _report_unused_dec(b, opts)
@@ -477,6 +545,8 @@ class VideoWorker(QThread):
         self.hw_opts = self.ffopts.hw
         self.open_opts = self.ffopts.open
         self.dec_opts = self.ffopts.dec
+        self._sw_threads = 0            # frame threads for the software decoder, once one thread proved too slow
+        self._slow_told = False         # the line about a CPU that cannot keep up was written
         self.enc_v_opts = self.ffopts.enc_v
         self.enc_a_opts = self.ffopts.enc_a
 
@@ -957,6 +1027,32 @@ class VideoWorker(QThread):
             logging.debug(msg)
         return fps
 
+    def _slow(self, per, fps):
+        """The connection's thread needs `per` seconds for a picture (None: it keeps up) and the camera
+        sends `fps` a second.  More decoder threads from the next connection on, and the words that say
+        so are returned; where that is not to be had (every core in use already, or --ffmpeg names the
+        threads), one line in the log about what needs less, and None."""
+        if not per:
+            return None
+        most = min(os.cpu_count() or 1, LOAD_THREADS_MAX)
+        asked = any(k in self.dec_opts for k in ("threads", "thread_type"))
+        took = (f"a picture takes {per * 1000:.0f} ms here" + (f" on {self._sw_threads} threads" if self._sw_threads else "")
+                + f" and the camera sends one every {1000 / fps:.0f} ms")
+        if not asked and most > 1 and self._sw_threads < most:
+            # the first time by what is missing, with half as much again; then twice as many
+            self._sw_threads = n = min(most, max(2, self._sw_threads * 2, math.ceil(1.5 * per * fps)))
+            return f"{took}: the decoder gets {n} threads from now on (the picture is {n - 1} frame(s) later for it)"
+        if not self._slow_told:
+            self._slow_told = True
+            less = ["the camera's second (smaller) stream", "a lower resolution or frame rate set in the camera",
+                    "a GPU decoder (--accel)"]
+            if not (self.opengl or self.headless):
+                less.append("--opengl (no conversion of each picture)")
+            less.append('--ffmpeg "-skip_frame nokey" (key pictures only)')
+            logging.warning(f"[VideoWorker] ⚠️ this CPU does not keep up with the camera: {took}. "
+                            f"What needs less: {'; '.join(less)}")
+        return None
+
     def _gop_s(self):
         return max(self._gops) if self._gops else GOP_UNKNOWN_S
 
@@ -1003,6 +1099,7 @@ class VideoWorker(QThread):
         v_ts = None                 # the last video packet's timestamp, in seconds
         t_back = back_s = None      # when the video timestamps went back (TS_BACK_S), and by how much
         v_pkts, v_wait = 0, 0.0     # since the last picture: video packets, and the longest wait for one
+        load = _Load(fps_cap)
         try:
             for packet in container.demux(*streams):
                 if not self.run_flag: break
@@ -1024,7 +1121,8 @@ class VideoWorker(QThread):
                             self._gops.append(now - t_key)
                         t_key = now
 
-                    for frame in dec.decode(packet):
+                    frames = dec.decode(packet)
+                    for frame in frames:
                         w, h = frame.width, frame.height
                         if w <= 0 or h <= 0: continue
                         pix_fmt = frame.format.name
@@ -1041,8 +1139,8 @@ class VideoWorker(QThread):
                             first_frame_logged = True
                             self._fail_streak = 0
                             self._last_fail = None
-                            logging.info(f"[VideoWorker] First frame ({dec.name}, {'HW' if dec.is_hw else 'SW'}) "
-                                         f"pix_fmt={pix_fmt} {w}x{h}")
+                            how = "HW" if dec.is_hw else f"SW, {dec.threads} threads" if dec.threads else "SW"
+                            logging.info(f"[VideoWorker] First frame ({dec.name}, {how}) pix_fmt={pix_fmt} {w}x{h}")
 
                         if (w, h) != self._size:
                             self._size = (w, h)
@@ -1061,6 +1159,11 @@ class VideoWorker(QThread):
                         else:
                             self.frame_q.append(DisplayFrame.from_rgba_array(frame.to_ndarray(format="rgba")))
                         self.img_sig.emit()
+
+                    if not dec.is_hw:
+                        more = self._slow(load.add(now, time.monotonic() - now, len(frames)), fps_cap)
+                        if more:
+                            raise _Reconnect(more)
 
                 elif packet.stream.type == 'audio':
                     if t_apkt is None:
@@ -1127,6 +1230,12 @@ class VideoWorker(QThread):
         except _Reconnect as r:
             self.stat_sig.emit(f"Reconnecting:\n{r}")
             self._log_fail(re.sub(r"\d+", "#", str(r)), f"[VideoWorker] {r}; reconnecting. [{u_disp}]")
+        finally:
+            dec.release()
+            if not dec.is_hw:
+                more = self._slow(load.end(time.monotonic()), fps_cap)
+                if more:
+                    logging.warning(f"[VideoWorker] {more}")
 
     # ------------------------------------------------------------------ recorder / streamer hand-off
     def _dispatch_av(self, typ, frame):
