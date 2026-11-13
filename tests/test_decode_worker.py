@@ -391,13 +391,18 @@ def test_cuvid_on_a_real_gpu(qapp, clip, caplog):
         w._stream_loop(c, "clip")
     # cuvid keeps a few frames queued at the end of a file (a live stream has no end)
     assert w._hw_fail is None and w._session_frames >= 70
-    assert any("First frame (h264_cuvid, HW) pix_fmt=nv12" in r.getMessage() for r in caplog.records)
+    said = [r.getMessage() for r in caplog.records]
+    assert any("First frame (h264_cuvid, HW) pix_fmt=nv12" in m for m in said)
+    rocket = [i for i, m in enumerate(said) if "🚀 HW decoder: h264_cuvid" in m]
+    assert rocket and rocket[0] < next(i for i, m in enumerate(said) if "First frame" in m)   # per connection, at its first picture
     queued = [w.rec_q.get_nowait() for _ in range(w.rec_q.qsize())]
     assert {f.format.name for typ, f in queued if typ == 1} == {"nv12"}
-    bad = _worker(str(clip), accel="cuda", gpu="99")      # no such GPU: software at once, no reconnect
+    caplog.clear()
+    bad = _worker(str(clip), accel="cuda", gpu="99")      # no such GPU: GPU 0 decodes, and the log says so
     with av.open(str(clip)) as c:
         bad._stream_loop(c, "clip")
-    assert bad._hw_fail and bad._session_frames == 75
+    assert bad._hw_fail is None and bad.gpu_idx == 0 and bad._session_frames >= 70
+    assert _said(caplog, "GPU 99 (--gpu / NOVA_GPU_DEVICES) does not open on this machine; using GPU 0")
 
 
 # ---------------------------------------------------------------- watchdog
@@ -823,3 +828,104 @@ def test_vdpau_without_an_x_display_is_said_once(qapp, monkeypatch):
     w.accel = "vaapi"
     monkeypatch.delenv("DISPLAY")
     assert w._accel_never() is None
+
+
+# ---------------------------------------------------------------- whose time it is: the decoder's or the conversion's
+def test_load_keeps_the_conversion_s_share_of_a_picture():
+    load = videoworker._Load(25)
+    t, verdict = 0.0, None
+    while verdict is None:
+        verdict = load.add(t, 0.070, 1, 0.020)
+        t += 0.070
+    assert verdict == pytest.approx(0.070, rel=0.02) and load.conv == pytest.approx(0.020, rel=0.02)
+    assert load.converting == 0.0                          # the next stretch starts empty
+
+
+def test_the_decoder_s_threads_are_counted_without_the_conversion(qapp, monkeypatch):
+    """A plain window on an old CPU: 54 ms to decode a picture and 20 ms to convert it, one every 40 ms.
+    The threads take the decoding off the connection's thread and share what the conversion leaves."""
+    monkeypatch.setattr(videoworker.os, "cpu_count", lambda: 8)
+    w = _worker(headless=False)
+    said = w._slow(0.074, 25, None, 0.020)
+    assert "a picture takes 74 ms here (54 ms to decode it, 20 ms to convert it for the window)" in said, said
+    assert w._sw_threads == 5 and "gets 5 threads" in said          # 1.5 * 54 / (40 - 20) = 4.05
+    w = _worker(headless=False)
+    assert "(" not in w._slow(0.058, 25, None, 0.002).split(":")[0]   # 2 ms of 58: not worth a word
+
+
+def test_a_conversion_that_is_the_slow_part_changes_no_decoder(qapp, monkeypatch, caplog):
+    monkeypatch.setattr(videoworker.os, "cpu_count", lambda: 8)
+    caplog.set_level(logging.WARNING)
+    w = _worker(headless=False)
+    assert w._slow(0.045, 25, None, 0.038) is None and w._sw_threads == 0     # 38 ms of the 40 between pictures
+    line = _said(caplog, "does not keep up")
+    assert len(line) == 1 and ("converting a picture for the window takes 38 ms of the 45 ms a picture takes here, "
+                               "and the camera sends one every 40 ms") in line[0], line
+    advice = line[0].split("What needs less: ")[1]
+    assert advice.startswith("--opengl (the GPU converts the pictures); -f N (fewer pictures shown a second); "
+                             "the camera's second (smaller) stream"), advice
+    assert "--accel" not in advice and "skip_frame" not in advice
+    assert w._slow(0.045, 25, None, 0.038) is None and len(_said(caplog, "does not keep up")) == 1     # once
+
+
+def test_a_gpu_decoder_is_not_blamed_for_the_conversion(qapp, caplog):
+    """Plain windows on the Atom through the GPU's decoder: the card decoded in time and the CPU's conversion of
+    each picture took the rest.  The line named the GPU's decoder, and the camera was moved to the software
+    decoder: more work for the same CPU."""
+    caplog.set_level(logging.WARNING)
+    w = _worker(accel="vdpau", headless=False)
+    dec = SimpleNamespace(is_hw=True, name="h264 + vdpau hwaccel", codec_name="h264")
+    assert w._slow(0.038, 25, dec, 0.024) is None            # 14 ms through the GPU, 24 ms converting
+    assert w._hw_fail is None and w._hw_slow == 0
+    line = _said(caplog, "does not keep up")
+    assert len(line) == 1 and "converting a picture for the window takes 24 ms of the 38 ms" in line[0], line
+    assert "GPU's decoder" not in line[0] and "--opengl (the GPU converts the pictures)" in line[0]
+
+
+def test_a_slow_gpu_decoder_is_named_with_the_conversion_beside_it(qapp, caplog):
+    caplog.set_level(logging.WARNING)
+    w = _worker(accel="vaapi", headless=False)
+    dec = SimpleNamespace(is_hw=True, name="h264 + vaapi hwaccel", codec_name="h264")
+    assert w._slow(0.069, 25, dec, 0.012) == "the GPU's decoder does not keep up with the camera: software decoding"
+    said = [r.getMessage() for r in caplog.records][-1]
+    assert ("a picture takes 57 ms through h264 + vaapi hwaccel, converting it for the window 12 ms more, and the "
+            "camera sends one every 40 ms") in said, said
+
+
+def test_the_conversion_is_measured_on_a_real_connection(qapp, clip, monkeypatch):
+    """What _stream_loop hands to the verdict: the seconds a picture took and, of them, the conversion's."""
+    w = _worker(str(clip), headless=False)
+    seen = []
+    w._slow = lambda per, fps, dec=None, conv=0.0: seen.append((per, conv)) and None
+    real = videoworker._Load.add
+    monkeypatch.setattr(videoworker._Load, "add", lambda self, now, worked, pictures, converting=0.0:
+                        (seen.append(("add", worked, pictures, converting)), real(self, now, worked, pictures, converting))[1])
+    with av.open(str(clip)) as c:
+        w._stream_loop(c, "clip")
+    adds = [a for a in seen if a[0] == "add" and a[2]]
+    assert adds and all(0.0 < a[3] <= a[1] for a in adds), adds[:3]      # a plain window converts every picture shown
+
+
+# ---------------------------------------------------------------- the HW decoder line
+def test_a_hardware_decoder_is_announced_when_it_has_decoded(qapp, caplog):
+    """`🚀 HW decoder: h264 + vaapi hwaccel` stood in the log from the moment the decoder opened: also above
+    the line that gave it up half a minute later, without a picture (a GPU without its firmware)."""
+    caplog.set_level(logging.INFO)
+    w = _worker(accel="vaapi")
+    dec, _ = _decode(w, FakeCtx(), [(FakeCtx("h264"), "h264 + vaapi hwaccel", None)])
+    dec.open()
+    assert dec.is_hw and not _said(caplog, "🚀")
+    dec.decode(_pkt(0, key=True))
+    dec.decode(_pkt(1))
+    assert _said(caplog, "🚀") == ["[VideoWorker] 🚀 HW decoder: h264 + vaapi hwaccel"]          # once
+
+    caplog.clear()
+    w = _worker(accel="vaapi")
+    dec, _ = _decode(w, FakeCtx(), [(FakeCtx("h264", out=lambda p: []), "h264 + vaapi hwaccel", None)])
+    dec.open()
+    pts = 0
+    for gop in range(4):
+        for i in range(5):
+            dec.decode(_pkt(pts, key=(i == 0)))
+            pts += 1
+    assert not dec.is_hw and not _said(caplog, "🚀") and _said(caplog, "produced no frames after 3 keyframes")

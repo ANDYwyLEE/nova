@@ -79,6 +79,7 @@ FPS_MAX = 120               # a larger "frame rate" is a clock rate (90000), not
 LOAD_JUDGE_S = 2.0          # the software decoder's thread is judged over stretches of this long ...
 LOAD_BUSY = 0.9             # ... and does not keep up when its pictures take this share of the time
 LOAD_THREADS_MAX = 16       # frame threads the software decoder gets at most (FFmpeg's limit for its own choice)
+CONV_NAMED = 0.1            # the conversion for the window is named in those lines from this share of a picture's time on
 RERESOLVE_AFTER = 3         # connection attempts without a picture before onvif:// etc. are resolved again
 RERESOLVE_MIN_S = 60.0
 
@@ -263,14 +264,18 @@ class _Load:
         self.fps = fps
         self.t0 = None          # start of the stretch being judged
         self.busy = 0.0         # seconds of it spent on video packets
+        self.converting = 0.0   # of those, the seconds spent converting pictures for the window
         self.pictures = 0
+        self.conv = 0.0         # of the seconds a picture the last verdict returned: the conversion's
 
-    def add(self, now, worked, pictures):
-        """A video packet that arrived at `now` and took `worked` seconds.  Returns the seconds a picture
-        takes when the stretch that ends here was too much for the thread, else None."""
+    def add(self, now, worked, pictures, converting=0.0):
+        """A video packet that arrived at `now` and took `worked` seconds, `converting` of them for the
+        conversion of its pictures.  Returns the seconds a picture takes when the stretch that ends
+        here was too much for the thread, else None; `conv` then holds the conversion's part of them."""
         if self.t0 is None:
             self.t0 = now
         self.busy += worked
+        self.converting += converting
         self.pictures += pictures
         return self._judge(now + worked, LOAD_JUDGE_S)
 
@@ -282,9 +287,10 @@ class _Load:
     def _judge(self, now, least):
         if self.t0 is None or now - self.t0 < least:
             return None
-        span, busy, n = now - self.t0, self.busy, self.pictures
-        self.t0, self.busy, self.pictures = now, 0.0, 0
+        span, busy, converting, n = now - self.t0, self.busy, self.converting, self.pictures
+        self.t0, self.busy, self.converting, self.pictures = now, 0.0, 0.0, 0
         if n and busy >= LOAD_BUSY * span and n <= self.fps * span * 1.1:
+            self.conv = min(converting, busy) / n
             return busy / n
         return None
 
@@ -339,7 +345,9 @@ class _VideoDecode:
             else:
                 ctx, name, err = w._open_hw_decoder(self.base, self.codec_name)
                 if ctx is not None:
-                    logging.info(f"[VideoWorker] 🚀 HW decoder: {name}")
+                    # "🚀 HW decoder" is said by decode(), at its first picture: one that opens and then
+                    # delivers nothing (a GPU without its firmware, a stream it refuses) is not one
+                    logging.debug(f"[VideoWorker] hardware decoder {name} opened; no picture from it yet")
                     self._use(ctx, True, name)
                     return
                 w._hw_failed(err, self.codec_name)
@@ -462,6 +470,8 @@ class _VideoDecode:
             return self._rejected(packet, key, e)
         self.errors = 0
         if frames:
+            if self.is_hw and not self.got:
+                logging.info(f"[VideoWorker] 🚀 HW decoder: {self.name}")
             self.got = True
         return self._fresh(frames)
 
@@ -937,7 +947,7 @@ class VideoWorker(QThread):
         else:
             self._hw_backoff = min(HW_RETRY_MAX_S, self._hw_backoff * 2)
         # up to a fifth later than said: cameras that lost the GPU together must not all come back for it
-        # in the same second (two decoders opened at once on an old card, and neither got it)
+        # in the same second (an old card under nouveau fails to make a decoder often enough as it is)
         self._hw_retry_at = float("inf") if never else time.monotonic() + self._hw_backoff * random.uniform(1.0, 1.2)
         if never:
             msg = (f"[VideoWorker] ❌ --accel={self.accel} cannot work here: {_mask(reason)}. "
@@ -1058,40 +1068,69 @@ class VideoWorker(QThread):
             logging.debug(msg)
         return fps
 
-    def _slow(self, per, fps, dec=None):
-        """The connection's thread needs `per` seconds for a picture (None: it keeps up) and the camera
-        sends `fps` a second.  More decoder threads from the next connection on, and the words that say
-        so are returned; where that is not to be had (every core in use already, or --ffmpeg names the
-        threads), one line in the log about what needs less, and None.  A GPU's decoder that is the
-        slow one (an old card on a camera of today) is left for the software decoder, for good."""
+    def _slow(self, per, fps, dec=None, conv=0.0):
+        """The connection's thread needs `per` seconds for a picture (None: it keeps up), `conv` of them
+        to convert it for the window, and the camera sends `fps` a second.  More decoder threads from
+        the next connection on, and the words that say so are returned; where that is not to be had
+        (every core in use already, or --ffmpeg names the threads), one line in the log about what
+        needs less, and None.  A GPU's decoder that is the slow one (an old card on a camera of today)
+        is left for the software decoder, for good.  Where the conversion is the slow part, no decoder
+        and no number of its threads changes anything: the line says that, and nothing is changed."""
         if not per:
             return None
-        if dec is not None and dec.is_hw:
+        every = 1.0 / fps
+        conv = min(max(conv, 0.0), per)
+        decoding = per - conv
+        ms = lambda s: f"{s * 1000:.0f} ms"
+        named = conv >= CONV_NAMED * per                # worth a word in the line
+        hw = dec is not None and dec.is_hw
+        if conv >= LOAD_BUSY * every or (hw and conv > decoding):
+            self._tell_slow(f"converting a picture for the window takes {ms(conv)} of the {ms(per)} a picture "
+                            f"takes here, and the camera sends one every {ms(every)}", converting=True)
+            return None
+        if hw:
             # once may be a moment's load on the GPU (other cameras starting): hardware gets its second
             # try after the usual delay; twice is a GPU that is too slow for this camera
             self._hw_slow += 1
+            more = f", converting it for the window {ms(conv)} more," if named else ""
             self._hw_failed(f"the GPU's decoder does not keep up with this camera: a picture takes "
-                            f"{per * 1000:.0f} ms through {dec.name} and the camera sends one every "
-                            f"{1000 / fps:.0f} ms", dec.codec_name, never=self._hw_slow >= 2)
+                            f"{ms(decoding)} through {dec.name}{more} and the camera sends one every "
+                            f"{ms(every)}", dec.codec_name, never=self._hw_slow >= 2)
             return "the GPU's decoder does not keep up with the camera: software decoding"
         most = min(os.cpu_count() or 1, LOAD_THREADS_MAX)
         asked = any(k in self.dec_opts for k in ("threads", "thread_type"))
-        took = (f"a picture takes {per * 1000:.0f} ms here" + (f" on {self._sw_threads} threads" if self._sw_threads else "")
-                + f" and the camera sends one every {1000 / fps:.0f} ms")
+        took = (f"a picture takes {ms(per)} here" + (f" on {self._sw_threads} threads" if self._sw_threads else "")
+                + (f" ({ms(decoding)} to decode it, {ms(conv)} to convert it for the window)" if named else "")
+                + f" and the camera sends one every {ms(every)}")
         if not asked and most > 1 and self._sw_threads < most:
-            # the first time by what is missing, with half as much again; then twice as many
-            self._sw_threads = n = min(most, max(2, self._sw_threads * 2, math.ceil(1.5 * per * fps)))
+            # the first time by what is missing, with half as much again; then twice as many.  The threads
+            # take the decoding off this thread, not the conversion: they share what the conversion leaves
+            left = max(every - conv, every * (1.0 - LOAD_BUSY))
+            self._sw_threads = n = min(most, max(2, self._sw_threads * 2, math.ceil(1.5 * decoding / left)))
             return f"{took}: the decoder gets {n} threads from now on (the picture is {n - 1} frame(s) later for it)"
-        if not self._slow_told:
-            self._slow_told = True
-            less = ["the camera's second (smaller) stream", "a lower resolution or frame rate set in the camera",
-                    "a GPU decoder (--accel)"]
-            if not (self.opengl or self.headless):
-                less.append("--opengl (no conversion of each picture)")
-            less.append('--ffmpeg "-skip_frame nokey" (key pictures only)')
-            logging.warning(f"[VideoWorker] ⚠️ this CPU does not keep up with the camera: {took}. "
-                            f"What needs less: {'; '.join(less)}")
+        self._tell_slow(took, converting=named)
         return None
+
+    def _tell_slow(self, took, converting=False):
+        """The one line about a camera this CPU cannot keep up with, and what would need less of it:
+        what spares the conversion first when that is where the time goes."""
+        if self._slow_told:
+            return
+        self._slow_told = True
+        window = not self.headless
+        spare = []
+        if window and not self.opengl:
+            spare.append("--opengl (the GPU converts the pictures)" if converting
+                         else "--opengl (no conversion of each picture)")
+        if window and converting:
+            spare.append("-f N (fewer pictures shown a second)")
+        less = ["the camera's second (smaller) stream", "a lower resolution or frame rate set in the camera"]
+        if converting:
+            less = spare + less
+        else:
+            less += ["a GPU decoder (--accel)"] + spare + ['--ffmpeg "-skip_frame nokey" (key pictures only)']
+        logging.warning(f"[VideoWorker] ⚠️ this CPU does not keep up with the camera: {took}. "
+                        f"What needs less: {'; '.join(less)}")
 
     def _gop_s(self):
         return max(self._gops) if self._gops else GOP_UNKNOWN_S
@@ -1162,6 +1201,7 @@ class VideoWorker(QThread):
                         t_key = now
 
                     frames = dec.decode(packet)
+                    converting = 0.0
                     for frame in frames:
                         w, h = frame.width, frame.height
                         if w <= 0 or h <= 0: continue
@@ -1197,10 +1237,13 @@ class VideoWorker(QThread):
                         if self.opengl and pix_fmt in GL_DIRECT_FORMATS:
                             self.frame_q.append(DisplayFrame.from_av_frame(frame))
                         else:
+                            t_conv = time.monotonic()
                             self.frame_q.append(DisplayFrame.from_rgba_array(frame.to_ndarray(format="rgba")))
+                            converting += time.monotonic() - t_conv
                         self.img_sig.emit()
 
-                    more = self._slow(load.add(now, time.monotonic() - now, len(frames)), fps_cap, dec)
+                    more = self._slow(load.add(now, time.monotonic() - now, len(frames), converting),
+                                      fps_cap, dec, load.conv)
                     if more:
                         raise _Reconnect(more)
 
@@ -1271,7 +1314,7 @@ class VideoWorker(QThread):
             self._log_fail(re.sub(r"\d+", "#", str(r)), f"[VideoWorker] {r}; reconnecting. [{u_disp}]")
         finally:
             dec.release()
-            more = self._slow(load.end(time.monotonic()), fps_cap, dec)
+            more = self._slow(load.end(time.monotonic()), fps_cap, dec, load.conv)
             if more:
                 logging.warning(f"[VideoWorker] {more}")
 
