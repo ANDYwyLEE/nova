@@ -4,7 +4,7 @@ name: Install guide
 # installed yet (the runners themselves come with a compiler, Python and half of the libraries, so CI
 # cannot tell when the guide forgets a package: it had forgotten the compiler PyAudio needs, and on
 # openSUSE two libraries Qt loads). Every distribution the guide names has a job; each reads its own
-# package lines from the guide. By hand, weekly, and when the guide or the requirements change.
+# package lines from the guide. By hand, weekly, and when the guide, the requirements or the launcher change.
 on:
   schedule:
     - cron: "30 3 * * 1"          # Mondays 03:30 UTC
@@ -16,6 +16,7 @@ on:
       - requirements.txt
       - requirements-dev.txt
       - tools/ci_clip.py
+      - nova
       - .github/workflows/install-guide.yml
 
 jobs:
@@ -38,6 +39,9 @@ jobs:
           - { image: "registry.opensuse.org/opensuse/tumbleweed:latest", name: "opensuse/tumbleweed", block: "**openSUSE" }
           - { image: "registry.opensuse.org/opensuse/leap:16.0", name: "opensuse/leap:16.0", block: "**openSUSE" }
           - { image: "archlinux:latest", block: "**Arch Linux" }
+          # python3 older than 3.12 (3.11 and 3.10): the guide's apt lines, and its three lines for a Python from uv
+          - { image: "debian:12", name: "debian:12 (Python from uv)", block: "Ubuntu 24.04 and 26.04, Debian 13", uv: "3.13" }
+          - { image: "ubuntu:22.04", name: "ubuntu:22.04 (Python from uv)", block: "Ubuntu 24.04 and 26.04, Debian 13", uv: "3.13" }
           # the newest Python, on Debian 13's packages (its own python3 is 3.13): pip compiles PyOpenGL-accelerate there
           - { image: "python:3.15", name: "python:3.15 (Debian 13)", block: "Ubuntu 24.04 and 26.04, Debian 13", python: "python3.15" }
           # arm64 (Raspberry Pi OS 13 is Debian 13): the same lines on GitHub's ARM runners
@@ -50,6 +54,7 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
       BLOCK: ${{ matrix.block }}
       PY: ${{ matrix.python || 'python3' }}
+      UV: ${{ matrix.uv }}
     steps:
       - uses: actions/checkout@v5
       - name: The guide's package lines, read from docs/install.md
@@ -76,9 +81,19 @@ jobs:
           chown -R tester "$GITHUB_WORKSPACE"
       - name: The guide's venv and pip lines
         run: |
+          if [ -n "$UV" ]; then apt-get install -y curl > /dev/null; fi
           runuser -u tester -- bash -ec '
             $PY --version
-            $PY -m venv venv && . venv/bin/activate
+            if [ -n "$UV" ]; then
+              # the system Python is too old, and the launcher says so of a venv made with it
+              $PY -m venv venv && { ./nova -h 2>&1 || true; } | tee old.txt && grep -q "Nova needs Python 3.12 or newer" old.txt
+              rm -rf venv old.txt
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              ~/.local/bin/uv venv --seed --python "$UV" venv && . venv/bin/activate
+            else
+              $PY -m venv venv && . venv/bin/activate
+            fi
+            python --version
             pip install -U pip && pip install -r requirements.txt
             python nova.py --help > /dev/null
             cp cameras.example.ini cameras.ini && chmod 600 cameras.ini

@@ -339,12 +339,12 @@ class _VideoDecode:
         self._use_sw()
 
     def release(self):
-        """To be called when the connection is over, before its objects are let go.  PyAV frees a decoder
-        while it holds the interpreter lock, and FFmpeg waits there for the decoder's frame threads
-        (--ffmpeg "-thread_type frame"): a thread that is still decoding a picture and has a line for
-        the log waits for that same lock, and the process stands still for good, Ctrl-C and `nova stop`
-        included.  So the pictures in flight are decoded out first, with the lock released as in every
-        decode call; threads that have no work left say nothing when they are ended."""
+        """To be called when the connection is over, before its objects are let go.  PyAV (19.0.2; changed
+        in its main branch since, issue 2440) frees a decoder while it holds the interpreter lock, and
+        FFmpeg waits there for the decoder's frame threads: a thread that is still decoding a picture
+        and has a line for the log waits for that same lock, and the process stands still for good,
+        Ctrl-C and `nova stop` included.  So the pictures in flight are decoded out first, with the lock
+        released as in every decode call; threads that have no work left say nothing when they are ended."""
         seen = []
         for ctx in (self.base, self.ctx, self.trial):
             if ctx is None or any(ctx is c for c in seen):

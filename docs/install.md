@@ -47,10 +47,11 @@ Every combination below was run with real cameras, most of them recording severa
 | Windows 11 | AMD Radeon (Ryzen 9 5900HX) | Option A and Option B | `d3d11va`, `dxva2`, `amf` | `h264_amf`, `h264_mf` |
 | macOS 15 | Intel iMac 2019 (Radeon Pro 555X) | MacPorts | `videotoolbox` | `h264_videotoolbox` |
 | any of them | none | wheel | software | `libx264` |
+| Debian 11 | NVIDIA ION (2010, `nouveau`) on an Atom D525 | wheel, PySide6 6.9.3 and numpy 2.3.5 ([older systems](#linux)) | software, on up to four threads | `libx264` with `-preset ultrafast` |
 
 Not run on hardware: NVIDIA on Windows, Apple Silicon outside CI, a Raspberry Pi or another ARM board (the arm64 install runs on GitHub's ARM runners, without a camera), AV1 encoding on an Intel or AMD GPU (the ones above have no AV1 encoder).
 
-The Linux commands of the next section are also run as written, by an ordinary user, in a fresh image of every distribution named there (Python 3.12 to 3.14; Ubuntu and Debian on arm64 as well) and with Python 3.15 on Debian 13, each week: install, `nova doctor`, a recording through the launcher, a window on a virtual screen and the tests.
+The Linux commands of the next section are also run as written, by an ordinary user, in a fresh image of every distribution named there (Python 3.12 to 3.14; Ubuntu and Debian on arm64 as well; Debian 12 and Ubuntu 22.04 with a Python from uv) and with Python 3.15 on Debian 13, each week: install, `nova doctor`, a recording through the launcher, a window on a virtual screen and the tests.
 
 ## Linux
 
@@ -106,7 +107,25 @@ Other distributions: the same steps, with these packages in place of the two `ap
   sudo pacman -Syu --needed git python base-devel portaudio libglvnd glib2 dbus fontconfig \
       libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms
   ```
-- **Which Python**: 3.12 or newer, whatever the distribution calls it. Ubuntu 24.04, Mint 22 and RHEL 10 have 3.12, Debian 13, openSUSE and Raspberry Pi OS 13 have 3.13, Ubuntu 26.04, Fedora and Arch have 3.14: all install the same `av` wheel. Python 3.15 works as well; `pip` compiles PyOpenGL-accelerate for it (no wheel yet), with the packages above. Ubuntu 22.04 (Python 3.10) works with Python 3.12 from the deadsnakes PPA: `sudo add-apt-repository ppa:deadsnakes/ppa`, then `python3.12 python3.12-venv python3.12-dev` in place of the three `python3…` packages, and `python3.12 -m venv venv` (run in an `ubuntu:22.04` image, November 2026). Mint 21 and Debian 12 (3.11) need a newer interpreter as well; not tried.
+- **Which Python**: 3.12 or newer, whatever the distribution calls it. Ubuntu 24.04, Mint 22 and RHEL 10 have 3.12, Debian 13, openSUSE and Raspberry Pi OS 13 have 3.13, Ubuntu 26.04, Fedora and Arch have 3.14: all install the same `av` wheel. Python 3.15 works as well; `pip` compiles PyOpenGL-accelerate for it (no wheel yet), with the packages above. An older `python3` is the next point.
+- **Debian 12, Ubuntu 22.04, Linux Mint 21** (their `python3` is 3.11 or 3.10): the `apt` lines above, and a newer Python from [uv](https://docs.astral.sh/uv/), which puts it into the home folder and leaves the system's Python alone:
+
+  ```bash
+  sudo apt install -y curl
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ~/.local/bin/uv venv --seed --python 3.13 venv && . venv/bin/activate     # in place of the `python3 -m venv venv` line
+  ```
+
+  Then `pip install …` and the rest as above. Run in `debian:12` and `ubuntu:22.04` images (November 2026); the weekly workflow repeats it. On Ubuntu 22.04 the deadsnakes PPA is another way: `sudo add-apt-repository ppa:deadsnakes/ppa`, then `python3.12 python3.12-venv python3.12-dev` in place of the three `python3…` packages, and `python3.12 -m venv venv`. With a venv of an older Python, `pip` answers `No matching distribution found for av>=19.0.2` (its line above that one lists `Requires-Python >=3.12`) and `./nova` says `the venv here was made with Python 3.11, and Nova needs Python 3.12 or newer`.
+- **Older systems** (a C library before glibc 2.34: Debian 11, Ubuntu 20.04, RHEL 8): PySide6 6.12 has no wheel for them and `pip` ends with `No matching distribution found for PySide6==6.12.0`. PySide6 6.9.3 is the newest that installs there; with a Python from uv as in the point above (RHEL 8 has `python3.12` by name, and takes RHEL 9's package line):
+
+  ```bash
+  sed 's/==6\.12\.0/==6.9.3/' requirements.txt > requirements-old.txt
+  pip install -r requirements-old.txt
+  ```
+
+  Run on a Debian 11 that had never been updated (an Atom D525 nettop of 2010 with NVIDIA ION graphics on the `nouveau` driver, OpenGL 3.3): the install, `nova doctor`, the tests, windows with and without `--opengl`, recording. The same lines were run once in `debian:11`, `ubuntu:20.04` and `rockylinux:8` images. Most of these systems are past their distribution's support, and so is this combination: it is what worked in November 2026, not something the weekly runs repeat.
+- **A CPU without SSE4.2** (Intel before the Core i series, Atoms before 2013, AMD before the FX series; `grep -c sse4_2 /proc/cpuinfo` prints 0): the numpy wheels from 2.4 on are built for it and end with `Illegal instruction` on an older CPU, and every camera with them, with nothing in the log. `pip install "numpy<2.4"` after the requirements (2.3.5, for Python 3.11 to 3.14; run on the Atom D525 above). `nova doctor` says so (`CPU … no SSE4.2`, and a line under Checks), and the launcher names the signal a camera ended with. On such a CPU one thread may be too little for a camera's stream: [Performance tips](troubleshooting.md#performance-tips).
 - **arm64** (Raspberry Pi 4 and 5 with a 64-bit system, other ARM boards and servers): `av` and PySide6 have aarch64 wheels, and the apt lines above are run on arm64 Ubuntu 24.04 and Debian 13 on GitHub's ARM runners, with the tests. The arm64 `av` wheel has no NVIDIA or Intel codecs; the hardware codecs in it are the V4L2 ones (`h264_v4l2m2m`, `hevc_v4l2m2m`, …, `--accel v4l2m2m`), which need a board whose kernel driver offers them. No Raspberry Pi has run Nova with cameras here, so that path is untested; 32-bit ARM systems have no wheels.
 - PyAudio has no Linux wheel and is compiled during `pip install`: that is what `build-essential`, `python3-dev` and `portaudio19-dev` are for (without a compiler: `No such file or directory: 'x86_64-linux-gnu-gcc'`). The `lib…` packages are what Qt loads at run time and does not bring itself; a desktop has most of them already, a server, a container or WSL does not (`ImportError: libglib-2.0.so.0`, or `Could not load the Qt platform plugin "xcb"`). On openSUSE the same libraries are packaged one by one, hence `libgthread-2_0-0` and `krb5` (`ImportError: libgthread-2.0.so.0`, and `libgssapi_krb5.so.2` for Qt's network module, which the launcher's cameras need). `nova doctor` names a Qt module that does not load and the library it misses. Every package line here is run as written in a fresh image of its distribution by the [Install guide](../.github/workflows/install-guide.yml) workflow.
 - **NVIDIA**: the proprietary driver is all that is required (`libnvcuvid.so`, `libnvidia-encode.so` come with it); the CUDA toolkit is not needed. Use `--accel cuda`. The wheel's NVENC needs **driver 570.0 or newer** (`The minimum required Nvidia driver for nvenc is 570.0` in the log otherwise): Ubuntu 26.04 ships that, on 24.04 pick `nvidia-driver-570` or newer rather than the 535/550 series. With an older driver Nova still runs and records, but encodes with libx264 on the CPU.

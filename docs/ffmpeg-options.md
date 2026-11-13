@@ -66,7 +66,7 @@ A URL after `-i` is ignored with a note (the camera is Nova's own `-i`). An inpu
 | `-user_agent S` `-headers "K: v"` | RTSP / HTTP cameras | never forwarded to an output |
 | `-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max N` | HTTP(S) input reconnect | Nova reconnects by itself anyway |
 | `-use_wallclock_as_timestamps 1` | demuxer stamps packets with the wall clock | for cameras with broken timestamps |
-| `-threads N` `-thread_type slice\|frame` | decoder threads | software decoders |
+| `-threads N` `-thread_type slice\|frame` | decoder threads | software decoders. Without them one thread decodes, and Nova adds frame threads by itself when that does not keep up with a camera (each one puts the picture a frame later); naming either option here switches that off |
 | `-skip_frame nokey` | decode only keyframes | software decoders; cuvid accepts but ignores it. Cheap "one frame every GOP" preview |
 | `-skip_loop_filter all` `-skip_idct all` | faster, slightly blockier H.264 | software |
 | `-err_detect ignore_err` `-flags +low_delay` `-discard_damaged_percentage N` | tolerate broken streams / drop decoder delay | |
