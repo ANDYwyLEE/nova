@@ -47,6 +47,8 @@ jobs:
           # arm64 (Raspberry Pi OS 13 is Debian 13): the same lines on GitHub's ARM runners
           - { image: "ubuntu:24.04", runner: "ubuntu-24.04-arm", name: "ubuntu:24.04 arm64", block: "Ubuntu 24.04 and 26.04, Debian 13" }
           - { image: "debian:13", runner: "ubuntu-24.04-arm", name: "debian:13 arm64", block: "Ubuntu 24.04 and 26.04, Debian 13" }
+          # arm64 before glibc 2.39 (Raspberry Pi OS 12 is Debian 12): a Python from uv, and the PySide6 the guide names for it
+          - { image: "debian:12", runner: "ubuntu-24.04-arm", name: "debian:12 arm64 (Python from uv, PySide6 6.8.0.2)", block: "Ubuntu 24.04 and 26.04, Debian 13", uv: "3.13", pyside: "6.8.0.2" }
     defaults:
       run:
         shell: bash          # every image has it; a container job would take sh otherwise
@@ -55,6 +57,7 @@ jobs:
       BLOCK: ${{ matrix.block }}
       PY: ${{ matrix.python || 'python3' }}
       UV: ${{ matrix.uv }}
+      PYSIDE: ${{ matrix.pyside }}
     steps:
       - uses: actions/checkout@v5
       - name: The guide's package lines, read from docs/install.md
@@ -94,7 +97,16 @@ jobs:
               $PY -m venv venv && . venv/bin/activate
             fi
             python --version
-            pip install -U pip && pip install -r requirements.txt
+            pip install -U pip
+            if [ -n "$PYSIDE" ]; then
+              # the guide's sed line for a C library older than the PySide6 of requirements.txt is built for
+              grep -q "$PYSIDE" docs/install.md
+              sed -E "s/^(PySide6[A-Za-z_]*)==.*/\1==$PYSIDE/" requirements.txt > requirements-old.txt
+              ! pip install -r requirements.txt > /dev/null 2>&1 || { echo "requirements.txt installs here: this job no longer tests anything"; exit 1; }
+              pip install -r requirements-old.txt
+            else
+              pip install -r requirements.txt
+            fi
             python nova.py --help > /dev/null
             cp cameras.example.ini cameras.ini && chmod 600 cameras.ini
             ./nova -h > /dev/null
@@ -141,5 +153,6 @@ jobs:
         run: |
           runuser -u tester -- bash -ec '
             . venv/bin/activate
-            pip install -r requirements-dev.txt
+            if [ -n "$PYSIDE" ]; then grep -v "^-r " requirements-dev.txt > dev-old.txt; pip install -r dev-old.txt
+            else pip install -r requirements-dev.txt; fi
             pytest -q'
