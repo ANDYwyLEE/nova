@@ -35,7 +35,8 @@ HEADLESS_FLAGS = ("--headless", "--no-gui")
 RECORD_FLAGS = ("-r", "--record", "--auto-record")
 STREAM_FLAGS = ("-t", "--target")
 GPU_FLAGS = ("--gpu",)
-EARLY_EXIT_GRACE = 1.5      # seconds a camera must survive before `start` reports it as running
+EARLY_EXIT_GRACE = 1.5      # seconds a camera must survive before `start` reports it as running ...
+START_ANSWER_S = 15.0       # ... and, where it takes longer to load, until it answers on its control channel: this at most
 LOG_ROTATE = 50 * 1024 * 1024   # a log above this size moves to ID.log.1 when the camera starts
 CAMERA_KEYS = ("name", "url", "opts", "enabled")
 DEFAULT_KEYS = ("opts", "python", "stagger", "camera")
@@ -542,6 +543,25 @@ def control(address, request, timeout=3.0):
         return None
 
 
+def survived(p, address, t0):
+    """Did the camera started at `t0` get through its start?  It has to live EARLY_EXIT_GRACE seconds.
+    On a slow machine Python and Qt take longer than that to load, and a camera that died while loading
+    (a library that is missing, a package the CPU cannot run) was reported as running: so the wait goes
+    on until the camera answers on its control channel, which it opens when everything is loaded."""
+    try:
+        p.wait(timeout=max(t0 + EARLY_EXIT_GRACE - time.time(), 0.01))
+        return False
+    except subprocess.TimeoutExpired:
+        pass
+    while time.time() - t0 < START_ANSWER_S and control(address, {"cmd": "status"}, timeout=1.0) is None:
+        try:
+            p.wait(timeout=0.2)
+            return False
+        except subprocess.TimeoutExpired:
+            pass
+    return p.poll() is None
+
+
 def forget_control(entry):
     """Remove the socket of a camera that is gone (a clean exit removes it itself, a crash does not)."""
     a = entry.get("control")
@@ -825,13 +845,11 @@ def cmd_start(defaults, env, cams, args, record=False):
         write_pids(pids)
         tags = mode + (f", gpu {gpu}" if gpu is not None else "") + (f", layout {args.layout}" if layout else "")
         print(f"{cam.id}: starting (pid {p.pid}, {tags}) -> logs/{cam.id}.log")
-        launched.append((cam, p, time.time()))
+        launched.append((cam, p, time.time(), address))
         time.sleep(stagger)
-    # A camera that dies within the grace period did not start: say so instead of "started".
-    for cam, p, t0 in launched:
-        try:
-            p.wait(timeout=max(t0 + EARLY_EXIT_GRACE - time.time(), 0.01))
-        except subprocess.TimeoutExpired:
+    # A camera that dies at its start did not start: say so instead of "started".
+    for cam, p, t0, address in launched:
+        if survived(p, address, t0):
             continue
         failed += 1
         pids.pop(cam.id, None)
@@ -839,7 +857,7 @@ def cmd_start(defaults, env, cams, args, record=False):
         for line in log_tail(cam.id):
             print(f"    {line}")
     write_pids(pids)
-    ok = sum(1 for _, p, _ in launched if p.returncode is None)
+    ok = sum(1 for _, p, _, _ in launched if p.returncode is None)
     if not launched and not failed:
         print("nothing started")
     else:

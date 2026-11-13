@@ -71,6 +71,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     monkeypatch.setenv("DISPLAY", ":99")                  # `start` refuses windows in a session without a display
     monkeypatch.setattr(cams, "EARLY_EXIT_GRACE", 0.3)
+    monkeypatch.setattr(cams, "START_ANSWER_S", 0.3)      # the fake camera answers on POSIX only, and not in every test
     yield tmp_path
     for e in cams.read_pids().values():                 # never leave a fake camera behind
         try:
@@ -315,3 +316,22 @@ def test_cameras_launched_before_the_list_named_a_configuration_are_cameras_ini_
     cams.write_pids(pids)
     assert run(home, "stop") == 0
     assert wait_gone(pids["a"]["pid"]) and cams.read_pids() == {}
+
+
+@posix_only
+def test_a_camera_that_dies_while_it_loads_did_not_start(home, capsys, monkeypatch):
+    """On an Atom of 2010 Python and Qt took three seconds to load: a camera that an illegal instruction
+    ended after two was "1 running" for the launcher, whose 1.5 s were over, and `exited` in nova status."""
+    monkeypatch.setattr(cams, "START_ANSWER_S", 20)
+    (home / "nova.py").write_text("import sys, time\ntime.sleep(1.0)\nsys.exit(3)\n")       # dies after the grace period
+    t0 = time.time()
+    assert run(home, "start", "a") == 1
+    out = capsys.readouterr().out
+    assert "a: exited with code 3 right after start" in out and "0 running, 1 failed" in out, out
+    assert time.time() - t0 < 10 and not cams.read_pids()
+
+    (home / "nova.py").write_text(FAKE_NOVA)              # one that answers is running as soon as it does
+    t0 = time.time()
+    assert run(home, "start", "a") == 0
+    assert "1 running" in capsys.readouterr().out and time.time() - t0 < 10
+    run(home, "stop", "a")

@@ -689,7 +689,7 @@ def numpy_check(python=None, run=subprocess.run):
     if r.returncode in ILLEGAL_INSTRUCTION:
         return [("⚠", "numpy ends with `Illegal instruction` on this CPU, and every camera with it: numpy 2.4 and "
                       "newer are built for SSE4.2 (Intel Core i and newer, Atoms from 2013, AMD FX and newer); "
-                      f"{py} -m pip install \"numpy<2.4\" (docs/install.md, Older systems)")]
+                      f"{py} -m pip install \"numpy<2.4\" (docs/install.md, A CPU without SSE4.2)")]
     last = [l.strip() for l in (r.stderr or "").splitlines() if l.strip()][-1:] or [f"exit code {r.returncode}"]
     return [("⚠", f"numpy does not import in {py}, and no camera starts without it: {last[0]}")]
 
