@@ -162,11 +162,11 @@ pip install --no-binary av av --no-cache-dir
 
 Create the venv as `venv` itself: `./nova` runs `venv/bin/python`, and MSYS2's `ln -s` copies a directory (unless `MSYS=winsymlinks:nativestrict`), so a `venv` linked to another venv before the `pip install`s would lack everything installed after.
 
-PyAudio's `setup.py` assumes MSVC on Windows: it drops `portaudio` from the libraries and passes `/MT`, which gcc takes for an input file. Build it with both undone (MSYS2's gcc finds PortAudio in `/ucrt64` by itself):
+PyAudio's `setup.py` takes every Windows Python for one built with Microsoft's compiler and gives gcc its settings (`gcc: error: /MT: linker input file not found`). One line keeps them for those Pythons; MSYS2's gcc finds PortAudio in `/ucrt64` by itself:
 
 ```bash
 pip download pyaudio --no-binary :all: --no-deps && tar xzf PyAudio-*.tar.gz && cd PyAudio-*/
-sed -i -e 's|external_libraries.remove("portaudio")|pass|' -e 's|extra_compile_args += \["/MT"\]|pass|' setup.py
+sed -i "s/sys.platform == 'win32':/sys.platform == 'win32' and 'MSC' in sys.version:/" setup.py
 pip install --no-build-isolation . && cd ..
 ```
 

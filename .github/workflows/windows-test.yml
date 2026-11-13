@@ -100,7 +100,7 @@ jobs:
           . venv/bin/activate
           mkdir -p /tmp/pa && cd /tmp/pa
           pip download pyaudio --no-binary :all: --no-deps && tar xzf PyAudio-*.tar.gz && cd PyAudio-*/
-          sed -i -e 's|external_libraries.remove("portaudio")|pass|' -e 's|extra_compile_args += \["/MT"\]|pass|' setup.py
+          sed -i "s/sys.platform == 'win32':/sys.platform == 'win32' and 'MSC' in sys.version:/" setup.py
           pip install --no-build-isolation . && cd ..
           cd / && python -c "import pyaudio; print(pyaudio.get_portaudio_version_text())"
       - name: test tools
