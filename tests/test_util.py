@@ -126,6 +126,7 @@ def _pci(root, slot, cls, vendor, device, driver=None):
         os.symlink(root.parent / "drivers" / driver, d / "driver")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="sysfs names have colons, and symlinks: Linux's")
 def test_the_display_controllers_on_the_pci_bus(tmp_path):
     root = tmp_path / "devices"
     _pci(root, "0000:00:02.0", "0x030000", "0x8086", "0xa780", "i915")
