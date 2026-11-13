@@ -279,6 +279,7 @@ Everything Nova and the launcher write (recordings, snapshots, logs, layouts, th
 | `NOVA_GPU_DEVICES` | GPU index, or a comma list (`0,1`). With a list, `nova start` / `nova run` deal the cameras over the GPUs in file order, so a camera always lands on the same one (14 cameras on `0,1` → 7 + 7); `--gpu N` in a camera's `opts` pins it. A bare `python nova.py` given a list picks one at random |
 | `NOVA_AUDIO_DEVICE_INDEX` | force a PortAudio output device |
 | `NOVA_AUDIO_STALL` | seconds without audio, on a connection that had it and while video keeps coming, after which Nova reconnects to get the sound back (default 30; only while the sound is played, recorded or streamed; `0` never reconnects for it). Some cameras stop sending the audio of a long connection |
+| `NOVA_TIMESTAMP_STEPS` | `keep` writes every step of a camera's timestamps into recordings and streams as it comes, as Nova did until November 2026. Without it, timestamps that step back while the stream goes on are not taken for a new connection, and a camera that has done so gets a gap in the file only where the arrival of its packets shows one ([Recording](recording.md#timestamps-and-av-sync)) |
 | `NOVA_WHEEL_INVERT` | `1` reverses the wheel's zoom direction (default: pushing the wheel away zooms in) |
 | `NOVA_MIN_RECORD_INTERVAL` | the shortest `--record-interval` in seconds (default 60; the test suite lowers it) |
 | `NOVA_UMASK` | permissions for new files, octal (default `077`: this user only; `022` lets other accounts read recordings and logs) |

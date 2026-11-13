@@ -5,7 +5,7 @@ import av
 from PySide6.QtCore import Signal, Slot, QTimer
 from player import Player
 from recworker import AVRecWorker, ErrorLog, WorkerRefused, RETRY_DELAYS, STABLE_AFTER
-from avwriter import AVWriter, OutputOpenError
+from avwriter import AVWriter, OutputOpenError, timestamp_watch
 
 try: import fcntl
 except ImportError: fcntl = None
@@ -394,6 +394,7 @@ class AVRecorder(Player):
                     v_tag=ff.v_tag, a_encoder=ff.a_encoder,
                     vf=ff.vf, metadata=ff.metadata,
                     live=False,
+                    timestamps=timestamp_watch(vw),
                 )
         except OutputOpenError:
             raise

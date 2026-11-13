@@ -3,7 +3,7 @@ with growing delays, the LIVE icon."""
 import logging
 from player import Player
 from recworker import AVRecWorker, ErrorLog, RETRY_DELAYS, STABLE_AFTER
-from avwriter import AVWriter, OutputOpenError, is_network_target
+from avwriter import AVWriter, OutputOpenError, is_network_target, timestamp_watch
 from util import mask_url
 from PySide6.QtCore import Slot, Signal, QTimer
 
@@ -144,6 +144,7 @@ class AVStreamer(Player):
                 v_tag=ff.v_tag, a_encoder=ff.a_encoder,
                 vf=ff.vf, metadata=ff.metadata,
                 live=True,
+                timestamps=timestamp_watch(vw),
             )
         except OutputOpenError:
             raise

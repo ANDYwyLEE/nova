@@ -6,6 +6,7 @@ from fractions import Fraction
 
 import av
 import numpy as np
+import pytest
 
 import logsync  # noqa: F401  (logging.verbose)
 import avwriter
@@ -152,3 +153,80 @@ def test_closing_frees_the_resampler_graphs_and_their_threads(tmp_path):
                 assert len(os.listdir("/proc/self/task")) < threads
     finally:
         gc.enable()
+
+
+def test_sound_and_picture_stay_together_after_a_quick_reconnect_of_a_fast_camera_clock(tmp_path, monkeypatch):
+    """The camera's clock runs fast, so the file is ahead of the wall clock (here 5 %: 3 s after a
+    minute; 0.46 % and 8 s per half hour were measured). Its audio stops, the connection is made
+    again within a second: the new connection's sound is written next to its picture. It was written
+    2 s before it, until the segment ended."""
+    t = [1000.0]
+    monkeypatch.setattr(avwriter.time, "monotonic", lambda: t[0])
+    out = tmp_path / "rec.mp4"
+    w = writer(out)
+
+    def frames(i, src):                               # one video frame and its 40 ms of sound
+        v = video(0); v.pts, v.time_base = int(round(src * 90000)), Fraction(1, 90000)
+        a = audio(i); a.pts = int(round(src * 16000))
+        return v, a
+
+    n = 0
+    for i in range(60 * FPS):                         # a minute, timestamps 5 % fast
+        t[0] = 1000.0 + i / FPS
+        v, a = frames(n, i / FPS * 1.05); n += 1
+        w.write_video(v); w.write_audio(a)
+    assert w.v_tl.last_out - (t[0] - 1000.0) > 2.9
+    for i in range(60 * FPS, 62 * FPS):               # the audio is gone, the video goes on
+        t[0] = 1000.0 + i / FPS
+        w.write_video(frames(n, i / FPS * 1.05)[0])
+    first_new = 62 * FPS                              # index of the new connection's first video frame
+    t[0] += 1.0                                       # reconnected in a second; timestamps start again
+    t1 = t[0]
+    for i in range(2 * FPS):
+        t[0] = t1 + i / FPS
+        v, a = frames(n, i / FPS); n += 1
+        w.write_video(v); w.write_audio(a)
+    w.close()
+
+    with av.open(str(out)) as c:
+        vs, au = c.streams.video[0], c.streams.audio[0]
+        vt = sorted(float(p.pts * vs.time_base) for p in c.demux(vs) if p.pts is not None)
+        c.seek(0)
+        at = sorted(float(p.pts * au.time_base) for p in c.demux(au) if p.pts is not None)
+    assert at[-1] - vt[-1] == pytest.approx(0.0, abs=0.15)          # they end together, as they came
+    after = [x for x in at if x >= vt[first_new] - 0.15]
+    assert len(after) * 1024 / 16000 == pytest.approx(2.0, abs=0.2)  # all of the new sound is past the new picture's start
+
+
+def test_a_camera_whose_timestamps_step_records_without_the_steps(tmp_path, monkeypatch):
+    """A camera whose RTCP sender reports do not fit: complete frames and samples, in real time, with
+    timestamps that step forward and back every few seconds, picture and sound at their own moments.
+    The file got a gap for every step forward: these 38 s of camera made 40.6 s of picture and 40.3 s
+    of sound, with a hole of up to 1.5 s in it at every step. Now the file is as long as what the camera
+    made, and its sound has no hole."""
+    t = [1000.0]
+    monkeypatch.setattr(avwriter.time, "monotonic", lambda: t[0])
+    v_err = [0.0, -0.31, 0.83, -0.77, 0.52, 0.13]       # the error of each stream's timestamps, changing
+    a_err = [0.0, -0.46, 0.94, -0.12, -0.58, 0.37]      # every 7 s (the sound's 3.5 s after the picture's)
+    w = writer(tmp_path / "rec.mp4")
+    seconds = 38
+    for i in range(seconds * FPS):
+        true = i / FPS
+        t[0] = 1000.0 + true
+        v = video(0); v.pts, v.time_base = int(round((50.0 + true + v_err[int(true // 7)]) * 90000)), Fraction(1, 90000)
+        a = audio(i); a.pts = int(round((50.0 + true + a_err[int(max(0.0, true - 3.5) // 7 + (true >= 3.5))]) * 16000))
+        w.write_video(v); w.write_audio(a)
+    assert w.watch.on
+    w.close()
+
+    with av.open(str(tmp_path / "rec.mp4")) as c:
+        vs, au = c.streams.video[0], c.streams.audio[0]
+        vt = sorted(float(p.pts * vs.time_base) for p in c.demux(vs) if p.pts is not None)
+        c.seek(0)
+        at = sorted(float(p.pts * au.time_base) for p in c.demux(au) if p.pts is not None)
+    assert len(vt) == seconds * FPS
+    vt = vt[1:]                                    # (the muxer moves all but the first packet by the AAC priming)
+    assert vt[-1] - vt[0] == pytest.approx(seconds - 2 / FPS, abs=0.01)
+    assert max(b - a for a, b in zip(vt, vt[1:])) < 0.05
+    assert max(b - a for a, b in zip(at, at[1:])) < 0.07                 # 1024 samples at 16 kHz are 0.064 s
+    assert at[-1] - vt[-1] == pytest.approx(0.0, abs=0.15)

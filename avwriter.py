@@ -382,26 +382,110 @@ def _determine_output_format(path, user_fmt=None):
     return None
 
 
+def _keep_steps() -> bool:
+    """NOVA_TIMESTAMP_STEPS=keep: every step of the source's timestamps is written as it comes."""
+    return os.getenv("NOVA_TIMESTAMP_STEPS", "").strip().lower() == "keep"
+
+
+class TimestampWatch:
+    """What a source's timestamps have shown. One per source (timestamp_watch), so that it outlives a
+    segment and a connection: `on` (the source is doubted) once its timestamps have stepped back
+    while the stream went on.  `live` False (a file that is read, a capture device): never doubted,
+    there is no arrival of packets to hold against the timestamps."""
+    SAY_AFTER = 3               # steps back after which the log names it (one could be a quick reconnect)
+
+    def __init__(self, live=True):
+        self.keep = _keep_steps()
+        self.live = live and not self.keep
+        self.on = False
+        self.back = 0               # steps back while the stream went on
+        self.taken = 0              # steps that were not written as they came
+
+    def stepped_back(self):
+        self.taken += 1
+        self.back += 1
+        if self.live:
+            self.on = True
+            if self.back == self.SAY_AFTER:
+                logging.warning("[AVWriter] ⚠️ the source's timestamps step back and forth while its stream goes on "
+                                "(a camera whose RTCP sender reports do not fit its timestamps): such a step is "
+                                "a gap in the file only where the arrival of the packets shows one")
+
+
+def timestamp_watch(worker):
+    """The TimestampWatch of a worker's source, made on first use: its recorder and its streamer share it."""
+    watch = getattr(worker, "_timestamp_watch", None)
+    if watch is None:
+        url = str(getattr(worker, "url", "") or "")
+        watch = TimestampWatch(live="://" in url and not url.lower().startswith("file:"))
+        try:
+            worker._timestamp_watch = watch
+        except Exception:
+            pass
+    return watch
+
+
 class _Timeline:
     """Maps source timestamps (pts * time_base, seconds) onto the output clock.
 
     Within a continuous run the exact source timing is preserved (no drift, no jitter).
     On a discontinuity (reconnect, pts reset, >5 s jump, missing pts) the stream is re-anchored
     to the wall clock shared by all streams of this writer, so audio and video stay aligned and
-    outages show up as gaps instead of speeding up the recording."""
-    MAX_JUMP = 5.0
+    outages show up as gaps instead of speeding up the recording.
 
-    def __init__(self, origin, max_lead=None):
+    `peer` is the writer's other stream: a re-anchor goes on from the furthest point either stream
+    has reached, so that sound and picture of a new connection are written next to each other also
+    where the file is ahead of the wall clock.
+
+    Timestamps that step while the stream goes on.  Some cameras send RTCP sender reports that do
+    not fit their own RTP timestamps; FFmpeg maps every stream onto the reports, so the timestamps
+    of such a camera step by up to two seconds with every report (every 7 s), forward and back,
+    each stream at its own moments, while its frames and samples arrive complete and on time.
+    Taken as they come, every step forward was a gap in the file and every step back was dropped
+    (a file cannot go back): a 30-minute segment got 2 to 22 s longer than 30 minutes, with as
+    many seconds of holes in its sound, and sound and picture were up to 5 s apart inside it.
+    So: a step back with packets still arriving is no new connection; the stream goes on by its
+    own step (the frame interval, the length of the audio frame).  A source that has done this
+    is doubted (`watch`, shared with the other stream, the next segments and connections): from
+    then on a step that is not the stream's own is a gap only when the packets' arrival shows it."""
+    MAX_JUMP = 5.0
+    QUIET_S = 2.0       # a step back after this long without a packet is a new connection
+
+    def __init__(self, origin, max_lead=None, watch=None):
         self.origin = origin
         self.max_lead = max_lead        # live output: never more than this many seconds ahead of the clock
         self.src0 = None
         self.out0 = 0.0
         self.last_src = None
         self.last_out = 0.0
+        self.last_now = None            # when the last packet came
+        self.step = 0.0                 # the stream's own step: the frame interval (an interval seen twice
+        self._inc = None                # in a row), or the length of the last audio frame
         self.held = False               # the last frame was held back to the clock (see map): drop it
         self.catching = False
+        self.peer = None                # the writer's other timeline (see the class comment)
+        self.watch = watch or TimestampWatch()
 
-    def map(self, src_t):
+    def _anchor(self, src_t, now):
+        # to the wall clock, but never behind what was already written, here or in the other stream
+        written = max(self.last_out, self.peer.last_out) if self.peer else self.last_out
+        self.src0, self.out0 = src_t, max(now, written)
+
+    def _own_step(self, inc, quiet, audio):
+        """Is this step of the timestamps one to write as it is?  (Asked of a doubted source only.)"""
+        dev = inc - self.step
+        if abs(dev) <= (0.005 if audio else max(0.005, 0.2 * self.step)):
+            return True                                 # the stream's own step (a picture's, give or take)
+        if quiet >= self.QUIET_S:
+            return True                                 # nothing came for that long: a gap
+        if audio or dev < 0:
+            return False                                # sound is one sample after the other
+        # picture: frames the camera left out are whole frame intervals, and the next frame comes later
+        whole = abs(inc / self.step - round(inc / self.step)) * self.step < 0.001
+        return whole and quiet >= 0.5 * dev
+
+    def map(self, src_t, dur=None):
+        """The output time of a frame. `dur`: its length, where that says when the next one starts (audio)."""
         now = time.monotonic() - self.origin
         self.held = False
         if src_t is None:
@@ -409,10 +493,26 @@ class _Timeline:
             out = max(now, self.last_out)
         else:
             src_t = float(src_t)
-            if (self.src0 is None or src_t < self.last_src - 0.001
-                    or (src_t - self.last_src) > self.MAX_JUMP):
-                # re-anchor to the wall clock, but never behind what was already written
-                self.src0, self.out0 = src_t, max(now, self.last_out)
+            if self.src0 is None:
+                self._anchor(src_t, now)
+            else:
+                inc = src_t - self.last_src
+                quiet = now - self.last_now if self.last_now is not None else 0.0
+                if inc > self.MAX_JUMP or (inc < -0.001 and (quiet >= self.QUIET_S or self.watch.keep)):
+                    self._anchor(src_t, now)
+                elif inc < -0.001:
+                    # back, while the stream goes on: not a new connection (see the class comment)
+                    self.watch.stepped_back()
+                    self.src0, self.out0 = src_t, self.last_out + self.step
+                elif self.watch.on and self.step and not self._own_step(inc, quiet, dur is not None):
+                    self.watch.taken += 1
+                    self.src0, self.out0 = src_t, self.last_out + self.step
+                elif dur is None:
+                    if self._inc is not None and abs(inc - self._inc) < 0.001 and 0.0 < inc <= 1.0:
+                        self.step = inc
+                    self._inc = inc
+            if dur is not None:
+                self.step = dur
             self.last_src = src_t
             out = self.out0 + (src_t - self.src0)
             if self.max_lead is not None and (self.catching or out - now > self.max_lead):
@@ -423,10 +523,12 @@ class _Timeline:
                 # was written, then go on from the clock; the caller drops the held frames.
                 if now < self.last_out:
                     self.catching = self.held = True
+                    self.last_now = now
                     return self.last_out
                 self.catching = False
                 self.src0, self.out0 = src_t, now
                 out = now
+        self.last_now = now
         self.last_out = out
         return out
 
@@ -498,6 +600,7 @@ class AVWriter:
             live=False,
             vf=None, metadata=None,
             audio_wait=None,
+            timestamps=None,
         ):
         self.path = path
         self.src_width, self.src_height = width, height
@@ -517,6 +620,8 @@ class AVWriter:
         self.first_packet_sent = False
         self.first_packet_t = None      # time.monotonic() of the first muxed packet
         self.open_failed = None         # why the first mux (connect + header) failed
+        self.watch = timestamps or TimestampWatch()     # what the source's timestamps have shown (_Timeline)
+        self._taken0 = self.watch.taken
         self.v_frames = 0
         self.a_frames = 0
         self.audio_track = False
@@ -600,8 +705,9 @@ class AVWriter:
 
         self.origin = time.monotonic()
         lead = LIVE_MAX_LEAD if live else None
-        self.v_tl = _Timeline(self.origin, lead)
-        self.a_tl = _Timeline(self.origin, lead)
+        self.v_tl = _Timeline(self.origin, lead, self.watch)
+        self.a_tl = _Timeline(self.origin, lead, self.watch)
+        self.v_tl.peer, self.a_tl.peer = self.a_tl, self.v_tl
         self._held_v = 0                # video frames dropped to stay real time (live), for the log
         logging.info(f"[AVWriter] {self.v_encoder} {self.width}x{self.height}@{self.fps} -> {fmt} "
                      f"audio={'silence' if self.silence else (self.a_stream.codec_context.codec.name if self.a_stream else 'none')}"
@@ -1078,7 +1184,7 @@ class AVWriter:
             # to be dropped for the rest of the stream)
             self.silence = False
             logging.info("[AVWriter] camera audio arrived; it replaces the silent track")
-        out_t = self.a_tl.map(_src_time(frame))
+        out_t = self.a_tl.map(_src_time(frame), frame.samples / frame.sample_rate if frame.sample_rate else None)
         if self.a_tl.held:
             return                                # a burst beyond LIVE_MAX_LEAD (see write_video)
         pts = max(int(round(out_t * self.sample_rate)), self.last_a_end)
@@ -1154,6 +1260,10 @@ class AVWriter:
             except Exception as e: logging.debug(f"[AVWriter] container close: {e}")
             self._release()
         fixed = f", {self._dts_fixed} dts moved" if self._dts_fixed else ""
+        watch = getattr(self, "watch", None)
+        steps = watch.taken - self._taken0 if watch else 0
+        if steps:
+            fixed += f", {steps} step(s) of the source's timestamps not written as gaps"
         logging.debug(f"[AVWriter] closed ({self.v_frames} video / {self.a_frames} audio frames{fixed})")
 
     def _release(self):
