@@ -525,3 +525,53 @@ def test_a_stream_without_audio_never_waits_for_it(qapp, tmp_path, monkeypatch, 
         assert not c.streams.audio
         w._stream_loop(SlowContainer(c, 0.005), "silent")
     assert not any("no audio for" in r.getMessage() for r in caplog.records)
+
+
+class ClockRestarts(SlowContainer):
+    """A camera whose clock starts again: from the video packet number `at` on, the video timestamps
+    are `back` seconds lower and no audio packet comes any more."""
+    def __init__(self, c, delay, at, back, audio_goes=True):
+        super().__init__(c, delay)
+        self.at, self.back, self.audio_goes = at, back, audio_goes
+
+    def demux(self, *s):
+        n = 0
+        for p in super().demux(*s):
+            if p.stream.type == "video":
+                n += 1
+                if n >= self.at and p.pts is not None:
+                    shift = int(self.back / p.time_base)
+                    p.pts -= shift
+                    p.dts -= shift
+            elif n >= self.at and self.audio_goes:
+                continue
+            yield p
+
+
+def test_audio_that_stops_when_the_camera_s_clock_starts_again_is_fetched_within_seconds(qapp, tmp_path, monkeypatch, caplog):
+    """Four cameras of one make count time in 1/360000 s in 32 bits. Every 3 h 18 min 50 s the counter
+    starts again: the video timestamps go back by 2^30 (11930 s) and the camera sends no more audio to
+    the sessions that exist (captured on the wire). The watchdog waited its 30 s each time, seven times a
+    day per camera; timestamps that go back this far say at once what has happened."""
+    clip = _write_clip(tmp_path / "wrap.nut", frames=100, audio_s=4)        # 4 s of both
+    monkeypatch.setenv("NOVA_AUDIO_STALL", "30")
+    monkeypatch.setattr(videoworker, "AUDIO_AFTER_BACK_S", 0.4)
+    caplog.set_level(logging.DEBUG)
+
+    def play(**kw):
+        w = _worker(str(clip)); w.rec_on = True
+        del caplog.records[:]
+        t = time.monotonic()
+        with av.open(str(clip)) as c:
+            w._stream_loop(ClockRestarts(c, 0.01, **kw), "wrap")
+        said = [r.getMessage() for r in caplog.records if "no audio for" in r.getMessage()]
+        return w, said, time.monotonic() - t
+
+    w, said, took = play(at=30, back=2 ** 30 / 90000)
+    assert said and "since the video timestamps went back 11930 s" in said[0] and took < 3
+    assert w._a_stall_wait == 60.0                     # it had its audio for a second only: asked less often
+    assert any("the video timestamps went back 11930 s" in r.getMessage() for r in caplog.records)
+    assert not play(at=30, back=2 ** 30 / 90000, audio_goes=False)[1]      # the audio goes on: nothing to fetch
+    assert not play(at=30, back=1.0)[1]                                    # a second back is no new clock: the usual wait
+    monkeypatch.setenv("NOVA_AUDIO_STALL", "0")                            # switched off stays switched off
+    assert not play(at=30, back=2 ** 30 / 90000)[1]

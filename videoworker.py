@@ -62,6 +62,12 @@ MAX_AUDIO_ERRORS = 100      # audio packets in a row before audio is ignored unt
 VIDEO_STALL_S = 10.0        # no video packet for this long (audio still flowing): reconnect
 AUDIO_STALL_S = 30.0        # audio that flowed on this connection silent this long (video still flowing): reconnect
 AUDIO_STALL_MAX_S = 3600.0  # the wait doubles up to this while a camera keeps dropping its audio early
+# One make of camera counts its time in 1/360000 s in 32 bits: every 3 h 18 min 50 s (2^32 / 360000 s) the
+# counter starts again, its video timestamps go back by 2^30 and it stops sending audio to the sessions that
+# exist (captured; four cameras, each at its own moment since it was switched on). Video timestamps that go
+# back this far with no audio after them: that is known within seconds, not after the usual wait.
+TS_BACK_S = 60.0            # video timestamps that go back by more than this are a clock that started again
+AUDIO_AFTER_BACK_S = 5.0    # ... and audio missing this long after it does not come back on this connection
 FIRST_PICTURE_S = 60.0      # no picture at all this long after connecting: reconnect
 GOP_UNKNOWN_S = 20.0        # keyframe interval assumed until two keyframes have been seen
 FPS_MAX = 120               # a larger "frame rate" is a clock rate (90000), not frames
@@ -993,6 +999,8 @@ class VideoWorker(QThread):
         t_vframe = None             # last decoded video frame on this connection
         t_key = None                # last video keyframe packet
         t_afirst = t_apkt = None    # first and last audio packet on this connection
+        v_ts = None                 # the last video packet's timestamp, in seconds
+        t_back = back_s = None      # when the video timestamps went back (TS_BACK_S), and by how much
         try:
             for packet in container.demux(*streams):
                 if not self.run_flag: break
@@ -1001,6 +1009,13 @@ class VideoWorker(QThread):
 
                 if packet.stream.type == 'video':
                     t_vpkt = now
+                    if packet.pts is not None and packet.time_base:
+                        ts = float(packet.pts * packet.time_base)
+                        if v_ts is not None and v_ts - ts > TS_BACK_S:
+                            t_back, back_s = now, v_ts - ts
+                            logging.info(f"[VideoWorker] the video timestamps went back {back_s:.0f} s "
+                                         f"while the stream goes on (the camera's clock started again)")
+                        v_ts = ts
                     if packet.is_keyframe:
                         if t_key is not None:
                             self._gops.append(now - t_key)
@@ -1086,12 +1101,16 @@ class VideoWorker(QThread):
                 # hours (the RTSP session then carries video alone) and send it again to a new one. A recording
                 # went on without sound for the rest of the night, with nothing in the log.
                 wait = self._a_stall_wait
+                stopped_with_clock = t_back is not None and t_apkt is not None and t_apkt <= t_back + 1.0
+                if stopped_with_clock and wait:
+                    wait = min(wait, AUDIO_AFTER_BACK_S)
                 if t_apkt is not None and wait and now - t_apkt > wait and self._audio_wanted():
                     # audio that lasted: the next silence is waited for as long as this one; a camera that
                     # drops it soon after every connect is asked less and less often
-                    lasted = t_apkt - t_afirst > 10 * wait
-                    self._a_stall_wait = _audio_stall_s() if lasted else min(AUDIO_STALL_MAX_S, wait * 2)
-                    raise _Reconnect(f"no audio for {now - t_apkt:.0f} s while video keeps flowing")
+                    lasted = t_apkt - t_afirst > 10 * self._a_stall_wait
+                    self._a_stall_wait = _audio_stall_s() if lasted else min(AUDIO_STALL_MAX_S, self._a_stall_wait * 2)
+                    after = f" since the video timestamps went back {back_s:.0f} s" if stopped_with_clock else ""
+                    raise _Reconnect(f"no audio for {now - t_apkt:.0f} s{after} while video keeps flowing")
             if self.run_flag:                # the demuxer hit the end of the stream (EOF)
                 logging.info(f"[VideoWorker] stream ended after {time.monotonic() - t_start:.0f} s; reconnecting [{u_disp}]")
         except _Reconnect as r:
