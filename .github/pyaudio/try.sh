@@ -15,7 +15,7 @@ for v in a b; do
     [ $v = b ] && rc=1
   fi
   # the compiler's and the linker's command lines
-  grep -E '(^|[\\/" ])(cl\.exe|link\.exe|[a-z0-9_-]*gcc|clang|cc)(\.exe)?"? ' build-$v.log | grep -v '^copying\|^creating' > cmds-$v.txt
+  grep -E '(^|[\\/" ])(cl\.exe|link\.exe|[a-z0-9_-]*gcc|clang|cc)(\.exe)?"? ' build-$v.log | grep -v '^copying\|^creating' | sed -E 's/^[A-Z]+:[A-Za-z0-9_.]+://' > cmds-$v.txt   # (without the logging module's "INFO:name:" where it is there)
   sed -n '1p;$p' cmds-$v.txt | cut -c1-900
 done
 if [ -s cmds-a.txt ] && diff -q cmds-a.txt cmds-b.txt > /dev/null; then echo "SAME: compiler and linker command lines of a and b are identical ($(grep -c '' cmds-a.txt) lines)"; else echo "DIFFERENT command lines (a: $(grep -c '' cmds-a.txt), b: $(grep -c '' cmds-b.txt))"; fi
