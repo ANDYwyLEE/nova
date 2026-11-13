@@ -1,5 +1,6 @@
 """Logging setup shared by every module: the VERBOSE and TRACE levels, the masking filter, the
 excepthooks, and FFmpeg's log through PyAV (threshold per Nova level, known noise demoted)."""
+import collections
 import logging
 import os
 import sys
@@ -206,6 +207,38 @@ def libva_level(level, raw=False):
     _libva_level_ours = True
 
 
+class _RecentErrors(logging.Handler):
+    """Keeps FFmpeg's last error lines.  A decoder that is given up after thirty packets has said why at
+    the first one ("Unsupported sw format: yuvj420p"), and the message about giving up should say it too."""
+
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.lines = collections.deque(maxlen=60)       # (time.time(), message)
+
+    def emit(self, record):
+        try:
+            message = " ".join(record.getMessage().split()).rstrip(".")
+            # a line that repeats with every packet must not push out the one that came first and says why
+            if not any(m == message and record.created - t < 60 for t, m in self.lines):
+                self.lines.append((record.created, message))
+        except Exception:
+            pass
+
+
+_recent = _RecentErrors()
+
+
+def recent_av_errors(since, limit=3):
+    """FFmpeg's error lines since `since` (time.time()), each once, the oldest first, `limit` at most."""
+    out = []
+    for created, message in list(_recent.lines):
+        if created >= since and message and message not in out:
+            out.append(message)
+            if len(out) == limit:
+                break
+    return out
+
+
 def setup_av_logging():
     """FFmpeg's log follows -l: the threshold from AV_THRESHOLDS, the libav logger at the Nova level
     (PyAV pins it to WARNING at import), AVNoiseFilter and CredentialMaskFilter on every root
@@ -230,5 +263,7 @@ def setup_av_logging():
     libav = logging.getLogger("libav")
     libav.setLevel(1 if raw else level)
     libav.propagate = True
+    if _recent not in libav.handlers:
+        libav.addHandler(_recent)
     logging.debug(f"[LogSync] FFmpeg log threshold {threshold} for level {level}"
                   + (f" (NOVA_AV_LOG={raw}: raw)" if raw else ""))

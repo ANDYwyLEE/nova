@@ -219,6 +219,102 @@ def printable(text, limit=200):
 DRM_ROOT = "/sys/class/drm"
 
 
+# hardware decoding APIs FFmpeg knows by name, whether the build in use was made with them or not
+KNOWN_HWACCELS = ("cuda", "vaapi", "vdpau", "qsv", "d3d11va", "dxva2", "d3d12va", "videotoolbox", "drm",
+                  "opencl", "mediacodec", "vulkan", "amf")
+DRM_VENDORS = {"0x8086": "Intel", "0x1002": "AMD", "0x10de": "NVIDIA"}
+
+
+def drm_gpus(root="/sys/class/drm"):
+    """[(vendor, 'vvvv:dddd', kernel driver, render node)] of the GPUs the Linux kernel has: the integrated
+    one next to the NVIDIA cards too, which nvidia-smi does not list."""
+    out = []
+    for card in sorted(glob.glob(os.path.join(root, "card[0-9]*"))):
+        if "-" in os.path.basename(card):                 # card1-HDMI-A-1: a connector, not a GPU
+            continue
+        dev = os.path.join(card, "device")
+        try:
+            with open(os.path.join(dev, "vendor")) as f: vendor = f.read().strip()
+            with open(os.path.join(dev, "device")) as f: device = f.read().strip()
+        except OSError:
+            continue
+        try:
+            driver = os.path.basename(os.readlink(os.path.join(dev, "driver")))
+        except OSError:
+            driver = "no driver"
+        node = next((os.path.basename(n) for n in sorted(glob.glob(os.path.join(dev, "drm", "renderD*")))), "no render node")
+        out.append((DRM_VENDORS.get(vendor, vendor), f"{vendor[2:]}:{device[2:]}", driver, node))
+    return out
+
+
+def pci_gpus(root="/sys/bus/pci/devices"):
+    """[(vendor, 'vvvv:dddd', kernel driver)] of the display controllers on the PCI bus.  Unlike drm_gpus
+    this does not depend on a driver having made a DRM device: a server whose NVIDIA cards only compute
+    has none for them."""
+    out = []
+    for dev in sorted(glob.glob(os.path.join(root, "*"))):
+        try:
+            with open(os.path.join(dev, "class")) as f:
+                if not f.read().strip().lower().startswith("0x03"):
+                    continue
+            with open(os.path.join(dev, "vendor")) as f: vendor = f.read().strip().lower()
+            with open(os.path.join(dev, "device")) as f: device = f.read().strip().lower()
+        except OSError:
+            continue
+        try:
+            driver = os.path.basename(os.readlink(os.path.join(dev, "driver")))
+        except OSError:
+            driver = "no driver"
+        out.append((DRM_VENDORS.get(vendor, vendor), f"{vendor[2:]}:{device[2:]}", driver))
+    return out
+
+
+def accel_obstacle(accel, gpus=None):
+    """What stands between --accel and this machine whatever is installed in Python, in words for the log
+    and for nova doctor; None when nothing is known to (and always outside Linux, and where the kernel
+    shows no display controller at all: a container, an ARM board).  `gpus`: pci_gpus()."""
+    if gpus is None:
+        gpus = pci_gpus() if LINUX and not WSL else []       # WSL reaches the GPU through /dev/dxg
+    if not gpus:
+        return None
+    a = (accel or "").lower()
+    if a in ("cuda", "cuvid", "nvdec"):
+        nvidia = [g for g in gpus if g[0] == "NVIDIA"]
+        if not nvidia:
+            return "this machine has no NVIDIA GPU"
+        if all(g[2] == "nouveau" for g in nvidia):
+            return ("the NVIDIA card runs on the nouveau driver, and NVIDIA's decoder (NVDEC) comes with "
+                    "NVIDIA's own driver only")
+    if a == "qsv" and not any(g[0] == "Intel" for g in gpus):
+        return "this machine has no Intel GPU, and Quick Sync is Intel's"
+    return None
+
+
+_ERR_LOG = re.compile(r"last error log:\s*(?:\[[^\]]*\]\s*)?(.+)$", re.S)
+# FFmpeg's words when a GPU maker's library is not on the machine, and ours for it
+_ERR_MEANS = (
+    (("Cannot load libnvcuvid", "Failed loading nvcuvid", "Cannot load libcuda", "Could not dynamically load CUDA",
+      "Cannot load nvcuvid", "Cannot load nvcuda"), "NVIDIA's driver is not installed, or not its decoding library"),
+    (("Cannot load libnvidia-encode", "Cannot load nvEncodeAPI"), "NVIDIA's driver is not installed, or not its encoding library"),
+)
+
+
+def hw_err(e) -> str:
+    """short_err for a hardware decoder or encoder that did not open: FFmpeg's own last line belongs to
+    it ('Operation not permitted' alone was all the log had of a missing NVIDIA library), and what that
+    line means where it is one of the usual ones."""
+    text = str(e)
+    head = re.sub(r"\s+returned -?\d+$", "", short_err(text.split("; last error log")[0]))
+    m = _ERR_LOG.search(text)
+    last = " ".join(m.group(1).split()).rstrip(".") if m else ""
+    if not last:
+        return head
+    for needles, meaning in _ERR_MEANS:
+        if any(n in last for n in needles):
+            return f"{head}: {last} ({meaning})"
+    return f"{head}: {last}"
+
+
 def vaapi_node(gpu_idx=None, root=None):
     """The DRM render node --accel vaapi and the *_vaapi encoders use.  An index (--gpu N, or the launcher's
     NOVA_GPU_DEVICES) names /dev/dri/renderD(128+N).  None, nothing asked for, is the first node that is

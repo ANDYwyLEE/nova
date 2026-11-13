@@ -22,7 +22,8 @@ from PySide6.QtCore import QThread, Signal
 
 import logsync  # installs logging.verbose / logging.trace
 from mytools import Skipper, FrameRator, Clock
-from util import LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err as _short_err
+from util import (LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err as _short_err, hw_err as _hw_err,
+                  accel_obstacle, KNOWN_HWACCELS)
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS
@@ -30,6 +31,7 @@ from dispframe import DisplayFrame, GL_DIRECT_FORMATS
 import av
 from av.codec.hwaccel import HWAccel, hwdevices_available
 from av.codec.context import ThreadType
+from logsync import recent_av_errors
 
 HWACCELS = [str(x) for x in hwdevices_available()]
 try:
@@ -166,7 +168,7 @@ def accel_supported(accel: str) -> bool:
     """A name Nova knows how to try (an unknown one ends the camera). Whether this FFmpeg build can do it
     is accel_in_build's question; a known backend the build lacks falls back to software decoding."""
     a = (accel or "").lower()
-    return (not a) or a in HWACCELS or a in SEPARATE_DECODER_SUFFIX
+    return (not a) or a in HWACCELS or a in SEPARATE_DECODER_SUFFIX or a in KNOWN_HWACCELS
 
 
 def accel_in_build(accel: str) -> bool:
@@ -313,6 +315,7 @@ class _VideoDecode:
         self.kf = 0              # keyframes fed to the decoder before its first picture
         self.got = False         # the decoder delivered a picture
         self.errors = 0          # packets in a row the decoder rejected
+        self.t_rejected = 0.0    # when the first of them was (time.time())
         self.last_err = ""       # the last rejection, for the give-up message
         self.wait_kf = False     # the decoder (re)starts at the next keyframe
         self.headers = None      # parameter sets the decoder in use needs in its keyframes (else None)
@@ -330,12 +333,16 @@ class _VideoDecode:
     def open(self):
         w = self.w
         if w.accel and w._hw_fail is None:
-            ctx, name, err = w._open_hw_decoder(self.base, self.codec_name)
-            if ctx is not None:
-                logging.info(f"[VideoWorker] 🚀 HW decoder: {name}")
-                self._use(ctx, True, name)
-                return
-            w._hw_failed(err, self.codec_name)
+            never = w._accel_never()
+            if never:
+                w._hw_failed(never, self.codec_name, never=True)
+            else:
+                ctx, name, err = w._open_hw_decoder(self.base, self.codec_name)
+                if ctx is not None:
+                    logging.info(f"[VideoWorker] 🚀 HW decoder: {name}")
+                    self._use(ctx, True, name)
+                    return
+                w._hw_failed(err, self.codec_name)
         self._use_sw()
 
     def release(self):
@@ -413,10 +420,10 @@ class _VideoDecode:
                 logging.debug(f"[VideoWorker] explicit open of {self.codec_name} failed, decoding lazily: {_short_err(e)}")
         self._use(b, False, self.codec_name)
 
-    def fallback_sw(self, reason, key):
+    def fallback_sw(self, reason, key, never=False):
         """The hardware decoder failed while decoding: software from now on, starting with this
         packet when it is a keyframe, else with the next keyframe."""
-        self.w._hw_failed(reason, self.codec_name)
+        self.w._hw_failed(reason, self.codec_name, never=never)
         self._use_sw()
         self.skip_upto, self.skipped = self.last_pts, 0
         self.wait_kf = not key
@@ -462,10 +469,13 @@ class _VideoDecode:
         self.errors += 1
         self.last_err = _short_err(e)
         if self.errors == 1:
+            self.t_rejected = time.time()
             logging.verbose(f"[VideoWorker] {self.name} rejected a video packet ({_short_err(e)}); skipped")
         if self.errors < MAX_DECODE_ERRORS:
             return []
-        reason = f"{self.name}: {self.errors} video packets in a row failed to decode ({_short_err(e)})"
+        # FFmpeg said why at the first of them, not at the last ("Unsupported sw format: yuvj420p")
+        why = "; ".join(recent_av_errors(self.t_rejected - 1.0)) or _short_err(e)
+        reason = f"{self.name}: {self.errors} video packets in a row failed to decode ({why})"
         if not self.is_hw:
             raise _Reconnect(reason)
         self.fallback_sw(reason, key)
@@ -615,8 +625,10 @@ class VideoWorker(QThread):
         logging.debug("[VideoWorker] started")
 
         if self.accel and not accel_supported(self.accel):
-            logging.critical(f"[VideoWorker] ❌ --accel={self.accel} is not supported by this FFmpeg/PyAV build. "
-                             f"Available hw devices: {HWACCELS}")
+            names = sorted(set(KNOWN_HWACCELS) | set(SEPARATE_DECODER_SUFFIX) | set(HWACCELS))
+            logging.critical(f"[VideoWorker] ❌ --accel={self.accel} is not a hardware decoder Nova knows "
+                             f"(a typing error?). The names: {', '.join(names)}; this FFmpeg build has "
+                             f"{', '.join(HWACCELS) or 'none of them'}")
             self.stat_sig.emit(f"Unsupported --accel={self.accel}")
             self.run_flag = False
             self.exit_sig.emit()
@@ -904,16 +916,30 @@ class VideoWorker(QThread):
         return f"{host}:{port}: {errors[-1]}"
 
     # ------------------------------------------------------------------ decoder selection
-    def _hw_failed(self, reason, codec_name):
+    def _accel_never(self):
+        """Why --accel cannot decode on this machine whatever the camera sends, so that it is said once
+        and not tried every few minutes: the FFmpeg build was made without it, or the machine has no GPU
+        for it (util.accel_obstacle).  None: it is worth trying."""
+        a = self.accel.lower()
+        if not accel_in_build(a):
+            custom = "; docs/custom-ffmpeg.md builds one that has it" if a in ("vaapi", "vdpau") else ""
+            return f"this FFmpeg build was made without {a} (it has: {', '.join(HWACCELS) or 'none'}{custom})"
+        return accel_obstacle(a)
+
+    def _hw_failed(self, reason, codec_name, never=False):
         """A hardware decoder could not be used: software now, hardware again after a delay that
-        doubles while it keeps failing (5 min ... 1 h)."""
+        doubles while it keeps failing (5 min ... 1 h); never again when the machine cannot have it."""
         if self._hw_fail is None:
             self._hw_backoff = HW_RETRY_S
         else:
             self._hw_backoff = min(HW_RETRY_MAX_S, self._hw_backoff * 2)
-        self._hw_retry_at = time.monotonic() + self._hw_backoff
-        msg = (f"[VideoWorker] ❌ No working HW decoder for --accel={self.accel} ({_mask(reason)}). "
-               f"Falling back to software ({codec_name}); hardware is tried again in {_delay(self._hw_backoff)}.")
+        self._hw_retry_at = float("inf") if never else time.monotonic() + self._hw_backoff
+        if never:
+            msg = (f"[VideoWorker] ❌ --accel={self.accel} cannot work here: {_mask(reason)}. "
+                   f"Decoding in software ({codec_name}).")
+        else:
+            msg = (f"[VideoWorker] ❌ No working HW decoder for --accel={self.accel} ({_mask(reason)}). "
+                   f"Falling back to software ({codec_name}); hardware is tried again in {_delay(self._hw_backoff)}.")
         if reason != self._hw_fail:
             logging.warning(msg)
         else:
@@ -980,8 +1006,8 @@ class VideoWorker(QThread):
             _report_unused_dec(ctx, opts)
             return ctx, None
         except Exception as e:
-            logging.debug(f"[VideoWorker] decoder {name} unavailable: {_short_err(e)}")
-            return None, _short_err(e)
+            logging.debug(f"[VideoWorker] decoder {name} unavailable: {_hw_err(e)}")
+            return None, _hw_err(e)
 
     def _open_hwaccel_decoder(self, base):
         """(ctx, None) or (None, reason): the stream's own decoder with --accel's device attached."""
@@ -991,8 +1017,8 @@ class VideoWorker(QThread):
                          options=self.hw_opts or None)
             ctx = av.CodecContext.create(base.codec, "r", hwaccel=hw)     # creates the device
         except Exception as e:
-            logging.debug(f"[VideoWorker] {self.accel} device {device} unavailable: {_short_err(e)}")
-            return None, _short_err(e)
+            logging.debug(f"[VideoWorker] {self.accel} device {device} unavailable: {_hw_err(e)}")
+            return None, _hw_err(e)
         if not ctx.is_hwaccel:
             return None, f"{self.accel} cannot decode {base.codec.name}"
         try:
@@ -1004,8 +1030,8 @@ class VideoWorker(QThread):
             _report_unused_dec(ctx, opts)
             return ctx, None
         except Exception as e:
-            logging.debug(f"[VideoWorker] {self.accel} hwaccel failed for {base.codec.name}: {_short_err(e)}")
-            return None, _short_err(e)
+            logging.debug(f"[VideoWorker] {self.accel} hwaccel failed for {base.codec.name}: {_hw_err(e)}")
+            return None, _hw_err(e)
 
     def _frame_rate(self, video_stream):
         """The camera's frame rate, from the stream header; a value above FPS_MAX is a clock rate
@@ -1027,13 +1053,19 @@ class VideoWorker(QThread):
             logging.debug(msg)
         return fps
 
-    def _slow(self, per, fps):
+    def _slow(self, per, fps, dec=None):
         """The connection's thread needs `per` seconds for a picture (None: it keeps up) and the camera
         sends `fps` a second.  More decoder threads from the next connection on, and the words that say
         so are returned; where that is not to be had (every core in use already, or --ffmpeg names the
-        threads), one line in the log about what needs less, and None."""
+        threads), one line in the log about what needs less, and None.  A GPU's decoder that is the
+        slow one (an old card on a camera of today) is left for the software decoder, for good."""
         if not per:
             return None
+        if dec is not None and dec.is_hw:
+            self._hw_failed(f"the GPU's decoder does not keep up with this camera: a picture takes "
+                            f"{per * 1000:.0f} ms through {dec.name} and the camera sends one every "
+                            f"{1000 / fps:.0f} ms", dec.codec_name, never=True)
+            return "the GPU's decoder does not keep up with the camera: software decoding from now on"
         most = min(os.cpu_count() or 1, LOAD_THREADS_MAX)
         asked = any(k in self.dec_opts for k in ("threads", "thread_type"))
         took = (f"a picture takes {per * 1000:.0f} ms here" + (f" on {self._sw_threads} threads" if self._sw_threads else "")
@@ -1160,10 +1192,9 @@ class VideoWorker(QThread):
                             self.frame_q.append(DisplayFrame.from_rgba_array(frame.to_ndarray(format="rgba")))
                         self.img_sig.emit()
 
-                    if not dec.is_hw:
-                        more = self._slow(load.add(now, time.monotonic() - now, len(frames)), fps_cap)
-                        if more:
-                            raise _Reconnect(more)
+                    more = self._slow(load.add(now, time.monotonic() - now, len(frames)), fps_cap, dec)
+                    if more:
+                        raise _Reconnect(more)
 
                 elif packet.stream.type == 'audio':
                     if t_apkt is None:
@@ -1232,10 +1263,9 @@ class VideoWorker(QThread):
             self._log_fail(re.sub(r"\d+", "#", str(r)), f"[VideoWorker] {r}; reconnecting. [{u_disp}]")
         finally:
             dec.release()
-            if not dec.is_hw:
-                more = self._slow(load.end(time.monotonic()), fps_cap)
-                if more:
-                    logging.warning(f"[VideoWorker] {more}")
+            more = self._slow(load.end(time.monotonic()), fps_cap, dec)
+            if more:
+                logging.warning(f"[VideoWorker] {more}")
 
     # ------------------------------------------------------------------ recorder / streamer hand-off
     def _dispatch_av(self, typ, frame):

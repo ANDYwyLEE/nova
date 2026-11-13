@@ -1,5 +1,8 @@
+import os
+
 import pytest
 
+import util
 from util import mask_url, display_url
 
 
@@ -110,3 +113,53 @@ def test_vaapi_node_is_the_first_one_that_is_not_an_nvidia_card(tmp_path):
     _render_nodes(only_nvidia, [("renderD128", "0x10de")])
     assert util.vaapi_node(None, str(only_nvidia)) == "/dev/dri/renderD128"
     assert util.vaapi_node(None, str(tmp_path / "nothing")) == "/dev/dri/renderD128"
+
+
+def _pci(root, slot, cls, vendor, device, driver=None):
+    d = root / slot
+    d.mkdir(parents=True)
+    (d / "class").write_text(cls + "\n")
+    (d / "vendor").write_text(vendor + "\n")
+    (d / "device").write_text(device + "\n")
+    if driver:
+        (root.parent / "drivers" / driver).mkdir(parents=True, exist_ok=True)
+        os.symlink(root.parent / "drivers" / driver, d / "driver")
+
+
+def test_the_display_controllers_on_the_pci_bus(tmp_path):
+    root = tmp_path / "devices"
+    _pci(root, "0000:00:02.0", "0x030000", "0x8086", "0xa780", "i915")
+    _pci(root, "0000:01:00.0", "0x030000", "0x10de", "0x0a64", "nouveau")
+    _pci(root, "0000:02:00.0", "0x030200", "0x10de", "0x2684")              # a card no driver took
+    _pci(root, "0000:03:00.0", "0x020000", "0x10ec", "0x8168", "r8169")     # the network card is not one
+    assert util.pci_gpus(str(root)) == [("Intel", "8086:a780", "i915"), ("NVIDIA", "10de:0a64", "nouveau"),
+                                        ("NVIDIA", "10de:2684", "no driver")]
+    assert util.pci_gpus(str(tmp_path / "nothing")) == []
+
+
+def test_what_stands_between_an_accel_and_the_machine():
+    """An old NVIDIA card on nouveau: `--accel cuda` was answered with `Operation not permitted` and tried
+    again every few minutes; `--accel qsv` on a machine without an Intel GPU failed thirty packets first."""
+    nouveau = [("NVIDIA", "10de:0a64", "nouveau")]
+    assert "nouveau driver" in util.accel_obstacle("cuda", nouveau) and "NVIDIA's own driver" in util.accel_obstacle("nvdec", nouveau)
+    assert util.accel_obstacle("qsv", nouveau) == "this machine has no Intel GPU, and Quick Sync is Intel's"
+    assert util.accel_obstacle("vaapi", nouveau) is None and util.accel_obstacle("vdpau", nouveau) is None
+    amd = [("AMD", "1002:1638", "amdgpu")]
+    assert util.accel_obstacle("cuda", amd) == "this machine has no NVIDIA GPU"
+    both = [("Intel", "8086:a780", "i915"), ("NVIDIA", "10de:2684", "nvidia"), ("NVIDIA", "10de:0a64", "nouveau")]
+    assert util.accel_obstacle("cuda", both) is None and util.accel_obstacle("qsv", both) is None
+    # a card no driver took may still be NVIDIA's own driver's (it binds late): not ours to rule out
+    assert util.accel_obstacle("cuda", [("NVIDIA", "10de:2684", "no driver")]) is None
+    assert util.accel_obstacle("cuda", []) is None and util.accel_obstacle("", amd) is None    # nothing to go by
+
+
+def test_a_hardware_error_keeps_ffmpeg_s_own_last_line():
+    cuvid = Exception("[Errno 1] Operation not permitted: 'avcodec_open2(\"h264_cuvid\", {})'; last error log: [h264_cuvid] Failed loading nvcuvid.")
+    assert util.hw_err(cuvid) == ("Operation not permitted: Failed loading nvcuvid "
+                                  "(NVIDIA's driver is not installed, or not its decoding library)")
+    cuda = Exception("[Errno 1] Operation not permitted; last error log: [CUDA] Could not dynamically load CUDA")
+    assert util.hw_err(cuda).startswith("Operation not permitted: Could not dynamically load CUDA (NVIDIA's driver")
+    v4l2 = Exception("[Errno 22] Invalid argument: 'avcodec_open2(\"h264_v4l2m2m\", {})' returned 22; last error log: [h264_v4l2m2m] can't configure decoder")
+    assert util.hw_err(v4l2) == "Invalid argument: can't configure decoder"
+    assert util.hw_err(Exception("[Errno 5] Input/output error")) == "Input/output error"
+    assert util.hw_err(Exception("no decoder")) == "no decoder"

@@ -25,6 +25,7 @@ def qapp():
 def _worker(url="file.mp4", accel=None, gpu=None, headless=True):
     w = VideoWorker(url, 30, False, accel, headless, None, gpu=gpu)
     w.clock.sleep = lambda ms: None          # no 10 s retry pauses in tests
+    w._accel_never = lambda: None            # whatever GPUs the test machine has or lacks
     return w
 
 
@@ -747,3 +748,44 @@ def test_a_single_core_has_no_threads_to_add(qapp, monkeypatch, caplog):
     w = _worker()
     assert w._slow(0.058, 25) is None and w._sw_threads == 0          # no reconnect for nothing
     assert sum("does not keep up" in r.getMessage() for r in caplog.records) == 1
+
+
+# ---------------------------------------------------------------- an --accel that cannot work on this machine
+def _said(caplog, words):
+    return [r.getMessage() for r in caplog.records if words in r.getMessage()]
+
+
+def test_an_accel_the_ffmpeg_build_lacks_is_said_once_and_decoded_in_software(qapp, clip, monkeypatch, caplog):
+    """`--accel vaapi` with the wheel from PyPI (a cameras.ini carried over, an AMD or an old NVIDIA GPU):
+    the camera ended with `--accel=vaapi is not supported by this FFmpeg/PyAV build`, a black window."""
+    monkeypatch.setattr(videoworker, "HWACCELS", ["cuda", "qsv", "drm", "amf"])
+    assert videoworker.accel_supported("vaapi") and videoworker.accel_supported("vdpau")       # known names
+    assert not videoworker.accel_supported("nonsense")
+    caplog.set_level(logging.INFO)
+    w = _worker(str(clip), accel="vaapi")
+    del w._accel_never                                   # the real one
+    w._open_hw_decoder = lambda *a: pytest.fail("nothing is there to open")
+    for _ in range(2):                                   # two connections
+        with av.open(str(clip)) as c:
+            w._stream_loop(c, "clip")
+    said = _said(caplog, "cannot work here")
+    assert len(said) == 1, said
+    assert "--accel=vaapi cannot work here: this FFmpeg build was made without vaapi (it has: cuda, qsv, drm, amf; " \
+           "docs/custom-ffmpeg.md builds one that has it). Decoding in software (h264)." in said[0]
+    assert len(_said(caplog, "First frame (h264, SW)")) == 2 and not _said(caplog, "tried again")
+    assert not w._hw_retry_due()                         # and never tried: the build does not change
+
+
+def test_an_accel_this_machine_has_no_gpu_for_is_said_once(qapp, clip, monkeypatch, caplog):
+    monkeypatch.setattr(videoworker, "accel_obstacle", lambda a: "the NVIDIA card runs on the nouveau driver, and "
+                        "NVIDIA's decoder (NVDEC) comes with NVIDIA's own driver only" if a == "cuda" else None)
+    monkeypatch.setattr(videoworker, "accel_in_build", lambda a: True)
+    caplog.set_level(logging.INFO)
+    w = _worker(str(clip), accel="cuda")
+    del w._accel_never
+    w._open_hw_decoder = lambda *a: pytest.fail("nothing is there to open")
+    with av.open(str(clip)) as c:
+        w._stream_loop(c, "clip")
+    said = _said(caplog, "cannot work here")
+    assert len(said) == 1 and "--accel=cuda cannot work here: the NVIDIA card runs on the nouveau driver" in said[0], said
+    assert _said(caplog, "First frame (h264, SW)") and not w._hw_retry_due()

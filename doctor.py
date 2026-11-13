@@ -25,7 +25,8 @@ from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from util import mask_url, find_secrets, vaapi_node, LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI    # noqa: E402
+from util import (mask_url, find_secrets, vaapi_node, drm_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
+                  LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI)
 
 NVIDIA_MIN_DRIVER = 570          # the PyPI wheel's NVENC needs this (string in its libavcodec)
 LOW_DISK_GB = 20
@@ -324,31 +325,6 @@ def ffmpeg_lines():
     except Exception as e:
         lines.append(("HW codecs", f"n/a ({e})"))
     return lines
-
-
-DRM_VENDORS = {"0x8086": "Intel", "0x1002": "AMD", "0x10de": "NVIDIA"}
-
-
-def drm_gpus(root="/sys/class/drm"):
-    """[(vendor, 'vvvv:dddd', kernel driver, render node)] of the GPUs the Linux kernel has: the integrated
-    one next to the NVIDIA cards too, which nvidia-smi does not list."""
-    out = []
-    for card in sorted(glob.glob(os.path.join(root, "card[0-9]*"))):
-        if "-" in os.path.basename(card):                 # card1-HDMI-A-1: a connector, not a GPU
-            continue
-        dev = os.path.join(card, "device")
-        try:
-            with open(os.path.join(dev, "vendor")) as f: vendor = f.read().strip()
-            with open(os.path.join(dev, "device")) as f: device = f.read().strip()
-        except OSError:
-            continue
-        try:
-            driver = os.path.basename(os.readlink(os.path.join(dev, "driver")))
-        except OSError:
-            driver = "no driver"
-        node = next((os.path.basename(n) for n in sorted(glob.glob(os.path.join(dev, "drm", "renderD*")))), "no render node")
-        out.append((DRM_VENDORS.get(vendor, vendor), f"{vendor[2:]}:{device[2:]}", driver, node))
-    return out
 
 
 INTEL_PACKAGES = (        # package manager -> Intel's VA driver (the build with encoders) and Quick Sync runtime;
@@ -764,11 +740,14 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
             try:
                 from videoworker import accel_in_build
                 for a in sorted(accels):
-                    if accel_in_build(a):
-                        out.append(("✓", f"--accel {a} has a decoder in this FFmpeg build"))
-                    else:
+                    obstacle = accel_obstacle(a)
+                    if not accel_in_build(a):
                         out.append(("⚠", f"--accel {a} is in cameras.ini but this FFmpeg build has no {a} decoder: "
                                          f"software decoding (docs/install.md)"))
+                    elif obstacle:
+                        out.append(("⚠", f"--accel {a} is in cameras.ini but {obstacle}: software decoding"))
+                    else:
+                        out.append(("✓", f"--accel {a} has a decoder in this FFmpeg build"))
             except Exception as e:
                 out.append(("ℹ", f"--accel {' '.join(sorted(accels))}: could not check ({e})"))
         indexes = config_gpus(defaults, env, cs)

@@ -164,3 +164,23 @@ def test_libva_s_own_messages_follow_the_level(monkeypatch):
     monkeypatch.setenv("LIBVA_MESSAGING_LEVEL", "2")
     logsync.libva_level(logging.CRITICAL)
     assert os.environ["LIBVA_MESSAGING_LEVEL"] == "2"
+
+
+def test_the_first_error_line_survives_the_ones_that_repeat():
+    """A decoder was given up after thirty packets: FFmpeg had said why at the first ("Unsupported sw
+    format: yuvj420p") and then `get_buffer() failed` twice a packet, which was all that was left."""
+    import time
+    logsync.setup_av_logging()
+    t0 = time.time()
+    lib = logging.getLogger("libav.h264")
+    lib.error("Unsupported sw format: yuvj420p")
+    lib.error("Failed setup for format vdpau: hwaccel initialisation returned error.")
+    for _ in range(200):
+        lib.error("get_buffer() failed")
+        lib.error("no frame!")
+    lib.warning("a warning is not an error")
+    assert logsync.recent_av_errors(t0) == ["Unsupported sw format: yuvj420p",
+                                            "Failed setup for format vdpau: hwaccel initialisation returned error",
+                                            "get_buffer() failed"]
+    assert logsync.recent_av_errors(t0, limit=10)[-1] == "no frame!"
+    assert logsync.recent_av_errors(time.time() + 5) == []
