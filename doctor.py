@@ -378,6 +378,21 @@ def node_access_check(blocked, accels, user=None):
             for vendor, ids, node, group in blocked]
 
 
+def nouveau_check(gpus, firmware="/lib/firmware/nouveau"):
+    """An NVIDIA card on the nouveau driver (an old card NVIDIA's driver no longer serves, or a system
+    without it): what can decode there and what cannot, since `--accel cuda` is what one reaches for."""
+    if not any(g[0] == "NVIDIA" and g[2] == "nouveau" for g in gpus):
+        return []
+    try:
+        has_fw = bool(os.listdir(firmware))
+    except OSError:
+        has_fw = False
+    return [("ℹ", "the NVIDIA card runs on the nouveau driver: --accel cuda needs NVIDIA's own driver. nouveau "
+                  "decodes H.264 through --accel vaapi or vdpau of a custom FFmpeg build, with the card's "
+                  "firmware in " + firmware + (" (there is none)" if not has_fw else "")
+                  + "; docs/install.md, An old NVIDIA card")]
+
+
 def nvidia_index_check(indexes, count, accels):
     """A check line when --gpu / NOVA_GPU_DEVICES name an NVIDIA card this machine does not have (a
     cameras.ini carried over from a machine with more cards): those cameras are moved to GPU 0."""
@@ -766,6 +781,7 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
             else:
                 out.append(("⚠", f"{len(xm)} xmeye:// camera(s) but python-dvr is not installed: "
                                  f"{python or sys.executable} -m pip install python-dvr"))
+    out.extend(nouveau_check(gpus))
     out.extend(node_access_check(blocked, accels))
     # disk
     if free is not None:

@@ -368,3 +368,15 @@ def test_numpy_built_for_a_newer_cpu_is_said(monkeypatch, tmp_path):
     out = doctor.report(config=str(ini), gl=False)
     assert "numpy ends with `Illegal instruction`" in out and "could not check" not in out
     assert "free for recordings" in out
+
+
+def test_an_nvidia_card_on_nouveau_is_told_what_can_decode(tmp_path):
+    nouveau = [("NVIDIA", "10de:0a64", "nouveau", "renderD128")]
+    (mark, text), = doctor.nouveau_check(nouveau, str(tmp_path / "none"))
+    assert mark == "ℹ" and "--accel cuda needs NVIDIA's own driver" in text and "(there is none)" in text
+    assert "--accel vaapi or vdpau of a custom FFmpeg build" in text and "docs/install.md" in text
+    fw = tmp_path / "nouveau"
+    fw.mkdir()
+    (fw / "nva3_bsp").write_bytes(b"x")
+    assert "(there is none)" not in doctor.nouveau_check(nouveau, str(fw))[0][1]
+    assert doctor.nouveau_check([("NVIDIA", "10de:2684", "nvidia", "renderD129"), ("Intel", "8086:a780", "i915", "renderD128")]) == []
