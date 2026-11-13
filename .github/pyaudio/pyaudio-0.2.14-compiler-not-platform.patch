@@ -1,0 +1,144 @@
+--- a/setup.py
++++ b/setup.py
+@@ -30,19 +30,24 @@
+ import logging
+ import platform
+ from setuptools import setup, Extension
++from setuptools.command.build_ext import build_ext
+ import sys
+ 
+ __version__ = "0.2.14"
+ 
+ # setup.py/setuptools will try to locate and link dynamically against portaudio,
+-# except on Windows. On Windows, setup.py will attempt to statically link in
+-# portaudio, since most users will install PyAudio from pre-compiled wheels.
++# except with Microsoft's compiler on Windows. There, setup.py will attempt to
++# statically link in portaudio, since most users will install PyAudio from
++# pre-compiled wheels.
+ #
+-# If you wish to compile PyAudio on Windows, use vcpkg to install portaudio with
+-# either:
++# If you wish to compile PyAudio on Windows with Visual Studio, use vcpkg to
++# install portaudio with either:
+ #  - vcpkg install portaudio (for dynamic linking)
+ #  - vcpkg install portaudio:x86-windows-static (for 32-bit static linking)
+ #  - vcpkg install portaudio:x64-windows-static (for 64-bit static linking)
++#
++# A MinGW-w64 Python (e.g., MSYS2) links dynamically against the portaudio
++# package of its distribution, like the POSIX platforms do.
+ 
+ MAC_SYSROOT_PATH = os.environ.get("SYSROOT_PATH", None)
+ WIN_VCPKG_PATH = os.environ.get("VCPKG_PATH", None)
+@@ -85,32 +90,14 @@
+             extra_compile_args += ["-isysroot", MAC_SYSROOT_PATH]
+             extra_link_args += ["-isysroot", MAC_SYSROOT_PATH]
+     elif sys.platform == 'win32':
+-        # Only supports statically linking with portaudio, since the typical
+-        # way users install PyAudio on win32 is through pre-compiled wheels.
++        # What holds for every compiler on Windows. sys.platform is 'win32'
++        # for a MinGW-w64 Python (e.g., MSYS2) as well, so what only Microsoft's
++        # compiler needs is added by BuildExtension below, once the compiler is
++        # known. gcc and clang find the portaudio package of their distribution
++        # in their own prefix.
+         bits = platform.architecture()[0]
+         if '64' in bits:
+             defines.append(('MS_WIN64', '1'))
+-
+-        if WIN_VCPKG_PATH:
+-            include_dirs += [os.path.join(WIN_VCPKG_PATH, 'include')]
+-            external_libraries_path = [os.path.join(WIN_VCPKG_PATH, 'lib')]
+-        else:
+-            # If VCPKG_PATH is not set, it is likely a user oversight, as the
+-            # extension compiler likely won't be able to find the portaudio
+-            # library to link against.
+-            logging.warning("Warning: VCPKG_PATH envrionment variable not set.")
+-            # So if VCPKG_PATH is not set, be sure to manually add the correct
+-            # path to portaudio's include and lib dirs, or use setuptools
+-            # build_ext to specify them on the command line.
+-            external_libraries.remove("portaudio")
+-
+-        # The static portaudio lib does not include user32 and advapi32, so
+-        # those need to be linked manually.
+-        external_libraries += ["user32", "Advapi32"]
+-        # For static linking, use MT flag to match both vcpkg's portaudio and
+-        # the standard portaudio cmake settings. For details, see:
+-        # https://devblogs.microsoft.com/cppblog/vcpkg-updates-static-linking-is-now-available/
+-        extra_compile_args += ["/MT"]
+     else:
+         # GNU/Linux and other posix-like OSes will dynamically link to
+         # portaudio, installed by the package manager.
+@@ -128,6 +115,47 @@
+         library_dirs=external_libraries_path)
+ 
+ 
++def configure_for_msvc(extension):
++    """Statically link portaudio (e.g., as installed by vcpkg; see INSTALL)."""
++    # Only supports statically linking with portaudio, since the typical
++    # way users install PyAudio on win32 is through pre-compiled wheels.
++    if WIN_VCPKG_PATH:
++        extension.include_dirs += [os.path.join(WIN_VCPKG_PATH, 'include')]
++        extension.library_dirs[:] = [os.path.join(WIN_VCPKG_PATH, 'lib')]
++    else:
++        # If VCPKG_PATH is not set, it is likely a user oversight, as the
++        # extension compiler likely won't be able to find the portaudio
++        # library to link against.
++        logging.warning("Warning: VCPKG_PATH envrionment variable not set.")
++        # So if VCPKG_PATH is not set, be sure to manually add the correct
++        # path to portaudio's include and lib dirs, or use setuptools
++        # build_ext to specify them on the command line.
++        extension.libraries.remove("portaudio")
++
++    # The static portaudio lib does not include user32 and advapi32, so
++    # those need to be linked manually.
++    extension.libraries += ["user32", "Advapi32"]
++    # For static linking, use MT flag to match both vcpkg's portaudio and
++    # the standard portaudio cmake settings. For details, see:
++    # https://devblogs.microsoft.com/cppblog/vcpkg-updates-static-linking-is-now-available/
++    extension.extra_compile_args += ["/MT"]
++
++
++class BuildExtension(build_ext):
++    """Adds the settings that depend on the compiler, not on the platform.
++
++    "/MT" and the vcpkg layout belong to Microsoft's compiler. Deciding by
++    sys.platform also gave them to gcc and clang on Windows, where "/MT" is
++    taken for an input file ("No such file or directory").
++    """
++
++    def build_extensions(self):
++        if self.compiler.compiler_type == 'msvc':
++            for extension in self.extensions:
++                configure_for_msvc(extension)
++        super().build_extensions()
++
++
+ with open('README.md', 'r') as fh:
+     long_description = fh.read()
+ 
+@@ -148,6 +176,7 @@
+         "test": ["numpy"],
+     },
+     ext_modules=[setup_extension()],
++    cmdclass={'build_ext': BuildExtension},
+     classifiers=[
+         "Development Status :: 4 - Beta",
+         "License :: OSI Approved :: MIT License",
+--- a/INSTALL
++++ b/INSTALL
+@@ -114,3 +114,16 @@
+ 
+ The generated wheel will be placed in the dist folder, and can be copied to any
+ target machine and installed with 'pip install PYAUDIO_WHEEL.whl'.
++
++
++--------------------------------------------------------------------------------
++Compiling from source (Microsoft Windows & MSYS2 / MinGW-w64)
++--------------------------------------------------------------------------------
++A MinGW-w64 Python, as MSYS2 provides it, builds PyAudio like a POSIX platform
++does: against the PortAudio package of the distribution, dynamically linked. In
++an MSYS2 UCRT64 (or MINGW64, CLANG64) shell:
++
++  $ pacman -S ${MINGW_PACKAGE_PREFIX}-{gcc,python-pip,python-setuptools,portaudio}
++  $ pip install pyaudio
++
++(CLANG64 uses ${MINGW_PACKAGE_PREFIX}-clang instead of gcc.)
