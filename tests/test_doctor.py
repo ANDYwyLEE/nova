@@ -319,3 +319,52 @@ def test_qt_modules_that_do_not_load_are_named():
     assert mark == "⚠" and "PySide6.QtNetwork does not load (libgssapi_krb5.so.2" in text and "nova start" in text
     assert doctor.qt_modules_check([("QtGui", "No module named 'PySide6'")]) == []     # the Qt line says that
     assert doctor.qt_modules_check([]) == []
+
+
+# ---------------------------------------------------------------- an old CPU
+ATOM = ("processor\t: 0\nmodel name\t: Intel(R) Atom(TM) CPU D525   @ 1.80GHz\n"
+        "flags\t\t: fpu sse sse2 ht pni ssse3 cx16 movbe lahf_lm\n")
+CORE = ("processor\t: 0\nmodel name\t: 13th Gen Intel(R) Core(TM) i9-13900K\n"
+        "flags\t\t: fpu sse sse2 pni ssse3 cx16 sse4_1 sse4_2 movbe popcnt avx avx2\n")
+PI = "processor\t: 0\nBogoMIPS\t: 108.00\nFeatures\t: fp asimd\nModel\t\t: Raspberry Pi 4 Model B Rev 1.4\n"
+
+
+@pytest.mark.skipif(not doctor.LINUX, reason="/proc/cpuinfo is Linux's")
+def test_the_cpu_line_names_the_processor_and_a_missing_sse4_2(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.os, "cpu_count", lambda: 4)
+    f = tmp_path / "cpuinfo"
+    f.write_text(ATOM)
+    assert doctor.cpu_line(str(f)) == "Intel(R) Atom(TM) CPU D525 @ 1.80GHz, 4 threads, no SSE4.2"
+    f.write_text(CORE)
+    assert doctor.cpu_line(str(f)) == "13th Gen Intel(R) Core(TM) i9-13900K, 4 threads"
+    f.write_text(PI)
+    assert doctor.cpu_line(str(f)) == "Raspberry Pi 4 Model B Rev 1.4, 4 threads"
+    assert doctor.cpu_line(str(tmp_path / "none")).endswith(", 4 threads")      # unreadable: the machine type
+
+
+def test_a_cpu_line_is_in_the_report(tmp_path):
+    out = doctor.report(config=str(tmp_path / "none.ini"), gl=False)
+    assert any(line.startswith("CPU ") and " thread" in line for line in out.splitlines()), out
+
+
+def test_numpy_built_for_a_newer_cpu_is_said(monkeypatch, tmp_path):
+    """On a CPU without SSE4.2 the numpy of requirements.txt ended every camera with an illegal
+    instruction: an empty log, `exited with code -4`, and a doctor that had nothing to say."""
+    def ends(code, stderr=""):
+        return lambda cmd, **kw: subprocess.CompletedProcess(cmd, code, "", stderr)
+    assert doctor.numpy_check("py", run=ends(0)) == []
+    (mark, text), = doctor.numpy_check("py", run=ends(-4))
+    assert mark == "⚠" and "Illegal instruction" in text and 'py -m pip install "numpy<2.4"' in text and "SSE4.2" in text
+    assert "Illegal instruction" in doctor.numpy_check("py", run=ends(0xC000001D))[0][1]         # Windows' code for it
+    (mark, text), = doctor.numpy_check("py", run=ends(1, "Traceback ...\nModuleNotFoundError: No module named 'numpy'\n"))
+    assert mark == "⚠" and "No module named 'numpy'" in text and "no camera starts without it" in text
+
+    # the report goes on to its end: it does not import what would end it the same way
+    ini = tmp_path / "cameras.ini"
+    ini.write_text("[defaults]\nopts = --accel cuda\n[cam]\nurl = rtsp://user:secret@192.0.2.1/x\n")
+    os.chmod(ini, 0o600)
+    monkeypatch.setattr(doctor, "numpy_check", lambda python=None: [("⚠", "numpy ends with `Illegal instruction`")])
+    monkeypatch.setitem(sys.modules, "videoworker", None)              # importing it now would raise
+    out = doctor.report(config=str(ini), gl=False)
+    assert "numpy ends with `Illegal instruction`" in out and "could not check" not in out
+    assert "free for recordings" in out

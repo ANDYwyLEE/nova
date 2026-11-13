@@ -589,6 +589,25 @@ def stop_timeout(env, streaming=False):
     return max(15.0, 2 * t + 5 + (LIVE_OPEN_TIMEOUT if streaming else 0))
 
 
+ILLEGAL_INSTRUCTION = 0xC000001D        # Windows' exit code for what Linux and macOS end with SIGILL
+
+
+def how_it_ended(code):
+    """A camera process's exit code in words.  One that a signal ended wrote nothing into its log, so
+    the launcher's line is all there is: the signal's name, and for an illegal instruction what it means."""
+    illegal = ("illegal instruction: one of the Python packages was built for a newer CPU than this one; "
+               "`nova doctor` says which")
+    if code == ILLEGAL_INSTRUCTION:
+        return f"exited with code {code:#x} ({illegal})"
+    if code is None or code >= 0:
+        return f"exited with code {code}"
+    try:
+        name = signal.Signals(-code).name
+    except ValueError:
+        return f"was ended by signal {-code}"
+    return f"was ended by {name}" + (f" ({illegal})" if name == "SIGILL" else "")
+
+
 def log_tail(cid, n=5):
     try:
         with open(os.path.join(LOGDIR, f"{cid}.log"), "rb") as f:
@@ -816,7 +835,7 @@ def cmd_start(defaults, env, cams, args, record=False):
             continue
         failed += 1
         pids.pop(cam.id, None)
-        print(f"{cam.id}: exited with code {p.returncode} right after start; logs/{cam.id}.log ends with:")
+        print(f"{cam.id}: {how_it_ended(p.returncode)} right after start; logs/{cam.id}.log ends with:")
         for line in log_tail(cam.id):
             print(f"    {line}")
     write_pids(pids)
@@ -957,7 +976,10 @@ def cmd_run(defaults, env, cams, args):
     p = subprocess.Popen(launch_argv(cam, defaults, args.extra, args.config, address, layout=layout),
                          cwd=HERE, env=process_env(env, gpu))
     try:
-        return p.wait()
+        code = p.wait()
+        if code < 0 or code == ILLEGAL_INSTRUCTION:       # a signal: nova.py could not say anything itself
+            print(f"{cam.id}: {how_it_ended(code)}", file=sys.stderr)
+        return code
     except KeyboardInterrupt:
         # Ctrl-C from the terminal reaches nova.py as well; a SIGINT aimed only at the launcher is
         # forwarded.  Either way nova.py gets time to save its state (subprocess.call would kill it

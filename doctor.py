@@ -108,6 +108,33 @@ def os_line():
     return platform.platform()
 
 
+def cpu_line(cpuinfo="/proc/cpuinfo"):
+    """The processor's name and thread count; on x86 Linux also when it lacks SSE4.2, which the numpy
+    wheels of today are built for (numpy_check says what follows from that)."""
+    name, note = "", ""
+    if LINUX:
+        try:
+            text = open(cpuinfo, encoding="utf-8", errors="replace").read()
+        except OSError:
+            text = ""
+        m = re.search(r"^model name\s*:\s*(.+)$", text, re.M) or re.search(r"^(?:Model|Hardware)\s*:\s*(.+)$", text, re.M)
+        name = m.group(1).strip() if m else ""
+        flags = re.search(r"^flags\s*:\s*(.+)$", text, re.M)
+        if flags and not {"sse4_2", "popcnt"} <= set(flags.group(1).split()):
+            note = ", no SSE4.2"
+    elif MAC:
+        name = _run(["sysctl", "-n", "machdep.cpu.brand_string"])
+    elif WINDOWS:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+                name = str(winreg.QueryValueEx(k, "ProcessorNameString")[0]).strip()
+        except (ImportError, OSError):
+            name = ""
+    n = os.cpu_count() or 1
+    return f"{' '.join(name.split()) or platform.machine()}, {n} thread{'s' if n != 1 else ''}{note}"
+
+
 def desktop_line():
     if WINDOWS or MAC:
         return "-"
@@ -645,9 +672,32 @@ def _can_import(python, name):
         return False
 
 
+ILLEGAL_INSTRUCTION = (-4, 0xC000001D)      # ended by SIGILL; Windows' exit code for the same
+
+
+def numpy_check(python=None, run=subprocess.run):
+    """[] when the camera interpreter imports numpy, else one line.  A numpy built for a newer CPU than
+    this one (2.4 and newer need SSE4.2) ends the process before Python can say a word: every camera
+    is gone right after its start, with nothing in its log."""
+    py = python or sys.executable
+    try:
+        r = run([py, "-c", "import numpy"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode == 0:
+        return []
+    if r.returncode in ILLEGAL_INSTRUCTION:
+        return [("⚠", "numpy ends with `Illegal instruction` on this CPU, and every camera with it: numpy 2.4 and "
+                      "newer are built for SSE4.2 (Intel Core i and newer, Atoms from 2013, AMD FX and newer); "
+                      f"{py} -m pip install \"numpy<2.4\" (docs/install.md, Older systems)")]
+    last = [l.strip() for l in (r.stderr or "").splitlines() if l.strip()][-1:] or [f"exit code {r.returncode}"]
+    return [("⚠", f"numpy does not import in {py}, and no camera starts without it: {last[0]}")]
+
+
 def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
     """[(mark, text)]: ✓ fine, ⚠ worth fixing, ℹ good to know."""
-    out = []
+    out = numpy_check(python)
+    no_numpy = bool(out)
     # PyAV against the oldest release requirements.txt accepts (newer ones are welcome)
     try:
         import av
@@ -710,7 +760,7 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         for text in [defaults.get("opts", "")] + [c.opts for c in cs if c.enabled]:
             for m in re.finditer(r"--accel[= ]+(\S+)", text):
                 accels.add(m.group(1).lower())
-        if accels:
+        if accels and not no_numpy:              # videoworker imports numpy, and would end this report with it
             try:
                 from videoworker import accel_in_build
                 for a in sorted(accels):
@@ -753,6 +803,7 @@ def report(config=None, gl=True, python=None):
     rows.append(("Nova", f"{nova_version()}, {HERE}"))
     rows.append(("Python", f"{platform.python_version()} ({sys.executable})"))
     rows.append(("OS", os_line()))
+    rows.append(("CPU", cpu_line()))
     rows.append(("Desktop", desktop_line()))
     rows.append(("Qt", qt_line()))
     gl_text = gl_line(python) if gl else "skipped"

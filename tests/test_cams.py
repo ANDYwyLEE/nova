@@ -239,3 +239,16 @@ def test_windows_without_a_place_are_numbered_for_a_grid(cfg, tmp_path, monkeypa
     # has a place ignores its number
     monkeypatch.setattr(cams, "window_settings", lambda: None)
     assert len(cams.tile_flags(chosen, {}, defaults, [], False, None)) == 3
+
+
+def test_a_camera_that_a_signal_ended_is_put_in_words():
+    """A process ended by a signal wrote nothing into its log: `exited with code -4` was all a user saw
+    of a numpy that the CPU could not run."""
+    import signal
+    assert cams.how_it_ended(0) == "exited with code 0" and cams.how_it_ended(1) == "exited with code 1"
+    assert cams.how_it_ended(-signal.SIGTERM) == "was ended by SIGTERM"
+    for code in (-signal.SIGILL, cams.ILLEGAL_INSTRUCTION):
+        said = cams.how_it_ended(code)
+        assert "illegal instruction" in said and "built for a newer CPU" in said and "nova doctor" in said, said
+    assert cams.how_it_ended(-signal.SIGILL).startswith("was ended by SIGILL (")
+    assert cams.how_it_ended(-250) == "was ended by signal 250"

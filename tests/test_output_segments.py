@@ -15,6 +15,9 @@ pytestmark = pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.t
 @pytest.fixture
 def tz(monkeypatch):
     def use(name):
+        # a bare container image has no zone files, and the C library then reads every zone as UTC
+        if not os.path.exists(os.path.join(os.environ.get("TZDIR", "/usr/share/zoneinfo"), name)):
+            pytest.skip(f"no time zone database on this system (tzdata): {name} is not there")
         monkeypatch.setenv("TZ", name)
         time.tzset()
     yield use

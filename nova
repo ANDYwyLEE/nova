@@ -4,6 +4,17 @@
 # Uses the project venv when there is one; cams.py does the work.
 here=$(dirname "$(readlink -f "$0" 2>/dev/null || printf %s "$0")")   # works through a symlink (~/bin/nova)
 if [ -x "$here/venv/bin/python" ]; then
+    # a venv of an older Python (Debian 12 has 3.11, Ubuntu 22.04 3.10) would end in a SyntaxError:
+    # say what is needed. Its version is the name of its folder, so no interpreter is started for this.
+    for lib in "$here"/venv/lib/python3.*; do
+        minor=${lib##*/python3.}
+        case $minor in ''|*[!0-9]*) continue ;; esac
+        if [ "$minor" -lt 12 ]; then
+            echo "nova: the venv here was made with Python 3.$minor, and Nova needs Python 3.12 or newer" >&2
+            echo "      (docs/install.md, \"Which Python\", says where a newer one comes from)" >&2
+            exit 1
+        fi
+    done
     exec "$here/venv/bin/python" "$here/cams.py" "$@"
 fi
 exec python3 "$here/cams.py" "$@"
