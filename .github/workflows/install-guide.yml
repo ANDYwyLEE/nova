@@ -101,7 +101,9 @@ jobs:
             if [ -n "$PYSIDE" ]; then
               # the sed line of the guide for a C library older than the PySide6 of requirements.txt is built for
               grep -q "$PYSIDE" docs/install.md
-              sed -E "s/^(PySide6[A-Za-z_]*)==.*/\1==$PYSIDE/" requirements.txt > requirements-old.txt
+              now=$(grep -m1 "^PySide6==" requirements.txt | cut -d= -f3)
+              sed "s/==$now\$/==$PYSIDE/" requirements.txt > requirements-old.txt        # shiboken6 and the two PySide6 parts as well
+              grep -c "==$PYSIDE\$" requirements-old.txt
               ! pip install -r requirements.txt > /dev/null 2>&1 || { echo "requirements.txt installs here: this job no longer tests anything"; exit 1; }
               pip install -r requirements-old.txt
             else
