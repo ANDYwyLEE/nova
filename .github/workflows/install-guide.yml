@@ -38,6 +38,8 @@ jobs:
           - { image: "registry.opensuse.org/opensuse/tumbleweed:latest", name: "opensuse/tumbleweed", block: "**openSUSE" }
           - { image: "registry.opensuse.org/opensuse/leap:16.0", name: "opensuse/leap:16.0", block: "**openSUSE" }
           - { image: "archlinux:latest", block: "**Arch Linux" }
+          # the newest Python, on Debian 13's packages (its own python3 is 3.13): pip compiles PyOpenGL-accelerate there
+          - { image: "python:3.15", name: "python:3.15 (Debian 13)", block: "Ubuntu 24.04 and 26.04, Debian 13", python: "python3.15" }
           # arm64 (Raspberry Pi OS 13 is Debian 13): the same lines on GitHub's ARM runners
           - { image: "ubuntu:24.04", runner: "ubuntu-24.04-arm", name: "ubuntu:24.04 arm64", block: "Ubuntu 24.04 and 26.04, Debian 13" }
           - { image: "debian:13", runner: "ubuntu-24.04-arm", name: "debian:13 arm64", block: "Ubuntu 24.04 and 26.04, Debian 13" }
