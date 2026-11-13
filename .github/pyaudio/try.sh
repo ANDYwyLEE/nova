@@ -4,7 +4,7 @@
 here=$(cd "$(dirname "$0")" && pwd); work=${1:-$PWD/pyaudio-try}; mkdir -p "$work" && cd "$work"
 python -c "import sys, sysconfig, setuptools; print('sys.platform:', sys.platform, '| sysconfig.get_platform():', sysconfig.get_platform(), '| setuptools', setuptools.__version__); print('sys.version:', sys.version.replace(chr(10), ' '))"
 [ -f PyAudio-0.2.14.tar.gz ] || python -m pip download pyaudio==0.2.14 --no-binary :all: --no-deps --no-build-isolation -q -d .
-rm -rf a b && tar xzf PyAudio-0.2.14.tar.gz && mv PyAudio-0.2.14 a && cp -r a b && (cd b && tr -d '\r' < "$here/pyaudio-0.2.14-compiler-not-platform.patch" | git apply -p1 -) || exit 2   # (a Windows checkout gives the patch CRLF)
+rm -rf a b && tar xzf PyAudio-0.2.14.tar.gz && mv PyAudio-0.2.14 a && cp -r a b && (cd b && tr -d '\r' < "$here/pyaudio-0.2.14-msvc-only.patch" | git apply -p1 -) || exit 2   # (a Windows checkout gives the patch CRLF)
 rc=0
 for v in a b; do
   echo "=== $v: $([ $v = a ] && echo 'as released' || echo 'patched')  ${EXTRA:+(build_ext $EXTRA)}"

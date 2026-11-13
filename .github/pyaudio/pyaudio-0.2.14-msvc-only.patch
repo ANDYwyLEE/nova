@@ -1,0 +1,11 @@
+--- a/setup.py
++++ b/setup.py
+@@ -84,7 +84,7 @@
+         if MAC_SYSROOT_PATH:
+             extra_compile_args += ["-isysroot", MAC_SYSROOT_PATH]
+             extra_link_args += ["-isysroot", MAC_SYSROOT_PATH]
+-    elif sys.platform == 'win32':
++    elif sys.platform == 'win32' and 'MSC' in sys.version:
+         # Only supports statically linking with portaudio, since the typical
+         # way users install PyAudio on win32 is through pre-compiled wheels.
+         bits = platform.architecture()[0]

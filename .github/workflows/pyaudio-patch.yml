@@ -1,8 +1,8 @@
 name: PyAudio patch (temporary)
 
-# One-off check of a patch for PyAudio's setup.py (decide the Microsoft-only build settings by the compiler,
-# not by sys.platform): 0.2.14 as released and patched, built with Microsoft's compiler + vcpkg (must come out
-# the same) and in MSYS2's environments (must build at all). Runs on a push to this branch only.
+# One-off check of a one-line patch for PyAudio's setup.py (the Visual Studio + vcpkg branch only for a Python
+# built with Microsoft's compiler): 0.2.14 as released and patched, built with Microsoft's compiler + vcpkg
+# (must come out the same) and in MSYS2's environments (must build at all). Runs on a push to this branch only.
 on:
   push:
     branches: [pyaudio-patch-test]
@@ -39,9 +39,6 @@ jobs:
           V="$(cygpath -w "$VCPKG_INSTALLATION_ROOT")\\installed\\x64-windows-static"
           EXTRA="-I $V\\include -L $V\\lib -l portaudio" bash .github/pyaudio/try.sh "$PWD/without" | tee without.txt
           grep -q '^SAME' without.txt && grep -q '^b: imported' without.txt
-      - name: The extension handed to the compiler, field by field (no compiler run)
-        shell: bash
-        run: python .github/pyaudio/equiv.py with-vcpkg/a with-vcpkg/b
 
   msys2:
     name: MSYS2 ${{ matrix.msystem }}
