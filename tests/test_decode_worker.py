@@ -704,17 +704,19 @@ def test_a_connection_that_falls_behind_comes_back_with_frame_threads(qapp, tmp_
     with av.open(str(clip)) as c:
         w._stream_loop(RealTime(c, 0.04), "busy")
     said = [r.getMessage() for r in caplog.records]
-    assert w._sw_threads == 2, said
-    assert any("the decoder gets 2 threads from now on" in m and "reconnecting" in m for m in said), said
+    n = w._sw_threads                        # 2 by the 50 ms; a slow test machine adds to them (a macOS runner: 145 ms)
+    assert 2 <= n <= 4, said
+    assert any(f"the decoder gets {n} threads from now on" in m and "reconnecting" in m for m in said), said
     assert w._session_frames < 40            # it did not stay to the end of the clip
 
     monkeypatch.setattr(_VideoDecode, "decode", real)
+    monkeypatch.setattr(videoworker, "LOAD_JUDGE_S", 60)      # the next connection is not judged here
     del caplog.records[:]
     with av.open(str(clip)) as c:
         w._stream_loop(RealTime(c, 0.04), "busy")
     said = [r.getMessage() for r in caplog.records]
-    assert any("First frame (h264, SW, 2 threads)" in m for m in said), said
-    assert w._sw_threads == 2 and not any("threads from now on" in m for m in said), said
+    assert any(f"First frame (h264, SW, {n} threads)" in m for m in said), said
+    assert w._sw_threads == n and not any("threads from now on" in m for m in said), said
 
 
 def test_a_frame_threaded_decoder_is_drained_before_it_is_let_go(qapp, tmp_path):
