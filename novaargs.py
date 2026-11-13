@@ -37,7 +37,8 @@ def build_parser():
     parser.add_argument(
         "--opengl",
         action="store_true",
-        help="Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended)."
+        help="Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended). Needs OpenGL 3.3: where the "
+             "GPU's driver offers less, the window is drawn without it and the log says so."
     )
     parser.add_argument(
         "--accel",

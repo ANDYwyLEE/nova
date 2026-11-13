@@ -14,7 +14,8 @@ from PySide6.QtCore import Qt, QMetaObject, QTimer, QSize
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QIcon
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
-from util import parse_time, mask_url, NATIVE_APP_ID, window_platform, no_display, NO_DISPLAY, utf8_stdio, MAC, driver_own_libgl
+from util import (parse_time, mask_url, NATIVE_APP_ID, window_platform, no_display, NO_DISPLAY, utf8_stdio, MAC,
+                  driver_own_libgl, opengl_needs)
 from novaargs import build_parser
 
 ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
@@ -174,9 +175,22 @@ if __name__ == "__main__":
 
     from novacore import NovaCore
     from view import Nova
-    from novagl import NovaGL
+    from novagl import NovaGL, opengl_offered
 
     logging.debug(f"[Nova] {mask_url(args.url)}")
+
+    if args.opengl and not args.headless:
+        # a GPU whose driver stops below OpenGL 3.3 (a Raspberry Pi: 3.1; Intel graphics of 2011 and before): the
+        # window that needs no shader of Nova's draws there, so the camera is shown, and the log says how
+        have = opengl_offered()
+        if have:
+            logging.warning(f"[Nova] ⚠️ {opengl_needs(have)}: this window is drawn without --opengl "
+                            f"(the CPU converts the pictures)")
+            args.opengl = False
+            plain = QSurfaceFormat()              # the default format had the 3.3 core profile in it
+            plain.setAlphaBufferSize(8)
+            plain.setRenderableType(QSurfaceFormat.OpenGL)
+            QSurfaceFormat.setDefaultFormat(plain)
 
     core = NovaCore(
         url=args.url,

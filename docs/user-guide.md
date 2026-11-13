@@ -145,7 +145,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 |---|---|
 | `-i, --input` | Video source: rtsp/rtmp/srt URL; a brand shortcut that finds the RTSP URL (onvif://, hik://, dahua://, xmeye://, reolink://, axis://, tapo://, unv:// followed by user:pw@host[:port][/CHANNEL][/STREAM]); a capture device ('0' = /dev/video0 or avfoundation 0, 'dshow://video=NAME' on Windows). |
 | `-n, --name, --camera-name` | Camera name: the window title becomes 'Nova - NAME', recordings go to videos/NAME/ and snapshots are named NAME_<time>.png. |
-| `--opengl` | Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended). |
+| `--opengl` | Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended). Needs OpenGL 3.3: where the GPU's driver offers less, the window is drawn without it and the log says so. |
 | `--accel` | Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m ...). |
 | `--gpu` | GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). Default: NOVA_GPU_DEVICES, else 0. It counts NVIDIA cards for cuda and NVENC (an index this machine does not have falls back to 0) and DRM render nodes for vaapi (N is /dev/dri/renderD(128+N); without --gpu, the first node that is not an NVIDIA card); Quick Sync, AMF and the Windows decoders use the system's GPU whatever it says. |
 | `-f, --fps` | Target display frame rate. Default: 30. |
@@ -171,7 +171,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 
 Notes:
 
-- `--opengl` is the recommended renderer. Decoded NV12/YUV planes go straight to textures and the colour conversion runs in a shader; software-decoded streams are uploaded the same way. Without it, QPainter draws RGBA frames converted on the CPU.
+- `--opengl` is the recommended renderer. Decoded NV12/YUV planes go straight to textures and the colour conversion runs in a shader; software-decoded streams are uploaded the same way. Without it, QPainter draws RGBA frames converted on the CPU. The shaders need OpenGL 3.3; where the GPU's driver stops below it (a Raspberry Pi: 3.1; Intel graphics of 2011 and before; some remote desktops and VMs), the window is drawn by QPainter all the same and the log says `--opengl needs OpenGL 3.3, and the GPU's driver here offers OpenGL 3.1`. `nova doctor` says it before a camera is started.
 - `--accel` picks a dedicated decoder where one exists (`h264_cuvid`, `hevc_qsv`, …) or attaches the platform hwaccel (`vaapi`, `videotoolbox`, `d3d11va`, `dxva2`) to the standard decoder. If neither delivers frames, software decoding takes over and the log says so.
 - `-f` caps the *display* rate; decoding always runs at the camera's rate so recordings and streams are complete.
 - `-g` is the grid for snapping and keyboard moves. Windows snap when you release the mouse.

@@ -2,9 +2,9 @@
 RGB in a shader, the overlay as an RGBA texture, fit and zoom as a model matrix."""
 import traceback, logging, sys, ctypes, time
 import numpy as np
-from util import WINDOWS
+from util import WINDOWS, opengl_shortfall
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QImage, QSurfaceFormat, QOpenGLContext, QPainter, QColor
+from PySide6.QtGui import QImage, QSurfaceFormat, QOpenGLContext, QOffscreenSurface, QPainter, QColor
 
 try: from OpenGL.GL import *
 except ImportError:
@@ -22,6 +22,40 @@ GL_GIVE_UP_AFTER = 60      # consecutive failed frames before OpenGL rendering i
 GL_LOG_INTERVAL = 60.0     # seconds between render error reports
 RENDER_FAILED = "Rendering failed (OpenGL)\nsee the log"
 GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FF
+
+def opengl_offered():
+    """What the GPU's driver offers in place of the OpenGL 3.3 core context an --opengl window draws in
+    ('OpenGL 3.1', 'OpenGL ES 3.1'), or None when that context is there.  Asked before the window is
+    made (a QGuiApplication exists): the shaders do not compile in an older context, and with some
+    drivers the first call in it ended the process.  None as well when no context can be made at all:
+    that is another matter, and the window says it."""
+    try:
+        want = QSurfaceFormat()
+        want.setRenderableType(QSurfaceFormat.OpenGL)
+        want.setVersion(3, 3)
+        want.setProfile(QSurfaceFormat.CoreProfile)
+        ctx = QOpenGLContext()
+        ctx.setFormat(want)
+        if not ctx.create():
+            ctx = QOpenGLContext()                  # whatever the platform offers
+            if not ctx.create():
+                return None
+        # Qt reads the version the driver gave when the context is made; current on a surface as well,
+        # for a platform plugin that would only know then
+        surface = QOffscreenSurface()
+        surface.setFormat(ctx.format())
+        surface.create()
+        current = ctx.makeCurrent(surface)
+        try:
+            got = ctx.format()
+            return opengl_shortfall(got.majorVersion(), got.minorVersion(), ctx.isOpenGLES())
+        finally:
+            if current:
+                ctx.doneCurrent()
+    except Exception as e:
+        logging.debug(f"[NovaGL] the OpenGL version could not be asked for: {e!r}")
+        return None
+
 
 VERTEX_SHADER = """
 #version 330 core

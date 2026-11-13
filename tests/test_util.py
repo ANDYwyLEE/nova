@@ -231,3 +231,13 @@ def test_an_av_that_is_installed_and_does_not_load_is_not_told_to_pip_install():
     assert "docs/custom-ffmpeg.md" in said and "pip install --force-reinstall av" in said and "requirements.txt" not in said
     dll = ImportError("DLL load failed while importing _core: The specified module could not be found.")
     assert "is installed but does not load (DLL load failed while importing _core" in util.av_import_help(dll)
+
+
+def test_opengl_shortfall_names_a_context_that_is_too_old():
+    """A Raspberry Pi 5 (OpenGL 3.1), Intel graphics of 2011 and before: the shaders of an --opengl window
+    are '#version 330 core'."""
+    assert util.opengl_shortfall(3, 3) is None and util.opengl_shortfall(4, 6) is None
+    assert util.opengl_shortfall(3, 1) == "OpenGL 3.1" and util.opengl_shortfall(2, 1) == "OpenGL 2.1"
+    assert util.opengl_shortfall(3, 2, es=True) == "OpenGL ES 3.2"          # ES of any version: other shaders
+    assert util.opengl_needs("OpenGL 3.1") == "--opengl needs OpenGL 3.3, and the GPU's driver here offers OpenGL 3.1"
+

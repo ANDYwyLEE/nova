@@ -220,6 +220,25 @@ DRM_ROOT = "/sys/class/drm"
 
 
 # hardware decoding APIs FFmpeg knows by name, whether the build in use was made with them or not
+OPENGL_NEEDED = (3, 3)       # the shaders of an --opengl window are '#version 330 core'
+
+
+def opengl_shortfall(major, minor, es=False):
+    """What an OpenGL context of this version is called when it is not enough for an --opengl window
+    ('OpenGL 3.1', 'OpenGL ES 3.1': a Raspberry Pi's GPU, Intel graphics of 2011 and before), else None."""
+    if es:
+        return f"OpenGL ES {major}.{minor}"
+    if (major, minor) < OPENGL_NEEDED:
+        return f"OpenGL {major}.{minor}"
+    return None
+
+
+def opengl_needs(have):
+    """The sentence for `have` (opengl_shortfall), the same in the log and in nova doctor."""
+    return (f"--opengl needs OpenGL {OPENGL_NEEDED[0]}.{OPENGL_NEEDED[1]}, and the GPU's driver here offers "
+            f"{have}")
+
+
 KNOWN_HWACCELS = ("cuda", "vaapi", "vdpau", "qsv", "d3d11va", "dxva2", "d3d12va", "videotoolbox", "drm",
                   "opencl", "mediacodec", "vulkan", "amf")
 DRM_VENDORS = {"0x8086": "Intel", "0x1002": "AMD", "0x10de": "NVIDIA"}

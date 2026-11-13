@@ -25,7 +25,7 @@ from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from util import (mask_url, find_secrets, vaapi_node, drm_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
+from util import (opengl_shortfall, opengl_needs, mask_url, find_secrets, vaapi_node, drm_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
                   wheels_too_new_for_cpu, cpu_message, av_import_help,
                   LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI)
 
@@ -240,6 +240,13 @@ def gl_probe():
         return f"{plat}: {vendor} / {renderer} / {version} (context {got})"
     finally:
         ctx.doneCurrent()
+
+
+def opengl_too_old(gl):
+    """'OpenGL 3.1' / 'OpenGL ES 3.1' when the context in the report's OpenGL line is not the 3.3 an
+    --opengl window needs, else None (also for a line without a context)."""
+    m = re.search(r"\(context (\d+)\.(\d+)( OpenGL ES)?", gl or "")
+    return opengl_shortfall(int(m.group(1)), int(m.group(2)), bool(m.group(3))) if m else None
 
 
 def _qt_software_gl():
@@ -739,6 +746,11 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         out.append(("⚠", "--opengl cannot work here: Nova draws through PyOpenGL, which cannot reach this OpenGL "
                          "(on Windows: no GPU driver, Qt fell back to its software opengl32sw.dll), and an --opengl "
                          "window closes at start; leave --opengl out of opts, or install the GPU driver"))
+    elif opengl_too_old(gl):
+        # a Raspberry Pi (OpenGL 3.1), Intel graphics of 2011 and before: said before the software renderer
+        # below, which a remote desktop of that kind is as well
+        out.append(("⚠", f"{opengl_needs(opengl_too_old(gl))}: a camera started with --opengl is drawn without it "
+                         f"(the CPU converts the pictures, and the log says so); leave --opengl out of opts"))
     elif re.search(r"llvmpipe|softpipe|swrast|Software Rasterizer", gl, re.I):
         if WSL and os.path.exists("/dev/dxg"):
             # Mesa has a Direct3D 12 driver for WSL's GPU and does not always choose it by itself
