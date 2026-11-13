@@ -271,3 +271,45 @@ def test_launch_argv_carries_no_secrets(home):
     assert "S3cretA" in " ".join(full) and cams.mode_of(full) == "window+rec+stream"
     assert not any("S3cret" in t or "live2" in t for t in run_argv)
     assert run_argv[3:9] == ["--camera", "a", "--config", str(home / "cameras.ini"), "--control", "/run/x.sock"]
+
+
+def test_stop_and_restart_without_ids_leave_another_configuration_s_cameras_alone(home, capsys):
+    """A second configuration's cameras were started for a test next to the wall; `nova -c test.ini stop`
+    then stopped the wall as well: every launched camera was in one list."""
+    other = home / "test.ini"
+    other.write_text(INI.replace("[a]", "[t1]").replace("[b]", "[t2]"))
+    if os.name != "nt":
+        os.chmod(other, 0o600)
+    assert run(home, "start", "a") == 0
+    assert cams.main(["-c", str(other), "record", "t1", "t2"]) == 0
+    pids = cams.read_pids()
+    assert set(pids) == {"a", "t1", "t2"}
+    assert os.path.samefile(pids["t1"]["config"], other) and os.path.samefile(pids["a"]["config"], home / "cameras.ini")
+    capsys.readouterr()
+
+    assert cams.main(["-c", str(other), "stop"]) == 0
+    out = capsys.readouterr().out
+    assert set(cams.read_pids()) == {"a"} and cams.alive(pids["a"]["pid"])
+    assert "left alone, launched with another configuration: a" in out
+    assert wait_gone(pids["t1"]["pid"]) and wait_gone(pids["t2"]["pid"])
+
+    assert cams.main(["-c", str(other), "stop"]) is None           # nothing of its own left
+    out = capsys.readouterr().out
+    assert "no launched cameras" in out and "left alone" in out and cams.alive(pids["a"]["pid"])
+    assert cams.main(["-c", str(other), "restart"]) == 1 and cams.alive(pids["a"]["pid"])
+    capsys.readouterr()
+
+    cams.main(["-c", str(other), "status"])                         # status shows them, and says whose they are
+    out = capsys.readouterr().out
+    assert "launched with another configuration" in out and "\na " in out
+    assert cams.main(["-c", str(other), "stop", "a"]) == 0          # by name, any launched camera
+    assert wait_gone(pids["a"]["pid"]) and cams.read_pids() == {}
+
+
+def test_cameras_launched_before_the_list_named_a_configuration_are_cameras_ini_s(home):
+    assert run(home, "start", "a") == 0
+    pids = cams.read_pids()
+    del pids["a"]["config"]                                         # as an older version wrote it
+    cams.write_pids(pids)
+    assert run(home, "stop") == 0
+    assert wait_gone(pids["a"]["pid"]) and cams.read_pids() == {}

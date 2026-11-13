@@ -58,7 +58,8 @@ nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.
   nova layout export NAME FORMAT           window rules that place that layout on a Wayland desktop
                                            (FORMAT: sway, kwin, hyprland = Lua 0.55+, hyprlang = 0.53-0.54)
   nova -h                                  this text          nova.py --help    every camera option
-  -c FILE                                  use FILE instead of cameras.ini
+  -c FILE                                  use FILE instead of cameras.ini (stop and restart without ids
+                                           then mean the cameras launched with FILE)
 
 Words that do not start with '-' are camera ids; everything from the first option on goes to nova.py:
   nova start frontdoor -r                  window and recording
@@ -801,7 +802,7 @@ def cmd_start(defaults, env, cams, args, record=False):
                 kw["start_new_session"] = True
             p = subprocess.Popen(run, **kw)
         pids[cam.id] = {"pid": p.pid, "mode": mode, "gpu": gpu, "layout": args.layout, "started": int(time.time()),
-                        "control": address}
+                        "control": address, "config": os.path.abspath(args.config)}
         write_pids(pids)
         tags = mode + (f", gpu {gpu}" if gpu is not None else "") + (f", layout {args.layout}" if layout else "")
         print(f"{cam.id}: starting (pid {p.pid}, {tags}) -> logs/{cam.id}.log")
@@ -831,13 +832,39 @@ def cmd_record(defaults, env, cams, args):
     return cmd_start(defaults, env, cams, args, record=True)
 
 
+def launched_with(entry, config):
+    """Was this camera launched with this configuration file?  (An entry written by an older version
+    names none: that was cameras.ini.)"""
+    theirs = entry.get("config") or INI
+    try:
+        return os.path.samefile(theirs, config)
+    except OSError:
+        return os.path.abspath(theirs) == os.path.abspath(config)
+
+
+def left_alone(pids, config):
+    """The cameras another configuration launched, as lines for the user: `stop` and `restart` without
+    ids are about the cameras of the configuration in use.  A stop of a test configuration's cameras
+    used to stop every launched camera, the wall included."""
+    by = {}
+    for cid, e in pids.items():
+        if not launched_with(e, config):
+            by.setdefault(e.get("config") or INI, []).append(cid)
+    return [f"left alone, launched with another configuration: {', '.join(ids)}  (nova -c {path} ...)"
+            for path, ids in by.items()]
+
+
 def cmd_stop(defaults, env, cams, args):
     pids = read_pids()
-    targets = {k: v for k, v in pids.items() if not args.ids or k in args.ids}
+    targets = {k: v for k, v in pids.items() if (k in args.ids if args.ids else launched_with(v, args.config))}
+    notes = [] if args.ids else left_alone(pids, args.config)
     if not targets:
-        print("no launched cameras (use `nova start` or `nova record`)")
+        print("\n".join(["no launched cameras (use `nova start` or `nova record`)"] + notes))
         return
-    return 1 if stop_entries(pids, targets, default_timeout(args, env, targets)) else 0
+    rc = 1 if stop_entries(pids, targets, default_timeout(args, env, targets)) else 0
+    if notes:
+        print("\n".join(notes))
+    return rc
 
 
 def default_timeout(args, env, targets):
@@ -849,9 +876,10 @@ def default_timeout(args, env, targets):
 
 def cmd_restart(defaults, env, cams, args):
     pids = read_pids()
-    ids = args.ids or list(pids)
+    ids = args.ids or [k for k, v in pids.items() if launched_with(v, args.config)]
+    notes = [] if args.ids else left_alone(pids, args.config)
     if not ids:
-        print("no launched cameras (use `nova start` or `nova record`)")
+        print("\n".join(["no launched cameras (use `nova start` or `nova record`)"] + notes))
         return 1
     select(cams, ids, only_enabled=False)                   # unknown ids end here
     targets = {cid: pids[cid] for cid in ids if cid in pids}
@@ -864,6 +892,8 @@ def cmd_restart(defaults, env, cams, args):
     rc = 1 if stuck else 0
     for (record, layout), group in restart_groups([i for i in ids if i not in stuck], targets, args.layout).items():
         rc = cmd_start(defaults, env, cams, Args(group, args.extra, layout, config=args.config), record=record) or rc
+    if notes:
+        print("\n".join(notes))
     return rc
 
 
@@ -873,15 +903,22 @@ def cmd_status(defaults, env, cams, args):
         print("no launched cameras (use `nova start` or `nova record`)")
         return
     w = max(len(k) for k in pids)
-    for cid, e in pids.items():
-        running = alive(e["pid"])
-        state = "running" if running else "exited "
-        up = f"up {fmt_uptime(time.time() - e['started'])}" if running and e.get("started") else ""
-        gpu = f"gpu {e['gpu']}" if e.get("gpu") is not None else ""
-        lay = f"layout {e['layout']}" if e.get("layout") else ""
-        live = live_state(control(e.get("control"), {"cmd": "status"})) if running else ""
-        print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {up:<14} {e['mode']:<16} {gpu:<6} {lay:<18} logs/{cid}.log"
-              + (f"\n{'':<{w}}  {live}" if live else ""))
+    groups = {None: {k: v for k, v in pids.items() if launched_with(v, args.config)}}
+    for k, v in pids.items():
+        if k not in groups[None]:
+            groups.setdefault(v.get("config") or INI, {})[k] = v
+    for config, entries in groups.items():
+        if config:
+            print(f"launched with another configuration ({config}):")
+        for cid, e in entries.items():
+            running = alive(e["pid"])
+            state = "running" if running else "exited "
+            up = f"up {fmt_uptime(time.time() - e['started'])}" if running and e.get("started") else ""
+            gpu = f"gpu {e['gpu']}" if e.get("gpu") is not None else ""
+            lay = f"layout {e['layout']}" if e.get("layout") else ""
+            live = live_state(control(e.get("control"), {"cmd": "status"})) if running else ""
+            print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {up:<14} {e['mode']:<16} {gpu:<6} {lay:<18} logs/{cid}.log"
+                  + (f"\n{'':<{w}}  {live}" if live else ""))
 
 
 def live_state(st):
