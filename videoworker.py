@@ -68,6 +68,7 @@ AUDIO_STALL_MAX_S = 3600.0  # the wait doubles up to this while a camera keeps d
 # back this far with no audio after them: that is known within seconds, not after the usual wait.
 TS_BACK_S = 60.0            # video timestamps that go back by more than this are a clock that started again
 AUDIO_AFTER_BACK_S = 5.0    # ... and audio missing this long after it does not come back on this connection
+GAP_SAID_S = 5.0            # picture or sound that comes back on its connection after this long: the log says so
 FIRST_PICTURE_S = 60.0      # no picture at all this long after connecting: reconnect
 GOP_UNKNOWN_S = 20.0        # keyframe interval assumed until two keyframes have been seen
 FPS_MAX = 120               # a larger "frame rate" is a clock rate (90000), not frames
@@ -1001,6 +1002,7 @@ class VideoWorker(QThread):
         t_afirst = t_apkt = None    # first and last audio packet on this connection
         v_ts = None                 # the last video packet's timestamp, in seconds
         t_back = back_s = None      # when the video timestamps went back (TS_BACK_S), and by how much
+        v_pkts, v_wait = 0, 0.0     # since the last picture: video packets, and the longest wait for one
         try:
             for packet in container.demux(*streams):
                 if not self.run_flag: break
@@ -1008,6 +1010,7 @@ class VideoWorker(QThread):
                 now = time.monotonic()
 
                 if packet.stream.type == 'video':
+                    v_pkts, v_wait = v_pkts + 1, max(v_wait, now - t_vpkt)
                     t_vpkt = now
                     if packet.pts is not None and packet.time_base:
                         ts = float(packet.pts * packet.time_base)
@@ -1025,6 +1028,12 @@ class VideoWorker(QThread):
                         w, h = frame.width, frame.height
                         if w <= 0 or h <= 0: continue
                         pix_fmt = frame.format.name
+                        if t_vframe is not None and now - t_vframe > GAP_SAID_S:
+                            # a hole in the picture (and in a recording) that nothing else in the log explains
+                            logging.info(f"[VideoWorker] the picture was gone for {now - t_vframe:.0f} s on this connection "
+                                         f"and is back ({v_pkts} video packets came in that time, the longest wait "
+                                         f"for one was {v_wait:.0f} s)")
+                        v_pkts, v_wait = 0, 0.0
                         t_vframe = self.last_frame_time = now
                         self._session_frames += 1
 
@@ -1056,6 +1065,8 @@ class VideoWorker(QThread):
                 elif packet.stream.type == 'audio':
                     if t_apkt is None:
                         t_afirst = now
+                    elif now - t_apkt > GAP_SAID_S:
+                        logging.info(f"[VideoWorker] the sound was gone for {now - t_apkt:.0f} s on this connection and is back")
                     t_apkt = now
                     aframes = []
                     if audio_context is not None:

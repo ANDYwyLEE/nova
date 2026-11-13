@@ -527,6 +527,43 @@ def test_a_stream_without_audio_never_waits_for_it(qapp, tmp_path, monkeypatch, 
     assert not any("no audio for" in r.getMessage() for r in caplog.records)
 
 
+class Pauses(SlowContainer):
+    """A camera that sends nothing for `pause` seconds before its video packet number `at`, then goes on."""
+    def __init__(self, c, delay, at, pause):
+        super().__init__(c, delay)
+        self.at, self.pause = at, pause
+
+    def demux(self, *s):
+        n = 0
+        for p in super().demux(*s):
+            if p.stream.type == "video":
+                n += 1
+                if n == self.at:
+                    time.sleep(self.pause)
+            yield p
+
+
+def test_picture_and_sound_that_come_back_on_their_connection_are_in_the_log(qapp, tmp_path, monkeypatch, caplog):
+    """A camera paused sound and picture for 8 s and went on by itself on the same connection. Nothing
+    reconnected and no watchdog was due, so the recording had a hole and the log not a word about it."""
+    clip = _write_clip(tmp_path / "pause.nut", frames=100, audio_s=4)
+    monkeypatch.setattr(videoworker, "GAP_SAID_S", 0.3)
+    caplog.set_level(logging.DEBUG)
+
+    def play(pause):
+        w = _worker(str(clip))
+        del caplog.records[:]
+        with av.open(str(clip)) as c:
+            w._stream_loop(Pauses(c, 0.005, at=40, pause=pause), "pause")
+        return [r.getMessage() for r in caplog.records if "on this connection and is back" in r.getMessage()]
+
+    said = play(0.7)
+    picture = [m for m in said if "the picture was gone for 1 s" in m]
+    assert len(picture) == 1 and "the longest wait for one was 1 s" in picture[0], said
+    assert any("the sound was gone for 1 s" in m for m in said), said
+    assert play(0.0) == []
+
+
 class ClockRestarts(SlowContainer):
     """A camera whose clock starts again: from the video packet number `at` on, the video timestamps
     are `back` seconds lower and no audio packet comes any more."""
