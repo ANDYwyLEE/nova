@@ -4,7 +4,7 @@
 here=$(cd "$(dirname "$0")" && pwd); work=${1:-$PWD/pyaudio-try}; mkdir -p "$work" && cd "$work"
 python -c "import sys, sysconfig, setuptools; print('sys.platform:', sys.platform, '| sysconfig.get_platform():', sysconfig.get_platform(), '| setuptools', setuptools.__version__); print('sys.version:', sys.version.replace(chr(10), ' '))"
 [ -f PyAudio-0.2.14.tar.gz ] || python -m pip download pyaudio==0.2.14 --no-binary :all: --no-deps --no-build-isolation -q -d .
-rm -rf a b && tar xzf PyAudio-0.2.14.tar.gz && mv PyAudio-0.2.14 a && cp -r a b && (cd b && git apply -p1 "$here/pyaudio-0.2.14-compiler-not-platform.patch") || exit 2
+rm -rf a b && tar xzf PyAudio-0.2.14.tar.gz && mv PyAudio-0.2.14 a && cp -r a b && (cd b && tr -d '\r' < "$here/pyaudio-0.2.14-compiler-not-platform.patch" | git apply -p1 -) || exit 2   # (a Windows checkout gives the patch CRLF)
 rc=0
 for v in a b; do
   echo "=== $v: $([ $v = a ] && echo 'as released' || echo 'patched')  ${EXTRA:+(build_ext $EXTRA)}"
@@ -15,7 +15,7 @@ for v in a b; do
     [ $v = b ] && rc=1
   fi
   # the compiler's and the linker's command lines
-  grep -E '(^|[\\/" ])(cl\.exe|link\.exe|gcc|clang|cc)(\.exe)?"? ' build-$v.log | grep -v '^copying\|^creating' > cmds-$v.txt
+  grep -E '(^|[\\/" ])(cl\.exe|link\.exe|[a-z0-9_-]*gcc|clang|cc)(\.exe)?"? ' build-$v.log | grep -v '^copying\|^creating' > cmds-$v.txt
   sed -n '1p;$p' cmds-$v.txt | cut -c1-900
 done
 if [ -s cmds-a.txt ] && diff -q cmds-a.txt cmds-b.txt > /dev/null; then echo "SAME: compiler and linker command lines of a and b are identical ($(grep -c '' cmds-a.txt) lines)"; else echo "DIFFERENT command lines (a: $(grep -c '' cmds-a.txt), b: $(grep -c '' cmds-b.txt))"; fi
