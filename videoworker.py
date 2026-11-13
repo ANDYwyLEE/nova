@@ -936,7 +936,9 @@ class VideoWorker(QThread):
             self._hw_backoff = HW_RETRY_S
         else:
             self._hw_backoff = min(HW_RETRY_MAX_S, self._hw_backoff * 2)
-        self._hw_retry_at = float("inf") if never else time.monotonic() + self._hw_backoff
+        # up to a fifth later than said: cameras that lost the GPU together must not all come back for it
+        # in the same second (two decoders opened at once on an old card, and neither got it)
+        self._hw_retry_at = float("inf") if never else time.monotonic() + self._hw_backoff * random.uniform(1.0, 1.2)
         if never:
             msg = (f"[VideoWorker] ❌ --accel={self.accel} cannot work here: {_mask(reason)}. "
                    f"Decoding in software ({codec_name}).")
