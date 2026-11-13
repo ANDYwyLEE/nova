@@ -273,6 +273,7 @@ def test_launch_argv_carries_no_secrets(home):
     assert run_argv[3:9] == ["--camera", "a", "--config", str(home / "cameras.ini"), "--control", "/run/x.sock"]
 
 
+@posix_only
 def test_stop_and_restart_without_ids_leave_another_configuration_s_cameras_alone(home, capsys):
     """A second configuration's cameras were started for a test next to the wall; `nova -c test.ini stop`
     then stopped the wall as well: every launched camera was in one list."""
@@ -306,6 +307,7 @@ def test_stop_and_restart_without_ids_leave_another_configuration_s_cameras_alon
     assert wait_gone(pids["a"]["pid"]) and cams.read_pids() == {}
 
 
+@posix_only
 def test_cameras_launched_before_the_list_named_a_configuration_are_cameras_ini_s(home):
     assert run(home, "start", "a") == 0
     pids = cams.read_pids()
