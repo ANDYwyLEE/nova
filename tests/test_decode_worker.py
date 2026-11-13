@@ -789,3 +789,37 @@ def test_an_accel_this_machine_has_no_gpu_for_is_said_once(qapp, clip, monkeypat
     said = _said(caplog, "cannot work here")
     assert len(said) == 1 and "--accel=cuda cannot work here: the NVIDIA card runs on the nouveau driver" in said[0], said
     assert _said(caplog, "First frame (h264, SW)") and not w._hw_retry_due()
+
+
+def test_a_gpu_decoder_that_does_not_keep_up_is_left_for_software(qapp, caplog):
+    """An NVIDIA ION of 2010 decoding a 15 Mbit/s camera through VA-API: 57 ms a picture, one every 40 ms.
+    The camera ended the connection every six seconds and the log had nothing but `stream ended`."""
+    caplog.set_level(logging.WARNING)
+    w = _worker(accel="vaapi")
+    dec = SimpleNamespace(is_hw=True, name="h264 + vaapi hwaccel", codec_name="h264")
+    said = w._slow(0.057, 25, dec)
+    assert said == "the GPU's decoder does not keep up with the camera: software decoding"
+    first = [r.getMessage() for r in caplog.records][-1]
+    assert "No working HW decoder for --accel=vaapi (the GPU's decoder does not keep up with this camera: a picture " \
+           "takes 57 ms through h264 + vaapi hwaccel and the camera sends one every 40 ms)" in first
+    assert "hardware is tried again in 5 min" in first and w._sw_threads == 0      # once may be a moment's load
+    assert w._slow(0.060, 25, dec)
+    second = [r.getMessage() for r in caplog.records][-1]
+    assert "--accel=vaapi cannot work here: the GPU's decoder does not keep up" in second and "60 ms" in second
+    assert not w._hw_retry_due() and w._hw_retry_at == float("inf")               # twice: software for good
+    assert w._slow(None, 25, dec) is None
+
+
+def test_vdpau_without_an_x_display_is_said_once(qapp, monkeypatch):
+    """`nova record --accel vdpau` over ssh: `Cannot open the X11 display`, and a new try every few minutes."""
+    monkeypatch.setattr(videoworker, "accel_in_build", lambda a: True)
+    monkeypatch.setattr(videoworker, "accel_obstacle", lambda a: None)
+    w = _worker(accel="vdpau")
+    del w._accel_never
+    monkeypatch.delenv("DISPLAY", raising=False)
+    assert "VDPAU decodes through an X display" in w._accel_never()
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert w._accel_never() is None
+    w.accel = "vaapi"
+    monkeypatch.delenv("DISPLAY")
+    assert w._accel_never() is None

@@ -14,7 +14,7 @@ from fractions import Fraction
 import av
 import logsync  # installs logging.verbose / logging.trace
 from ffparser import for_codec
-from util import WINDOWS, MAC, IS_PI, MSYS, get_os_type, vaapi_node, short_err as _short_err
+from util import WINDOWS, MAC, IS_PI, MSYS, get_os_type, vaapi_node, short_err as _short_err, hw_err as _hw_err
 
 try: from filelock import FileLock, Timeout
 except ImportError:
@@ -70,6 +70,11 @@ NON_CODEC_OPTS = ('s', 'r', 'g', 'gop_size')
 
 SOFTWARE_ENCODERS = {"h264": ["libx264"], "hevc": ["libx265"], "av1": ["libsvtav1", "libaom-av1"], "vp9": ["libvpx-vp9"]}
 
+# the encoders that belong to a decoding API; the others (vdpau, d3d11va, dxva2, drm ...) only decode
+_ACCEL_ENCODER = {"cuda": "nvenc", "cuvid": "nvenc", "nvdec": "nvenc", "qsv": "qsv", "vaapi": "vaapi",
+                  "amf": "amf", "videotoolbox": "videotoolbox", "rkmpp": "rkmpp", "v4l2m2m": "v4l2m2m"}
+
+
 def _hw_suffixes(accel):
     a = (accel or "").lower()
     if IS_PI:
@@ -81,8 +86,7 @@ def _hw_suffixes(accel):
     else:
         base = ["nvenc", "qsv", "vaapi", "amf"]
     # try the encoder that matches the decoder's vendor first
-    pref = {"cuda": "nvenc", "cuvid": "nvenc", "nvdec": "nvenc", "qsv": "qsv", "vaapi": "vaapi",
-            "amf": "amf", "videotoolbox": "videotoolbox", "rkmpp": "rkmpp", "v4l2m2m": "v4l2m2m"}.get(a)
+    pref = _ACCEL_ENCODER.get(a)
     if pref in base:
         base.remove(pref); base.insert(0, pref)
     return base
@@ -256,6 +260,8 @@ class EncoderManager:
         test_opts = {k: v for k, v in enc_opts.items() if k not in NON_CODEC_OPTS}
         skipped = self._skipped()
         asked = None                    # why the encoder the user asked for (-e) did not open
+        hardware = tuple("_" + suf for suf in _hw_suffixes(accel)) if accel else ()
+        first_hw = None                 # the first hardware encoder tried for --accel, and why it did not open
         for encoder_name in self._candidates(accel, user_encoder, source_codec, allowed):
             if encoder_name in skipped:
                 logging.debug(f"[EncoderManager] skipping {encoder_name}: failed at a real open "
@@ -267,8 +273,17 @@ class EncoderManager:
                 if asked is not None:
                     # a silent libx264 in place of the hardware encoder asked for costs ten times the CPU
                     logging.warning(f"[EncoderManager] ⚠️ -e {user_encoder} does not open here ({asked}); using {encoder_name}")
+                elif first_hw and not encoder_name.endswith(hardware) and encoder_name != user_encoder:
+                    # the same for --accel: the GPU decodes and the CPU encodes, and only "[AVWriter] libx264" told
+                    if _ACCEL_ENCODER.get(accel.lower()):
+                        why = f"no hardware encoder opens here for --accel {accel} ({first_hw[0]}: {first_hw[1]})"
+                    else:
+                        why = f"--accel {accel} only decodes, and no other hardware encoder opens on this machine"
+                    logging.warning(f"[EncoderManager] ⚠️ {why}; encoding with {encoder_name} on the CPU")
                 return encoder_name
             logging.debug(f"[EncoderManager] ❌ {encoder_name}: {err}")
+            if first_hw is None and encoder_name.endswith(hardware) and encoder_name != user_encoder:
+                first_hw = (encoder_name, " ".join(str(err).split())[:160])
             if encoder_name == user_encoder and asked is None:
                 asked = " ".join(str(err).split())[:140]
             if test_opts and self._try_open(encoder_name, {}, self.gpu_idx) is None:
@@ -283,7 +298,10 @@ class EncoderManager:
         """Returns None when the encoder opens with these options, else the error text."""
         ctx = None
         try:
-            codec = av.Codec(encoder_name, "w")
+            try:
+                codec = av.Codec(encoder_name, "w")
+            except Exception:
+                return "this FFmpeg build has no such encoder"
             hw = _encoder_hwaccel(encoder_name, gpu_idx)
             ctx = av.CodecContext.create(codec, hwaccel=hw) if hw is not None else av.CodecContext.create(codec)
             ctx.width = 640
@@ -295,7 +313,7 @@ class EncoderManager:
             ctx.open()
             return None
         except Exception as e:
-            return _short_err(e)
+            return _hw_err(e)
         finally:
             if ctx is not None:
                 try:

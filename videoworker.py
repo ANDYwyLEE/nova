@@ -556,6 +556,7 @@ class VideoWorker(QThread):
         self.open_opts = self.ffopts.open
         self.dec_opts = self.ffopts.dec
         self._sw_threads = 0            # frame threads for the software decoder, once one thread proved too slow
+        self._hw_slow = 0               # times the GPU's decoder was the one that did not keep up
         self._slow_told = False         # the line about a CPU that cannot keep up was written
         self.enc_v_opts = self.ffopts.enc_v
         self.enc_a_opts = self.ffopts.enc_a
@@ -924,6 +925,8 @@ class VideoWorker(QThread):
         if not accel_in_build(a):
             custom = "; docs/custom-ffmpeg.md builds one that has it" if a in ("vaapi", "vdpau") else ""
             return f"this FFmpeg build was made without {a} (it has: {', '.join(HWACCELS) or 'none'}{custom})"
+        if a == "vdpau" and not os.environ.get("DISPLAY"):
+            return "VDPAU decodes through an X display, and this camera runs without one (--accel vaapi does not need it)"
         return accel_obstacle(a)
 
     def _hw_failed(self, reason, codec_name, never=False):
@@ -1062,10 +1065,13 @@ class VideoWorker(QThread):
         if not per:
             return None
         if dec is not None and dec.is_hw:
+            # once may be a moment's load on the GPU (other cameras starting): hardware gets its second
+            # try after the usual delay; twice is a GPU that is too slow for this camera
+            self._hw_slow += 1
             self._hw_failed(f"the GPU's decoder does not keep up with this camera: a picture takes "
                             f"{per * 1000:.0f} ms through {dec.name} and the camera sends one every "
-                            f"{1000 / fps:.0f} ms", dec.codec_name, never=True)
-            return "the GPU's decoder does not keep up with the camera: software decoding from now on"
+                            f"{1000 / fps:.0f} ms", dec.codec_name, never=self._hw_slow >= 2)
+            return "the GPU's decoder does not keep up with the camera: software decoding"
         most = min(os.cpu_count() or 1, LOAD_THREADS_MAX)
         asked = any(k in self.dec_opts for k in ("threads", "thread_type"))
         took = (f"a picture takes {per * 1000:.0f} ms here" + (f" on {self._sw_threads} threads" if self._sw_threads else "")

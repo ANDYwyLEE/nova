@@ -238,6 +238,39 @@ def test_an_encoder_asked_for_that_does_not_open_is_named(monkeypatch, caplog):
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
+def test_an_accel_without_an_encoder_that_opens_is_named(monkeypatch, caplog):
+    """`--accel vaapi` on a GPU that decodes and cannot encode (an NVIDIA ION on nouveau): the recording
+    went to libx264, which that machine's CPU could not keep up with, and nothing said that a hardware
+    encoder had been looked for."""
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(avwriter, "IS_PI", False)
+    monkeypatch.setattr(avwriter, "WINDOWS", False)
+    monkeypatch.setattr(avwriter, "MSYS", False)
+    monkeypatch.setattr(avwriter, "MAC", False)
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    opened = {"libx264"}
+    monkeypatch.setattr(avwriter.EncoderManager, "_try_open", staticmethod(
+        lambda name, opts, gpu_idx=None: None if name in opened else
+        "Function not implemented: No usable encoding entrypoint found" if name.endswith("_vaapi") else "no such encoder"))
+    mgr = avwriter.EncoderManager()
+    assert mgr.get_encoder("vaapi", None, "h264", {}, ("h264",)) == "libx264"
+    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warns) == 1, warns
+    assert "no hardware encoder opens here for --accel vaapi (h264_vaapi: Function not implemented: No usable " \
+           "encoding entrypoint found); encoding with libx264 on the CPU" in warns[0]
+    caplog.clear()
+    assert mgr.get_encoder("vaapi", None, "h264", {}, ("h264",)) == "libx264"            # cached: said once
+    assert mgr.get_encoder("vaapi", "libx264", "h264", {}, ("h264",)) == "libx264"       # asked for by name: nothing
+    assert mgr.get_encoder(None, None, "h264", {}, ("h264",)) == "libx264"               # no --accel: nothing
+    assert mgr.get_encoder("vdpau", None, "h264", {}, ("h264",)) == "libx264"            # an API that only decodes
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING][-1].endswith(
+        "--accel vdpau only decodes, and no other hardware encoder opens on this machine; encoding with libx264 on the CPU")
+    caplog.clear()
+    opened.add("h264_vaapi")
+    assert mgr.get_encoder("vaapi", None, "h264", {"g": "30"}, ("h264",)) == "h264_vaapi"   # one that opens: nothing
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
 # ---------------------------------------------------------------- encoders that are handed a device
 def test_vaapi_encoders_are_handed_the_render_node_gpu_counts(monkeypatch, tmp_path):
     """The VAAPI encoders take pictures that live on the GPU: without a device they never opened, and
