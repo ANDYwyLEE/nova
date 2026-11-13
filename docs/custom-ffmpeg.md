@@ -24,7 +24,7 @@ Output protocol options (SRT `latency`, `passphrase`, …) still go in the URL q
 
 ## Lessons learned
 
-- A source-built `av` links against the **system** libx264/libx265/libsrt at build time. A later OS upgrade (libx264.so.164 → .165) silently breaks both `~/deps/bin/ffmpeg` and the `av` module. Rebuild after distro upgrades, or link those libraries statically.
+- A source-built `av` links against the **system** libx264/libx265/libsrt at build time. A later OS upgrade (libx264.so.164 → .165) breaks both `~/deps/bin/ffmpeg` and the `av` module. Rebuild after distro upgrades, or link those libraries statically. It happens when the old libraries go, which may be later than the upgrade: a build made under Debian 11 ran on through two release upgrades and stopped at `apt autoremove`. Nova and `nova doctor` then say `av (PyAV) is installed but cannot load libx264.so.160: the FFmpeg it was built against has lost a system library …`.
 - A venv that already has `av` keeps it: `pip install --no-binary av av` answers `Requirement already satisfied` and the wheel stays, with nothing to show for it but the missing `vaapi` (found on a second machine, November 2026). The recipes therefore say `--force-reinstall`.
 - `pip install -r requirements.txt` keeps a source build of 19.0.2 or newer (it asks for `av>=19.0.2`), but `pip install -U av` or a blanket `pip install -U` replaces it with the newest wheel. For a new PyAV release, run the `--no-binary av` command below again.
 - Always verify with `ffmpeg -hwaccels`, `ffmpeg -decoders | grep -E "cuvid|vaapi|qsv"` and `ffmpeg -protocols | grep srt` before building `av`.
@@ -80,7 +80,7 @@ The last line has to name `vaapi` (`['cuda', 'vaapi', 'drm']` with an NVIDIA car
 
 Without an NVIDIA GPU drop the `nv-codec-headers` lines and `--enable-nvenc --enable-nvdec --enable-cuvid`.
 
-On **Debian 11** (run in a `debian:11` image, and used on an Atom nettop with an old NVIDIA card, November 2026) `./configure` stops with `ERROR: srt >= 1.3.0 not found using pkg-config`: the pkg-config file of `libsrt-openssl-dev` names the gnutls build there. Take `libsrt-gnutls-dev libgnutls28-dev` in its place, or leave `--enable-libsrt` out. The Python is the one of the [install guide's older systems](install.md#linux) (from uv). On a machine that would compile for hours, build in a container of the same distribution on a faster one, with the same user name and home folder, and copy `~/deps` and the wheel that `pip wheel --no-binary av --no-deps -w ~/wheel av` writes; `pip install --force-reinstall --no-deps ~/wheel/av-*.whl` on the slow one.
+On **Debian 13** the recipe's package line is right as it is (run in a `debian:13` image, without the NVIDIA lines and with `libvdpau-dev`). On **Debian 11** (run in a `debian:11` image, and used on an Atom nettop with an old NVIDIA card, November 2026) `./configure` stops with `ERROR: srt >= 1.3.0 not found using pkg-config`: the pkg-config file of `libsrt-openssl-dev` names the gnutls build there. Take `libsrt-gnutls-dev libgnutls28-dev` in its place, or leave `--enable-libsrt` out. The Python is the one of the [install guide's older systems](install.md#linux) (from uv). On a machine that would compile for hours, build in a container of the same distribution on a faster one, with the same user name and home folder, and copy `~/deps` and the wheel that `pip wheel --no-binary av --no-deps -w ~/wheel av` writes; `pip install --force-reinstall --no-deps ~/wheel/av-*.whl` on the slow one.
 
 What to expect from the result:
 

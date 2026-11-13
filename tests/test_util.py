@@ -192,3 +192,42 @@ print(glvnd, took, P.PLATFORM.GL is P.PLATFORM.GLX, P.GetCurrentContext is P.PLA
         pytest.skip("libGL.so.1 does not load here")
     # PyOpenGL now has one library for OpenGL and GLX, asks it for the context, and there is none yet
     assert out[1:] == ["True", "True", "True", "True"], r.stdout
+
+
+ATOM_FLAGS = "processor\t: 0\nmodel name\t: Intel(R) Atom(TM) CPU D525   @ 1.80GHz\nflags\t\t: fpu sse sse2 ht pni ssse3 cx16 movbe lahf_lm\n"
+CORE_FLAGS = "processor\t: 0\nflags\t\t: fpu sse sse2 pni ssse3 cx16 sse4_1 sse4_2 movbe popcnt avx avx2\n"
+
+
+@pytest.mark.skipif(not (util.LINUX and __import__("platform").machine() in ("x86_64", "AMD64")), reason="x86 Linux reads /proc/cpuinfo")
+def test_wheels_built_for_a_newer_cpu_are_found_without_importing_them(tmp_path):
+    """On a CPU without SSE4.2, PySide6 from 6.10 on and numpy from 2.4 on end the process at import
+    (seen on an Atom D525): `python nova.py --help`, `nova doctor` and `nova start` all died without a word."""
+    atom, core = tmp_path / "atom", tmp_path / "core"
+    atom.write_text(ATOM_FLAGS)
+    core.write_text(CORE_FLAGS)
+    assert not util.cpu_has_sse42(str(atom)) and util.cpu_has_sse42(str(core))
+    assert util.cpu_has_sse42(str(tmp_path / "none"))                     # nothing known: nothing claimed
+    pinned = {"PySide6": "6.12.0", "numpy": "2.5.4"}.get
+    assert util.wheels_too_new_for_cpu(str(core), pinned) == []
+    wheels = util.wheels_too_new_for_cpu(str(atom), pinned)
+    assert wheels == [("PySide6", "6.12.0", "6.9.3"), ("numpy", "2.5.4", "2.3.5")]
+    said = util.cpu_message(wheels)
+    assert "this CPU has no SSE4.2, and PySide6 6.12.0 and numpy 2.5.4 are built for it" in said
+    assert "-m pip install PySide6==6.9.3 numpy==2.3.5" in said and "docs/install.md" in said
+    assert util.wheels_too_new_for_cpu(str(atom), {"PySide6": "6.9.3", "numpy": "2.3.5"}.get) == []
+    only = util.wheels_too_new_for_cpu(str(atom), {"PySide6": "6.9.3", "numpy": "2.4.0"}.get)
+    assert only == [("numpy", "2.4.0", "2.3.5")] and "numpy 2.4.0 is built for it" in util.cpu_message(only)
+    assert util.wheels_too_new_for_cpu(str(atom), lambda name: None) == [] and util.cpu_message([]) is None
+
+
+def test_an_av_that_is_installed_and_does_not_load_is_not_told_to_pip_install():
+    """After a release upgrade and `apt autoremove`, a self-built FFmpeg had lost libx264.so.160: every
+    camera ended with `Error: av is required. Run 'pip install -r requirements.txt'`, which changes nothing."""
+    missing = ModuleNotFoundError("No module named 'av'", name="av")
+    assert util.av_import_help(missing) == "av (PyAV) is required. Run 'pip install -r requirements.txt'"
+    lost = ImportError("libsrt-gnutls.so.1.4: cannot open shared object file: No such file or directory")
+    said = util.av_import_help(lost)
+    assert "is installed but cannot load libsrt-gnutls.so.1.4" in said and "distribution upgrade" in said
+    assert "docs/custom-ffmpeg.md" in said and "pip install --force-reinstall av" in said and "requirements.txt" not in said
+    dll = ImportError("DLL load failed while importing _core: The specified module could not be found.")
+    assert "is installed but does not load (DLL load failed while importing _core" in util.av_import_help(dll)

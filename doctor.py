@@ -26,6 +26,7 @@ from collections import Counter
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from util import (mask_url, find_secrets, vaapi_node, drm_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
+                  wheels_too_new_for_cpu, cpu_message, av_import_help,
                   LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI)
 
 NVIDIA_MIN_DRIVER = 570          # the PyPI wheel's NVENC needs this (string in its libavcodec)
@@ -110,6 +111,11 @@ def os_line():
     return platform.platform()
 
 
+def blocked_wheels():
+    """util.wheels_too_new_for_cpu(): the packages this report must not import, or it ends as a camera does."""
+    return wheels_too_new_for_cpu()
+
+
 def cpu_line(cpuinfo="/proc/cpuinfo"):
     """The processor's name and thread count; on x86 Linux also when it lacks SSE4.2, which the numpy
     wheels of today are built for (numpy_check says what follows from that)."""
@@ -150,7 +156,9 @@ def desktop_line():
     return ", ".join(parts)
 
 
-def qt_line():
+def qt_line(blocked=()):
+    if "PySide6" in blocked:
+        return f"PySide6 {dict((n, v) for n, v, _ in blocked_wheels())['PySide6']} (not loaded: this CPU cannot run it)"
     try:
         import PySide6
         from PySide6.QtCore import qVersion
@@ -688,7 +696,11 @@ def numpy_check(python=None, run=subprocess.run):
 
 def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
     """[(mark, text)]: ✓ fine, ⚠ worth fixing, ℹ good to know."""
-    out = numpy_check(python)
+    wheels = blocked_wheels()
+    blocked = {n for n, _, _ in wheels}
+    out = [("⚠", cpu_message(wheels) + ": no camera starts until then")] if wheels else []
+    if "numpy" not in blocked:
+        out.extend(numpy_check(python))
     no_numpy = bool(out)
     # PyAV against the oldest release requirements.txt accepts (newer ones are welcome)
     try:
@@ -699,6 +711,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                              f"rtmp_flush_interval to the protocol (pip install -r requirements.txt)"))
         elif need:
             out.append(("✓", f"PyAV {av.__version__} ({need} or newer is needed)"))
+    except ImportError as e:
+        out.append(("⚠", av_import_help(e) + ": no camera starts until then"))
     except Exception:
         pass
     # NVIDIA driver for the wheel's NVENC
@@ -715,7 +729,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         elif d < NVIDIA_LEGACY:
             out.append(("ℹ", f"NVIDIA driver {d} is a legacy one, from before NVDEC and NVENC as FFmpeg uses them: "
                              f"it decodes through --accel vdpau (docs/install.md, An old NVIDIA card)"))
-    out.extend(qt_modules_check(qt_module_errors()))
+    if "PySide6" not in blocked:
+        out.extend(qt_modules_check(qt_module_errors()))
     # OpenGL
     if windows_service_session() and ("PyOpenGL cannot use it" in gl or re.search(r"llvmpipe|softpipe", gl, re.I)):
         out.append(("ℹ", "this runs in Windows session 0 (ssh or a service), which has no GPU: the OpenGL above is not "
@@ -731,6 +746,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                              "put GALLIUM_DRIVER = d3d12 into [env] of cameras.ini (or export it) and run nova doctor again"))
         else:
             out.append(("⚠", "OpenGL is rendered in software (no GPU driver in use): --opengl will cost CPU; check the driver"))
+    elif gl.startswith("skipped"):
+        pass                                            # not probed: nothing to say about it
     elif gl.startswith("n/a") or "no OpenGL" in gl:
         # both renderers draw into a QOpenGLWindow (QPainter on OpenGL without --opengl)
         out.append(("ℹ", "no OpenGL context here: Nova windows need one with or without --opengl; "
@@ -806,8 +823,9 @@ def report(config=None, gl=True, python=None):
     rows.append(("OS", os_line()))
     rows.append(("CPU", cpu_line()))
     rows.append(("Desktop", desktop_line()))
-    rows.append(("Qt", qt_line()))
-    gl_text = gl_line(python) if gl else "skipped"
+    blocked = {n for n, _, _ in blocked_wheels()}
+    rows.append(("Qt", qt_line(blocked)))
+    gl_text = "skipped (PySide6 cannot be loaded)" if "PySide6" in blocked else gl_line(python) if gl else "skipped"
     rows.append(("OpenGL", gl_text))
     ff = ffmpeg_lines()
     rows.extend(ff)
@@ -816,7 +834,8 @@ def report(config=None, gl=True, python=None):
     rows.append(("Audio", audio_line()))
     cfg_rows, cfg = config_lines(config)
     rows.extend(cfg_rows)
-    rows.extend(settings_lines())
+    if "PySide6" not in blocked:
+        rows.extend(settings_lines())
     storage, free = storage_line()
     rows.append(("Storage", storage))
     rows.extend(log_lines())

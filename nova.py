@@ -6,6 +6,10 @@ import sys
 import signal
 import logging
 
+from util import cpu_message      # util imports nothing compiled
+if cpu_message():                 # PySide6 or numpy built for a newer CPU: importing them would end this
+    sys.exit("nova: " + cpu_message())
+
 from PySide6.QtCore import Qt, QMetaObject, QTimer, QSize
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QIcon
 

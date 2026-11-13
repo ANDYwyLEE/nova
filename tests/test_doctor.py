@@ -398,3 +398,19 @@ def test_the_nvidia_driver_verdict_fits_the_build(monkeypatch, tmp_path):
     built = verdicts("19.0.2 (built from source), FFmpeg 9.0.2", "NVIDIA driver 340.108: 0 ION, 511 MiB")
     assert not any("recent enough" in t for t in built) and any("legacy" in t and "--accel vdpau" in t for t in built), built
     assert not any("NVIDIA driver" in t for t in verdicts("19.0.2 (built from source)", "NVIDIA driver 615.71: 0 RTX 4090"))
+
+
+def test_the_report_does_not_import_what_the_cpu_cannot_run(monkeypatch, tmp_path):
+    """With PySide6 6.12 on a CPU without SSE4.2, `nova doctor` itself ended with an illegal instruction."""
+    wheels = [("PySide6", "6.12.0", "6.9.3"), ("numpy", "2.5.4", "2.3.5")]
+    monkeypatch.setattr(doctor, "blocked_wheels", lambda: wheels)
+    monkeypatch.setattr(doctor, "cpu_message", lambda w=None: "this CPU has no SSE4.2, and PySide6 6.12.0 and numpy 2.5.4 are built for it")
+    for name in [m for m in sys.modules if m == "PySide6" or m.startswith("PySide6.")] + ["PySide6", "numpy", "videoworker"]:
+        monkeypatch.setitem(sys.modules, name, None)                 # importing any of them now raises
+    monkeypatch.setattr(doctor, "gl_line", lambda python=None: pytest.fail("the OpenGL probe imports PySide6"))
+    monkeypatch.setattr(doctor, "numpy_check", lambda python=None: pytest.fail("said already"))
+    out = doctor.report(config=str(tmp_path / "none.ini"))
+    assert "Qt          PySide6 6.12.0 (not loaded: this CPU cannot run it)" in out
+    assert "⚠ this CPU has no SSE4.2, and PySide6 6.12.0 and numpy 2.5.4 are built for it: no camera starts until then" in out
+    assert "OpenGL      skipped (PySide6 cannot be loaded)" in out and "OpenGL comes from a GPU driver" not in out
+    assert "free for recordings" in out                               # the report goes on to its end

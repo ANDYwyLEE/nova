@@ -1145,6 +1145,9 @@ def main(argv=None):
         return 0
     if cmd not in COMMANDS:
         sys.exit(f"unknown command '{cmd}'\n\n{USAGE.rstrip()}")
+    if cmd in ("start", "record", "run", "restart", "layout") and util.cpu_message():
+        # the launcher reads window places through PySide6, and every camera would end as this would
+        sys.exit("nova: " + util.cpu_message())
     head = tokens[:tokens.index("--")] if "--" in tokens else tokens
     if "-h" in head or "--help" in head:
         # `nova record --help` used to hand --help to every camera: each one printed nova.py's help into

@@ -252,3 +252,15 @@ def test_a_camera_that_a_signal_ended_is_put_in_words():
         assert "illegal instruction" in said and "built for a newer CPU" in said and "nova doctor" in said, said
     assert cams.how_it_ended(-signal.SIGILL).startswith("was ended by SIGILL (")
     assert cams.how_it_ended(-250) == "was ended by signal 250"
+
+
+def test_commands_that_need_qt_say_so_on_a_cpu_that_cannot_run_it(monkeypatch, capsys):
+    """`nova record` on a CPU without SSE4.2 with the pinned PySide6: the launcher itself was ended by an
+    illegal instruction when it read the window places, and printed nothing."""
+    import util
+    monkeypatch.setattr(util, "cpu_message", lambda wheels=None: "this CPU has no SSE4.2, and PySide6 6.12.0 is built for it")
+    for cmd in ("start", "record", "run", "restart", "layout"):
+        with pytest.raises(SystemExit) as e:
+            cams.main([cmd])
+        assert str(e.value) == "nova: this CPU has no SSE4.2, and PySide6 6.12.0 is built for it"
+    assert cams.main(["-h"]) == 0 and "nova start" in capsys.readouterr().out      # what needs no Qt still answers

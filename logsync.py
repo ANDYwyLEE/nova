@@ -6,14 +6,14 @@ import os
 import sys
 import threading
 import contextlib
-from util import mask_url
+from util import mask_url, av_import_help
 
 
 try:
     import av
     import av.logging
-except ImportError:
-    print("Error: av is required. Run 'pip install -r requirements.txt'")
+except ImportError as e:
+    print("Error: " + av_import_help(e))
     sys.exit(1)
 
 

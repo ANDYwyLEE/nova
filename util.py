@@ -315,6 +315,76 @@ def hw_err(e) -> str:
     return f"{head}: {last}"
 
 
+def av_import_help(e):
+    """What to tell a user whose `import av` raised `e`.  PyAV that is not installed is one thing; one
+    that is installed and cannot load is a build of one's own whose FFmpeg has lost a system library
+    (a distribution upgrade brings a new libx264, libx265 ...), and `pip install -r requirements.txt`,
+    which the message used to recommend, answers that the requirement is satisfied."""
+    text = " ".join(str(e).split())
+    if isinstance(e, ModuleNotFoundError) and getattr(e, "name", "") in ("av", None, ""):
+        return "av (PyAV) is required. Run 'pip install -r requirements.txt'"
+    lib = re.search(r"(lib[\w.+-]+\.so[\w.]*): cannot open shared object file", text)
+    what = (f"cannot load {lib.group(1)}: the FFmpeg it was built against has lost a system library "
+            f"(a distribution upgrade replaces libx264, libx265 and others), or LD_LIBRARY_PATH in [env] of "
+            f"cameras.ini no longer leads to that FFmpeg") if lib else f"does not load ({text[:200]})"
+    return (f"av (PyAV) is installed but {what}. A build of your own: build it again (docs/custom-ffmpeg.md); "
+            f"the wheel from PyPI: pip install --force-reinstall av")
+
+
+# Wheels from PyPI that are built for x86-64-v2 (SSE4.2, POPCNT): from which release on, and the newest that
+# still runs on an older CPU. Seen on an Atom D525: the newer ones end the process with an illegal
+# instruction at import, before Python can say a word (PySide6: in libshiboken6).
+CPU_V2_WHEELS = (("PySide6", (6, 10), "6.9.3"), ("numpy", (2, 4), "2.3.5"))
+
+
+def cpu_has_sse42(cpuinfo="/proc/cpuinfo"):
+    """False when Linux says of an x86 CPU that it lacks SSE4.2 or POPCNT; True when it has them, and
+    wherever nothing is known (another system, another architecture)."""
+    if not LINUX or platform.machine().lower() not in ("x86_64", "amd64"):
+        return True
+    try:
+        with open(cpuinfo, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("flags"):
+                    return {"sse4_2", "popcnt"} <= set(line.split(":", 1)[1].split())
+    except (OSError, IndexError):
+        pass
+    return True
+
+
+def wheels_too_new_for_cpu(cpuinfo="/proc/cpuinfo", installed=None):
+    """[(package, its version, the newest version that runs here)] of the installed packages this CPU
+    cannot run.  Nothing is imported for it: importing them is what ends the process."""
+    if cpu_has_sse42(cpuinfo):
+        return []
+    if installed is None:
+        from importlib import metadata
+
+        def installed(name):
+            try:
+                return metadata.version(name)
+            except Exception:
+                return None
+    out = []
+    for name, first, last in CPU_V2_WHEELS:
+        have = installed(name)
+        if have and tuple(int(x) for x in re.findall(r"\d+", have)[:2]) >= first:
+            out.append((name, have, last))
+    return out
+
+
+def cpu_message(wheels=None):
+    """One line for a user whose CPU cannot run what is installed, or None."""
+    wheels = wheels_too_new_for_cpu() if wheels is None else wheels
+    if not wheels:
+        return None
+    have = " and ".join(f"{n} {v}" for n, v, _ in wheels)
+    pip = " ".join(f"{n}=={last}" for n, _, last in wheels)
+    return (f"this CPU has no SSE4.2, and {have} {'are' if len(wheels) > 1 else 'is'} built for it "
+            f"(an `Illegal instruction` ends whatever imports {'them' if len(wheels) > 1 else 'it'}): "
+            f"{sys.executable} -m pip install {pip}   (docs/install.md, A CPU without SSE4.2)")
+
+
 def driver_own_libgl():
     """A system whose libGL.so.1 is the GPU driver's own (NVIDIA's legacy 340 series, older than libglvnd)
     still has libglvnd's libGLX.so.0, and PyOpenGL takes that one first.  Loaded for everyone to see, it
