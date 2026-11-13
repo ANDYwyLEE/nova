@@ -39,6 +39,9 @@ jobs:
           V="$(cygpath -w "$VCPKG_INSTALLATION_ROOT")\\installed\\x64-windows-static"
           EXTRA="-I $V\\include -L $V\\lib -l portaudio" bash .github/pyaudio/try.sh "$PWD/without" | tee without.txt
           grep -q '^SAME' without.txt && grep -q '^b: imported' without.txt
+      - name: The extension handed to the compiler, field by field (no compiler run)
+        shell: bash
+        run: python .github/pyaudio/equiv.py with-vcpkg/a with-vcpkg/b
 
   msys2:
     name: MSYS2 ${{ matrix.msystem }}
