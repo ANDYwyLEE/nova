@@ -29,6 +29,7 @@ from util import (mask_url, find_secrets, vaapi_node, drm_gpus, accel_obstacle, 
                   LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI)
 
 NVIDIA_MIN_DRIVER = 570          # the PyPI wheel's NVENC needs this (string in its libavcodec)
+NVIDIA_LEGACY = 350              # below: the 340 series, whose libnvcuvid lacks what FFmpeg loads (seen with 340.108)
 LOW_DISK_GB = 20
 GL_TIMEOUT = 30
 # what to look for in FFmpeg's configure line
@@ -706,9 +707,14 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         d = int(m.group(1))
         if "PyPI wheel" in ffmpeg and d < NVIDIA_MIN_DRIVER:
             out.append(("⚠", f"NVIDIA driver {d} is older than {NVIDIA_MIN_DRIVER}, the first the wheel's NVENC works with: "
-                             f"encoding falls back to libx264"))
-        else:
+                             f"encoding falls back to libx264"
+                             + ("; the wheel's decoder does not load with a driver this old either (--accel cuda "
+                                "decodes in software): docs/install.md, An old NVIDIA card" if d < NVIDIA_LEGACY else "")))
+        elif "PyPI wheel" in ffmpeg:
             out.append(("✓", f"NVIDIA driver {d} is recent enough for NVENC"))
+        elif d < NVIDIA_LEGACY:
+            out.append(("ℹ", f"NVIDIA driver {d} is a legacy one, from before NVDEC and NVENC as FFmpeg uses them: "
+                             f"it decodes through --accel vdpau (docs/install.md, An old NVIDIA card)"))
     out.extend(qt_modules_check(qt_module_errors()))
     # OpenGL
     if windows_service_session() and ("PyOpenGL cannot use it" in gl or re.search(r"llvmpipe|softpipe", gl, re.I)):

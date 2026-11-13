@@ -156,10 +156,38 @@ def test_what_stands_between_an_accel_and_the_machine():
 def test_a_hardware_error_keeps_ffmpeg_s_own_last_line():
     cuvid = Exception("[Errno 1] Operation not permitted: 'avcodec_open2(\"h264_cuvid\", {})'; last error log: [h264_cuvid] Failed loading nvcuvid.")
     assert util.hw_err(cuvid) == ("Operation not permitted: Failed loading nvcuvid "
-                                  "(NVIDIA's driver is not installed, or not its decoding library)")
+                                  "(NVIDIA's driver is not installed, or is too old for this FFmpeg)")
     cuda = Exception("[Errno 1] Operation not permitted; last error log: [CUDA] Could not dynamically load CUDA")
     assert util.hw_err(cuda).startswith("Operation not permitted: Could not dynamically load CUDA (NVIDIA's driver")
     v4l2 = Exception("[Errno 22] Invalid argument: 'avcodec_open2(\"h264_v4l2m2m\", {})' returned 22; last error log: [h264_v4l2m2m] can't configure decoder")
     assert util.hw_err(v4l2) == "Invalid argument: can't configure decoder"
     assert util.hw_err(Exception("[Errno 5] Input/output error")) == "Input/output error"
     assert util.hw_err(Exception("no decoder")) == "no decoder"
+
+
+@pytest.mark.skipif(not util.LINUX, reason="GLX is Linux's")
+def test_pyopengl_is_given_a_driver_s_own_libgl(tmp_path):
+    """NVIDIA's legacy 340 driver brings a libGL.so.1 of its own, from before libglvnd; PyOpenGL took
+    libglvnd's libGLX.so.0 beside it, and no window opened (`Could not initialize GLX`, `no valid context`)."""
+    import subprocess, sys
+    code = r"""
+import builtins, io, sys
+import util
+glvnd = util.driver_own_libgl()                     # this machine's own libraries: says what it finds
+import OpenGL.platform as P
+real = builtins.open
+builtins.open = lambda p, *a, **k: io.StringIO("no dispatch library here\n") if p == "/proc/self/maps" else real(p, *a, **k)
+took = util.driver_own_libgl()                      # as if libGL.so.1 were a driver's own
+print(glvnd, took, P.PLATFORM.GL is P.PLATFORM.GLX, P.GetCurrentContext is P.PLATFORM.GetCurrentContext,
+      P.GetCurrentContext() is None)
+"""
+    env = dict(os.environ, PYOPENGL_PLATFORM="glx", PYTHONPATH=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
+    if "libGL.so.1" in r.stderr and "cannot open" in r.stderr:
+        pytest.skip("no libGL.so.1 on this machine")
+    out = r.stdout.split()
+    assert r.returncode == 0 and len(out) == 5, r.stderr[-800:]
+    if out[1] == "False":
+        pytest.skip("libGL.so.1 does not load here")
+    # PyOpenGL now has one library for OpenGL and GLX, asks it for the context, and there is none yet
+    assert out[1:] == ["True", "True", "True", "True"], r.stdout

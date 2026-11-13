@@ -380,3 +380,21 @@ def test_an_nvidia_card_on_nouveau_is_told_what_can_decode(tmp_path):
     (fw / "nva3_bsp").write_bytes(b"x")
     assert "(there is none)" not in doctor.nouveau_check(nouveau, str(fw))[0][1]
     assert doctor.nouveau_check([("NVIDIA", "10de:2684", "nvidia", "renderD129"), ("Intel", "8086:a780", "i915", "renderD128")]) == []
+
+
+def test_the_nvidia_driver_verdict_fits_the_build(monkeypatch, tmp_path):
+    """A source build without NVENC on NVIDIA's legacy 340 driver was told `NVIDIA driver 340 is recent
+    enough for NVENC`."""
+    def verdicts(ffmpeg, gpu):
+        monkeypatch.setattr(doctor, "numpy_check", lambda python=None: [])
+        monkeypatch.setattr(doctor, "qt_module_errors", lambda *a: {})
+        return [t for _, t in doctor.checks("xcb: NVIDIA / ION / 3.3.0", ffmpeg, gpu, None, None, str(tmp_path / "none.ini"))]
+    old = verdicts("19.0.2 (PyPI wheel), FFmpeg 9.0.2", "NVIDIA driver 340.108: 0 ION, 511 MiB")
+    assert any("older than 570" in t and "does not load with a driver this old either" in t for t in old), old
+    mid = verdicts("19.0.2 (PyPI wheel), FFmpeg 9.0.2", "NVIDIA driver 535.183: 0 RTX 3060")
+    assert any("older than 570" in t and "either" not in t for t in mid), mid
+    new = verdicts("19.0.2 (PyPI wheel), FFmpeg 9.0.2", "NVIDIA driver 615.71: 0 RTX 4090")
+    assert any("NVIDIA driver 615 is recent enough for NVENC" in t for t in new), new
+    built = verdicts("19.0.2 (built from source), FFmpeg 9.0.2", "NVIDIA driver 340.108: 0 ION, 511 MiB")
+    assert not any("recent enough" in t for t in built) and any("legacy" in t and "--accel vdpau" in t for t in built), built
+    assert not any("NVIDIA driver" in t for t in verdicts("19.0.2 (built from source)", "NVIDIA driver 615.71: 0 RTX 4090"))

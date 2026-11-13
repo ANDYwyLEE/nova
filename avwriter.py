@@ -282,11 +282,13 @@ class EncoderManager:
                     logging.warning(f"[EncoderManager] ⚠️ {why}; encoding with {encoder_name} on the CPU")
                 return encoder_name
             logging.debug(f"[EncoderManager] ❌ {encoder_name}: {err}")
+            # without the user's options: is it the encoder that does not open, or what it was given?
+            bare = self._try_open(encoder_name, {}, self.gpu_idx) if test_opts else err
             if first_hw is None and encoder_name.endswith(hardware) and encoder_name != user_encoder:
-                first_hw = (encoder_name, " ".join(str(err).split())[:160])
+                first_hw = (encoder_name, " ".join(str(bare or err).split())[:160])
             if encoder_name == user_encoder and asked is None:
                 asked = " ".join(str(err).split())[:140]
-            if test_opts and self._try_open(encoder_name, {}, self.gpu_idx) is None:
+            if test_opts and bare is None:
                 # the encoder itself works: the user's options are what it rejects
                 logging.warning(f"[EncoderManager] ⚠️ {encoder_name} rejects your --ffmpeg options {test_opts}: {err}. "
                                 f"Trying the next encoder (preset/tune names differ per encoder: nvenc p1-p7, x264 ultrafast..veryslow).")

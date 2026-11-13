@@ -294,8 +294,8 @@ _ERR_LOG = re.compile(r"last error log:\s*(?:\[[^\]]*\]\s*)?(.+)$", re.S)
 # FFmpeg's words when a GPU maker's library is not on the machine, and ours for it
 _ERR_MEANS = (
     (("Cannot load libnvcuvid", "Failed loading nvcuvid", "Cannot load libcuda", "Could not dynamically load CUDA",
-      "Cannot load nvcuvid", "Cannot load nvcuda"), "NVIDIA's driver is not installed, or not its decoding library"),
-    (("Cannot load libnvidia-encode", "Cannot load nvEncodeAPI"), "NVIDIA's driver is not installed, or not its encoding library"),
+      "Cannot load nvcuvid", "Cannot load nvcuda", "Cannot load cu"), "NVIDIA's driver is not installed, or is too old for this FFmpeg"),
+    (("Cannot load libnvidia-encode", "Cannot load nvEncodeAPI"), "NVIDIA's driver is not installed, or is too old for this FFmpeg"),
 )
 
 
@@ -313,6 +313,33 @@ def hw_err(e) -> str:
         if any(n in last for n in needles):
             return f"{head}: {last} ({meaning})"
     return f"{head}: {last}"
+
+
+def driver_own_libgl():
+    """A system whose libGL.so.1 is the GPU driver's own (NVIDIA's legacy 340 series, older than libglvnd)
+    still has libglvnd's libGLX.so.0, and PyOpenGL takes that one first.  Loaded for everyone to see, it
+    answered Qt's GLX calls too, with Mesa behind it (`Could not initialize GLX`, and the window was gone),
+    and PyOpenGL asked it for a current context that the driver's library had made (`no valid context`).
+    PyOpenGL is given the driver's library for OpenGL and GLX alike.  True when that was done.  To be
+    called before OpenGL.GL is imported, for a GLX window on Linux."""
+    if not LINUX:
+        return False
+    try:
+        import ctypes
+        gl = ctypes.CDLL("libGL.so.1", mode=ctypes.RTLD_GLOBAL)
+        with open("/proc/self/maps") as f:
+            if "libGLdispatch" in f.read():
+                return False                    # libglvnd's libGL: what PyOpenGL chooses by itself is right
+        import OpenGL.platform as platform      # this loads libGLX.so.0 and takes its glXGetCurrentContext
+        current = gl.glXGetCurrentContext
+        current.restype = ctypes.c_void_p
+        impl = platform.PLATFORM
+        impl.GL = impl.GLX = gl
+        impl.GetCurrentContext = impl.CurrentContextIsValid = current
+        platform.GetCurrentContext = platform.CurrentContextIsValid = current
+        return True
+    except Exception:
+        return False
 
 
 def vaapi_node(gpu_idx=None, root=None):
