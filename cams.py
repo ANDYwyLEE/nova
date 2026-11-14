@@ -18,6 +18,7 @@ import hashlib
 import time
 import shlex
 import signal
+import stat
 import subprocess
 import configparser
 
@@ -37,6 +38,7 @@ STREAM_FLAGS = ("-t", "--target")
 GPU_FLAGS = ("--gpu",)
 EARLY_EXIT_GRACE = 1.5      # seconds a camera must survive before `start` reports it as running ...
 START_ANSWER_S = 15.0       # ... and, where it takes longer to load, until it answers on its control channel: this at most
+CONTROL_STALE_S = 60.0      # a control socket nobody listens on is removed when it is older than this
 LOG_ROTATE = 50 * 1024 * 1024   # a log above this size moves to ID.log.1 when the camera starts
 CAMERA_KEYS = ("name", "url", "opts", "enabled")
 DEFAULT_KEYS = ("opts", "python", "stagger", "camera")
@@ -572,6 +574,52 @@ def forget_control(entry):
             pass
 
 
+def listening(path, timeout=0.5):
+    """Does a process listen on the socket at `path`?  None when that cannot be told."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(path)
+        return True
+    except (ConnectionRefusedError, FileNotFoundError):
+        return False
+    except OSError:
+        return None
+
+
+def sweep_controls(pids):
+    """Remove the sockets nobody listens on any more; how many that were.  A camera removes its own
+    when it ends.  One that was killed cannot (kill -9, the kernel when memory ran out, the power), and
+    once the camera is started again no entry of the pid file names its old socket: 13 cameras killed
+    and started left 13 files that nothing would ever remove.  Other checkouts and `nova run` keep
+    their sockets in the same folder: one that answers is somebody's camera and stays, and so does
+    one made a moment ago (a camera that is starting binds it before it listens)."""
+    if WINDOWS:
+        return 0                                    # named pipes: they go with their process
+    folders = {os.path.dirname(control_address("x"))}
+    folders.update(os.path.dirname(e["control"]) for e in pids.values()
+                   if e.get("control") and os.path.isabs(e["control"]))
+    removed = 0
+    for folder in folders:
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                st = os.lstat(path)
+                if not (name.endswith(".sock") and stat.S_ISSOCK(st.st_mode) and st.st_uid == os.getuid()):
+                    continue
+                if time.time() - st.st_mtime < CONTROL_STALE_S or listening(path) is not False:
+                    continue
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def interrupt(pid, address=None):
     """Ask a camera to quit the way Ctrl-C would (window geometry and recordings are saved): through its
     control channel, else with a signal (cameras started before the channel existed)."""
@@ -791,6 +839,7 @@ def cmd_list(defaults, env, cams, args):
 def cmd_start(defaults, env, cams, args, record=False):
     os.makedirs(LOGDIR, exist_ok=True)
     pids = read_pids()
+    sweep_controls(pids)
     stagger = float(defaults.get("stagger", 0.5)) if defaults else 0.5
     launched, failed = [], 0
     layout = load_layout(args.layout) if args.layout else None
@@ -809,6 +858,8 @@ def cmd_start(defaults, env, cams, args, record=False):
         if old and alive(old["pid"]):
             print(f"{cam.id}: already running (pid {old['pid']}, {old['mode']})")
             continue
+        if old:
+            forget_control(old)             # it ended without a `nova stop`: its entry is replaced below
         extra = list(args.extra) + tiles.get(cam.id, [])
         argv = command(cam, defaults, extra, record, layout)
         mode = mode_of(argv)
@@ -893,6 +944,7 @@ def left_alone(pids, config):
 
 def cmd_stop(defaults, env, cams, args):
     pids = read_pids()
+    sweep_controls(pids)
     targets = {k: v for k, v in pids.items() if (k in args.ids if args.ids else launched_with(v, args.config))}
     notes = [] if args.ids else left_alone(pids, args.config)
     if not targets:

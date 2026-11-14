@@ -2,6 +2,8 @@
 entries, the lock, restart, list masking, cameras.ini edge cases, and no secrets on the command line."""
 import json
 import os
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -335,3 +337,81 @@ def test_a_camera_that_dies_while_it_loads_did_not_start(home, capsys, monkeypat
     assert run(home, "start", "a") == 0
     assert "1 running" in capsys.readouterr().out and time.time() - t0 < 10
     run(home, "stop", "a")
+
+
+# ---------------------------------------------------------------- what a killed camera leaves behind
+def wait_dead(pid, timeout=10):
+    end = time.time() + timeout
+    while time.time() < end:
+        if not cams.alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@posix_only
+def test_a_killed_camera_s_socket_goes_when_the_camera_is_started_again(home, capsys):
+    """kill -9, or the kernel when memory runs out: the camera cannot remove its socket.  `nova start` gave
+    the camera a new one, and no entry named the old file any more: 13 cameras killed and started again
+    left 13 sockets that nothing would ever remove."""
+    assert run(home, "start", "b") == 0
+    old = cams.read_pids()["b"]
+    assert os.path.exists(old["control"])
+    os.kill(old["pid"], signal.SIGKILL)
+    assert wait_dead(old["pid"]) and os.path.exists(old["control"])          # what a kill leaves
+    run(home, "status")
+    assert "exited" in capsys.readouterr().out and os.path.exists(old["control"])   # status only looks
+    assert run(home, "start", "b") == 0
+    new = cams.read_pids()["b"]
+    assert new["control"] != old["control"] and os.path.exists(new["control"])
+    assert not os.path.exists(old["control"])
+    run(home, "stop")
+    assert not os.path.exists(new["control"]) and not cams.read_pids()
+
+
+@posix_only
+def test_sockets_nobody_listens_on_are_swept_and_the_others_are_left(home):
+    folder = os.path.dirname(cams.control_address("x"))
+    os.makedirs(folder, exist_ok=True)
+    made = []
+
+    def sock(name, listen):
+        path = os.path.join(folder, name)
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(path)
+        if listen:
+            s.listen()
+        made.append(path)
+        return s, path
+
+    hour_ago = time.time() - 3600
+    try:
+        s, dead = sock("t-dead.sock", False)             # its camera was killed long ago
+        s.close()
+        live_s, live = sock("t-live.sock", True)         # another checkout's camera, which answers
+        s, fresh = sock("t-fresh.sock", False)           # a camera that is starting: bound a moment ago
+        s.close()
+        notes = os.path.join(folder, "t-notes.sock")     # not a socket at all
+        open(notes, "w").close()
+        made.append(notes)
+        for path in (dead, live, notes):
+            os.utime(path, (hour_ago, hour_ago))
+        assert cams.listening(dead) is False and cams.listening(live) is True
+        assert cams.sweep_controls({}) >= 1
+        assert not os.path.exists(dead)
+        assert os.path.exists(live) and os.path.exists(fresh) and os.path.exists(notes)
+        # the folder an entry of the pid file names is looked at as well (XDG_RUNTIME_DIR may have changed since)
+        elsewhere = os.path.join(str(home), "r")
+        os.makedirs(elsewhere)
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(os.path.join(elsewhere, "t-old.sock"))
+        s.close()
+        os.utime(os.path.join(elsewhere, "t-old.sock"), (hour_ago, hour_ago))
+        assert cams.sweep_controls({"gone": {"pid": 1, "control": os.path.join(elsewhere, "g.sock")}}) == 1
+        assert os.listdir(elsewhere) == []
+        live_s.close()
+    finally:
+        for path in made:
+            if os.path.exists(path):
+                os.remove(path)
+
