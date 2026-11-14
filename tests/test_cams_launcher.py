@@ -2,10 +2,12 @@
 entries, the lock, restart, list masking, cameras.ini edge cases, and no secrets on the command line."""
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -401,8 +403,8 @@ def test_sockets_nobody_listens_on_are_swept_and_the_others_are_left(home):
         assert not os.path.exists(dead)
         assert os.path.exists(live) and os.path.exists(fresh) and os.path.exists(notes)
         # the folder an entry of the pid file names is looked at as well (XDG_RUNTIME_DIR may have changed since)
-        elsewhere = os.path.join(str(home), "r")
-        os.makedirs(elsewhere)
+        elsewhere = tempfile.mkdtemp(prefix="nv", dir="/tmp")     # short: a socket's path holds 104 bytes on macOS
+        made.append(elsewhere)
         s = socket.socket(socket.AF_UNIX)
         s.bind(os.path.join(elsewhere, "t-old.sock"))
         s.close()
@@ -412,6 +414,8 @@ def test_sockets_nobody_listens_on_are_swept_and_the_others_are_left(home):
         live_s.close()
     finally:
         for path in made:
-            if os.path.exists(path):
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.exists(path):
                 os.remove(path)
 
