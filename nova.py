@@ -147,7 +147,7 @@ if __name__ == "__main__":
     fmt.setAlphaBufferSize(8)
     fmt.setRenderableType(QSurfaceFormat.OpenGL)
     if args.opengl:
-        # NovaGL's shaders need a 3.3 core context (macOS only offers 2.1 legacy otherwise)
+        # NovaGL's shaders ask for a 3.3 core context (macOS only offers 2.1 legacy otherwise); 3.1 will do
         fmt.setVersion(3, 3)
         fmt.setProfile(QSurfaceFormat.CoreProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
@@ -180,8 +180,9 @@ if __name__ == "__main__":
     logging.debug(f"[Nova] {mask_url(args.url)}")
 
     if args.opengl and not args.headless:
-        # a GPU whose driver stops below OpenGL 3.3 (a Raspberry Pi: 3.1; Intel graphics of 2011 and before): the
-        # window that needs no shader of Nova's draws there, so the camera is shown, and the log says how
+        # a GPU whose driver stops below OpenGL 3.1 (a Raspberry Pi 3: 2.1; Intel graphics of 2010 and before),
+        # or offers OpenGL ES only: the window that needs no shader of Nova's draws there, so the camera is
+        # shown, and the log says how
         have = opengl_offered()
         if have:
             logging.warning(f"[Nova] ⚠️ {opengl_needs(have)}: this window is drawn without --opengl "

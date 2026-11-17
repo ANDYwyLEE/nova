@@ -1,6 +1,6 @@
 """The OpenGL renderer of the camera window: NV12 / YUV planes uploaded as textures and converted to
 RGB in a shader, the overlay as an RGBA texture, fit and zoom as a model matrix."""
-import traceback, logging, sys, ctypes, time
+import traceback, logging, sys, ctypes, time, re
 import numpy as np
 from util import WINDOWS, opengl_shortfall
 from PySide6.QtCore import QTimer
@@ -23,23 +23,45 @@ GL_LOG_INTERVAL = 60.0     # seconds between render error reports
 RENDER_FAILED = "Rendering failed (OpenGL)\nsee the log"
 GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FF
 
+CONTEXTS = ((3, 3), (3, 1))        # asked for in this order: what the shaders are written for, and what will do
+
+
+def context_format(version, base=None):
+    """`base` (a new format when None) as the request for an OpenGL context of `version`: the core
+    profile from 3.2 on, where profiles begin."""
+    fmt = QSurfaceFormat(base) if base is not None else QSurfaceFormat()
+    fmt.setRenderableType(QSurfaceFormat.OpenGL)
+    fmt.setVersion(*version)
+    fmt.setProfile(QSurfaceFormat.CoreProfile if version >= (3, 2) else QSurfaceFormat.NoProfile)
+    return fmt
+
+
 def opengl_offered():
-    """What the GPU's driver offers in place of the OpenGL 3.3 core context an --opengl window draws in
-    ('OpenGL 3.1', 'OpenGL ES 3.1'), or None when that context is there.  Asked before the window is
-    made (a QGuiApplication exists): the shaders do not compile in an older context, and with some
-    drivers the first call in it ended the process.  None as well when no context can be made at all:
-    that is another matter, and the window says it."""
+    """What the GPU's driver offers when that is not a context an --opengl window can draw in
+    ('OpenGL 2.1', 'OpenGL ES 3.1'), or None when it can: OpenGL 3.3 core is asked for, and what a
+    driver gives in its place is enough from 3.1 on (util.OPENGL_NEEDED).  Where 3.3 is refused
+    outright, 3.1 is asked for, and the application's default format is set to that for the window.
+    Asked before the window is made (a QGuiApplication exists): the shaders do not compile in an older
+    context, and with some drivers the first call in it ended the process.  None as well when no
+    context can be made at all: that is another matter, and the window says it."""
     try:
-        want = QSurfaceFormat()
-        want.setRenderableType(QSurfaceFormat.OpenGL)
-        want.setVersion(3, 3)
-        want.setProfile(QSurfaceFormat.CoreProfile)
-        ctx = QOpenGLContext()
-        ctx.setFormat(want)
-        if not ctx.create():
+        for version in CONTEXTS:
+            ctx = QOpenGLContext()
+            ctx.setFormat(context_format(version))
+            if ctx.create():
+                break
+        else:
             ctx = QOpenGLContext()                  # whatever the platform offers
+            ctx.setFormat(QSurfaceFormat())
             if not ctx.create():
                 return None
+            version = None
+        if version is not None and version != CONTEXTS[0]:
+            # GLX gives its newest context when 3.3 is asked of a driver that stops at 3.1; EGL (a native
+            # Wayland window) gives none at all.  The window is then asked for with what was given here.
+            logging.info(f"[NovaGL] the GPU's driver gives no OpenGL {CONTEXTS[0][0]}.{CONTEXTS[0][1]} context "
+                         f"here: the window is asked for with OpenGL {version[0]}.{version[1]}")
+            QSurfaceFormat.setDefaultFormat(context_format(version, QSurfaceFormat.defaultFormat()))
         # Qt reads the version the driver gave when the context is made; current on a surface as well,
         # for a platform plugin that would only know then
         surface = QOffscreenSurface()
@@ -106,6 +128,16 @@ void main() {
 }
 """
 
+ATTRIBUTES = ("aPos", "aTexCoord")       # the vertex shader's inputs, at locations 0 and 1 (_set_attribs)
+
+
+def glsl_140(source):
+    """A shader of above in GLSL 1.40, the language of an OpenGL 3.1 or 3.2 context (the GPU of a
+    Raspberry Pi 4 and 5): the same text without `layout (location = N)`, which GLSL has from 3.30
+    on.  The program binds ATTRIBUTES to their locations by name before it is linked instead."""
+    return re.sub(r"layout\s*\(\s*location\s*=\s*\d+\s*\)\s*", "", source.replace("#version 330 core", "#version 140"))
+
+
 COEF_BT601 = (1.4020, 0.3441, 0.7141, 1.7720)
 COEF_BT709 = (1.5748, 0.1873, 0.4681, 1.8556)
 
@@ -140,12 +172,12 @@ class NovaGL(Nova):
         super().__init__(core, grid, border, **place)
 
     def _surface_format(self):
-        # Applied by Nova.__init__ *before* show(): a 3.3 core profile is required for the
-        # '#version 330 core' shaders (macOS gives a legacy 2.1 context otherwise).
-        fmt = QSurfaceFormat()
-        fmt.setVersion(3, 3)
-        fmt.setProfile(QSurfaceFormat.CoreProfile)
-        fmt.setRenderableType(QSurfaceFormat.OpenGL)
+        # Applied by Nova.__init__ *before* show(): a 3.3 core profile for the '#version 330 core'
+        # shaders (macOS gives a legacy 2.1 context otherwise).  A driver that stops at 3.1 or 3.2
+        # gives that, and _init_gl takes the shaders in GLSL 1.40; where it had to be asked for by
+        # its number (opengl_offered), the default format holds that number.
+        asked = QSurfaceFormat.defaultFormat().version()
+        fmt = context_format(asked if asked in CONTEXTS else CONTEXTS[0])
         fmt.setAlphaBufferSize(8)
         fmt.setDepthBufferSize(24)
         fmt.setStencilBufferSize(8)
@@ -164,6 +196,8 @@ class NovaGL(Nova):
     def _init_gl(self):
         """Create the shader program, buffers and textures in the current context. False on failure (logged)."""
         try:
+            if QOpenGLContext.currentContext() is None:
+                raise RuntimeError("the window got no OpenGL context (the GPU's driver refused the one asked for)")
             # On Wayland Qt first makes the context current without a surface; NVIDIA's EGL then
             # leaves the window's draw buffer at GL_NONE, so everything drawn was discarded and a
             # native Wayland window stayed empty. Mesa and GLX start at GL_BACK.
@@ -173,19 +207,24 @@ class NovaGL(Nova):
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             glClearColor(0.0, 0.0, 0.0, 0.8)
 
+            # the context the driver gave: 3.3 was asked for, a Raspberry Pi's GPU gives 3.1
+            older = (int(glGetIntegerv(GL_MAJOR_VERSION)), int(glGetIntegerv(GL_MINOR_VERSION))) < (3, 3)
             vs = glCreateShader(GL_VERTEX_SHADER)
-            glShaderSource(vs, VERTEX_SHADER)
+            glShaderSource(vs, glsl_140(VERTEX_SHADER) if older else VERTEX_SHADER)
             glCompileShader(vs)
             ok = check_compile_status(vs, "VS")
             fs = glCreateShader(GL_FRAGMENT_SHADER)
-            glShaderSource(fs, FRAGMENT_SHADER)
+            glShaderSource(fs, glsl_140(FRAGMENT_SHADER) if older else FRAGMENT_SHADER)
             glCompileShader(fs)
             ok = check_compile_status(fs, "FS") and ok
             if not ok:
-                raise RuntimeError("shader compilation failed (OpenGL 3.3 core profile required)")
+                raise RuntimeError("shader compilation failed (OpenGL 3.1 or newer is required)")
             prog = glCreateProgram()
             glAttachShader(prog, vs)
             glAttachShader(prog, fs)
+            if older:
+                for location, name in enumerate(ATTRIBUTES):
+                    glBindAttribLocation(prog, location, name.encode())
             glLinkProgram(prog)
             glDeleteShader(vs)
             glDeleteShader(fs)

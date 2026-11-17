@@ -243,8 +243,8 @@ def gl_probe():
 
 
 def opengl_too_old(gl):
-    """'OpenGL 3.1' / 'OpenGL ES 3.1' when the context in the report's OpenGL line is not the 3.3 an
-    --opengl window needs, else None (also for a line without a context)."""
+    """'OpenGL 2.1' / 'OpenGL ES 3.1' when the context in the report's OpenGL line is not one an
+    --opengl window can draw in (util.OPENGL_NEEDED), else None (also for a line without a context)."""
     m = re.search(r"\(context (\d+)\.(\d+)( OpenGL ES)?", gl or "")
     return opengl_shortfall(int(m.group(1)), int(m.group(2)), bool(m.group(3))) if m else None
 
@@ -747,8 +747,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                          "(on Windows: no GPU driver, Qt fell back to its software opengl32sw.dll), and an --opengl "
                          "window closes at start; leave --opengl out of opts, or install the GPU driver"))
     elif opengl_too_old(gl):
-        # a Raspberry Pi (OpenGL 3.1), Intel graphics of 2011 and before: said before the software renderer
-        # below, which a remote desktop of that kind is as well
+        # a Raspberry Pi 3 (OpenGL 2.1), Intel graphics of 2010 and before, OpenGL ES alone: said before the
+        # software renderer below, which a remote desktop of that kind is as well
         out.append(("⚠", f"{opengl_needs(opengl_too_old(gl))}: a camera started with --opengl is drawn without it "
                          f"(the CPU converts the pictures, and the log says so); leave --opengl out of opts"))
     elif re.search(r"llvmpipe|softpipe|swrast|Software Rasterizer", gl, re.I):

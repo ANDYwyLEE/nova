@@ -234,10 +234,11 @@ def test_an_av_that_is_installed_and_does_not_load_is_not_told_to_pip_install():
 
 
 def test_opengl_shortfall_names_a_context_that_is_too_old():
-    """A Raspberry Pi 5 (OpenGL 3.1), Intel graphics of 2011 and before: the shaders of an --opengl window
-    are '#version 330 core'."""
+    """An --opengl window draws from OpenGL 3.1 on (a Raspberry Pi 4 and 5 offer that, and get the shaders
+    in GLSL 1.40); a Raspberry Pi 3 and Intel graphics of 2010 and before stop at 2.1."""
     assert util.opengl_shortfall(3, 3) is None and util.opengl_shortfall(4, 6) is None
-    assert util.opengl_shortfall(3, 1) == "OpenGL 3.1" and util.opengl_shortfall(2, 1) == "OpenGL 2.1"
+    assert util.opengl_shortfall(3, 1) is None and util.opengl_shortfall(3, 2) is None
+    assert util.opengl_shortfall(3, 0) == "OpenGL 3.0" and util.opengl_shortfall(2, 1) == "OpenGL 2.1"
     assert util.opengl_shortfall(3, 2, es=True) == "OpenGL ES 3.2"          # ES of any version: other shaders
-    assert util.opengl_needs("OpenGL 3.1") == "--opengl needs OpenGL 3.3, and the GPU's driver here offers OpenGL 3.1"
+    assert util.opengl_needs("OpenGL 2.1") == "--opengl needs OpenGL 3.1, and the GPU's driver here offers OpenGL 2.1"
 
