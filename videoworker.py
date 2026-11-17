@@ -26,7 +26,7 @@ from util import (LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err 
                   accel_obstacle, KNOWN_HWACCELS)
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
-from dispframe import DisplayFrame, GL_DIRECT_FORMATS
+from dispframe import DisplayFrame, GL_DIRECT_FORMATS, rgba_array
 
 import av
 from av.codec.hwaccel import HWAccel, hwdevices_available
@@ -1238,7 +1238,7 @@ class VideoWorker(QThread):
                             self.frame_q.append(DisplayFrame.from_av_frame(frame))
                         else:
                             t_conv = time.monotonic()
-                            self.frame_q.append(DisplayFrame.from_rgba_array(frame.to_ndarray(format="rgba")))
+                            self.frame_q.append(DisplayFrame.from_rgba_array(rgba_array(frame)))
                             converting += time.monotonic() - t_conv
                         self.img_sig.emit()
 

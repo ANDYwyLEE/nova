@@ -3,6 +3,13 @@ they are, or an RGBA image for QPainter."""
 import numpy as np
 from PySide6.QtGui import QImage
 
+from util import CONV_THREADS
+
+def rgba_array(frame):
+    """The decoded picture as an RGBA array, converted on the thread that asks (util.CONV_THREADS)."""
+    return frame.to_ndarray(format="rgba", threads=CONV_THREADS)
+
+
 # Formats the OpenGL renderer can upload directly (no CPU colour conversion).
 GL_DIRECT_FORMATS = ("nv12", "yuv420p", "yuvj420p")
 
@@ -30,7 +37,7 @@ class DisplayFrame:
         if self.kind == "rgba":
             return self.qimg
         if self._cached_qimg is None:
-            rgba = np.ascontiguousarray(self.frame.to_ndarray(format="rgba"))
+            rgba = np.ascontiguousarray(rgba_array(self.frame))
             h, w = rgba.shape[:2]
             self._cached_qimg = QImage(rgba.data, w, h, w * 4, QImage.Format_RGBA8888).copy()
         return self._cached_qimg

@@ -14,7 +14,8 @@ from fractions import Fraction
 import av
 import logsync  # installs logging.verbose / logging.trace
 from ffparser import for_codec
-from util import WINDOWS, MAC, IS_PI, MSYS, get_os_type, vaapi_node, short_err as _short_err, hw_err as _hw_err
+from util import (WINDOWS, MAC, IS_PI, MSYS, CONV_THREADS, get_os_type, vaapi_node, short_err as _short_err,
+                  hw_err as _hw_err)
 
 try: from filelock import FileLock, Timeout
 except ImportError:
@@ -1033,7 +1034,8 @@ class AVWriter:
             # the sample values stay what they are (a full-range picture is not squeezed into 16-235):
             # the encoder is told the range instead (_carry_colour)
             kw = {"src_color_range": rng, "dst_color_range": rng} if rng else {}
-            frame = frame.reformat(width=self.width, height=self.height, format=target_pf, **kw)
+            frame = frame.reformat(width=self.width, height=self.height, format=target_pf,
+                                   threads=CONV_THREADS, **kw)
         frame.pts = pts
         frame.time_base = self.v_time_base
         # decoded frames carry the *source* picture type (I/P/B); libx264/nvenc would treat it as

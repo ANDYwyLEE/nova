@@ -123,6 +123,15 @@ def get_os_type():
 
 
 # --record-interval, Recording segment length (e.g. 10m, 1h, 3600s; default: 30m)
+# FFmpeg's scaler (libswscale) converts a picture on as many threads as the machine has cores unless it is
+# told a number.  Measured for 1080p to RGBA, the conversion of every picture of a window without --opengl:
+# a Raspberry Pi 5 (four cores) takes 2.5 ms and 8.0 ms of CPU for it that way, 2.2 ms and 2.2 ms on one
+# thread (its memory is what limits it; at 4K 8.6 ms / 28.7 ms against 8.4 / 8.4); a 32-thread x86 0.1 to
+# 0.5 ms and 0.9 to 5.0 ms of CPU against 1.3 to 2.1 ms on one.  A wall is many cameras side by side: what
+# counts is the CPU they take together, and a millisecond more for a picture is not seen.
+CONV_THREADS = 1
+
+
 def parse_time(value):
     if isinstance(value, int): return value
     if not isinstance(value, str):
