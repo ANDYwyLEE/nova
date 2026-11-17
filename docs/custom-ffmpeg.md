@@ -1,4 +1,4 @@
-# Building FFmpeg yourself (only for SRT, VAAPI or CUDA filters)
+# Building FFmpeg yourself (only for SRT, VAAPI, CUDA filters or a Raspberry Pi's HEVC decoder)
 
 The `av` wheel from PyPI bundles an FFmpeg (9.0.2 in av 19.0.1 and 19.0.2) with NVENC/NVDEC, Quick Sync (libvpl), AMF, x264/x265/SVT-AV1, libopus and TLS. Build your own only if you need something it lacks:
 
@@ -6,6 +6,7 @@ The `av` wheel from PyPI bundles an FFmpeg (9.0.2 in av 19.0.1 and 19.0.2) with 
 - **VAAPI** on Linux, for decoding and recording on an AMD GPU or on an Intel GPU older than the 11th generation (a newer Intel GPU has Quick Sync through the wheel: [install.md](install.md#linux))
 - **VDPAU** (or VAAPI) for an old NVIDIA card that NVIDIA's current driver no longer serves ([install.md](install.md#linux), *An old NVIDIA card*): install `libvdpau-dev` before `./configure`, which then finds it by itself
 - CUDA filters (`scale_npp`, `scale_cuda`) or a newer FFmpeg than the wheel ships
+- the **HEVC decoder of a Raspberry Pi 5** (`--accel drm`): FFmpeg itself has no part for it, Raspberry Pi's branch of FFmpeg has: [below](#raspberry-pi-5-the-boards-hevc-decoder)
 
 Quick Sync is not a reason: the wheel has it on Linux and Windows, and so does MSYS2's FFmpeg package.
 
@@ -91,6 +92,44 @@ What to expect from the result:
 - **Access**: the render node belongs to the group `render`. A desktop login is given access to it; over ssh or in a service the user has to be in that group (`sudo usermod -aG render $USER`, then log in again), or VAAPI answers `No VA display found for device /dev/dri/renderD…` and the camera decodes in software.
 - Measured on the Intel GPU (UHD 770): a 1080p window with VAAPI decoding at 10 fps 2.4 % of a core, at 20 fps 5.8 %; decoding plus `h264_vaapi` recording 5 % and 200 MB per 10 fps camera, six cameras at once 42 % of a core.
 - Measured on an AMD GPU (the Radeon graphics of a Ryzen 9 9955HX, Mesa 26.0, a second machine built by this recipe, with an RTX 4060 as `renderD128` beside it): decoding plus `h264_vaapi` recording 1.9 % of a core at 10 fps and 3.0 % at 20 fps, 240 MB each; `-e hevc_vaapi` the same. At its default quality `h264_vaapi` wrote 2.0 Mbit/s there for the 1080p camera at 10 fps that Intel records in 1.8, and `hevc_vaapi` 1.4; `--ffmpeg "-b:v 2M"` gives 1.9. Run from an ssh login, with the user in the `render` group. `vainfo` lists no AV1 encoder for this GPU.
+
+## Raspberry Pi 5: the board's HEVC decoder
+
+A Raspberry Pi 5 decodes HEVC in hardware (H.264 it does not: [install.md](install.md#linux), arm64). Its decoder is driven through V4L2's request API, which FFmpeg does not have and Raspberry Pi's own branch of FFmpeg does: `test/9.0.2/main` of [jc-kynesim/rpi-ffmpeg](https://github.com/jc-kynesim/rpi-ffmpeg) is FFmpeg 9.0.2, the version `av` 19 is made for, with those patches (Raspberry Pi OS's `ffmpeg` package is built from the same repository, at 7.1). Built and run on a Pi 5 with Raspberry Pi OS 13 (kernel 6.18, driver `rpi-hevc-dec`), November 2026; the configure options are those of the system's package (`ffmpeg -buildconf`) and Nova's usual ones.
+
+```bash
+sudo apt install -y pkg-config libx264-dev libx265-dev libopus-dev libgnutls28-dev libsrt-gnutls-dev \
+    libdrm-dev libudev-dev libepoxy-dev
+
+mkdir -p ~/deps && cd ~/deps
+git clone --depth 1 --branch test/9.0.2/main https://github.com/jc-kynesim/rpi-ffmpeg.git && cd rpi-ffmpeg
+./configure --prefix=$HOME/deps --enable-shared --disable-static --enable-gpl \
+    --enable-libx264 --enable-libx265 --enable-libopus --enable-gnutls --enable-libsrt \
+    --arch=arm64 --enable-neon --enable-v4l2-request --enable-libudev --enable-libdrm --enable-epoxy --enable-sand \
+    --disable-doc --disable-ffplay
+    # its summary has to say:  Enabled hwaccels: hevc_v4l2request
+make -j4 && make install                       # ten minutes on the Pi 5
+
+cd ~/nova && . venv/bin/activate
+PKG_CONFIG_PATH=$HOME/deps/lib/pkgconfig pip install --force-reinstall --no-binary av av --no-cache-dir     # two and a half minutes
+LD_LIBRARY_PATH=$HOME/deps/lib python -c "import av; print([c.device_type.name for c in av.Codec('hevc', 'r').hardware_configs])"
+```
+
+The last line has to print `['drm']` (the wheel prints `[]`). Then, in `cameras.ini`:
+
+```ini
+[env]
+LD_LIBRARY_PATH = /home/you/deps/lib
+
+[driveway]
+opts = --accel drm              ; the cameras that send HEVC
+```
+
+- The log says `First frame (hevc + drm hwaccel, HW)`. A camera that sends H.264 and is started with `--accel drm` is decoded on the CPU, with one line that says so (`this FFmpeg build decodes hevc through a DRM device, and the camera sends h264`); a camera that is switched to HEVC later gets the decoder at its next connection.
+- What it saves, in percent of one core, in a window with `--opengl`: a 2160p stream at 20 fps and 8 Mbit/s 29 % in place of 122 % (which needed two decoder threads); a 1080p camera at 25 fps 12 % in place of 22 % (at night, with next to nothing in the picture). A 2160p picture costs 6.5 ms of CPU, the copy out of the decoder's memory, against 42 ms decoded in software; the pictures are the same, value for value.
+- The decoder is one device, and the cameras take turns at it. Three at once (the 2160p stream, the 1080p camera at 25 fps and a 1080p stream at 10 fps, beside five H.264 cameras decoded on the CPU: eight windows, 38 % of the board) were all in time, and the 2160p pictures then took 47 ms of the 50 ms between them, nearly all of it waiting for their turn. More than that has not been tried; a camera whose pictures no longer all come out of the decoder is moved to the software decoder, and the log says so.
+- This build has H.264 and HEVC encoders (`libx264`, `libx265`), Opus, TLS and SRT, and no AV1 decoder; add what you need to the configure line.
+- A Raspberry Pi 4 has the same kind of HEVC decoder. It has not been tried.
 
 ## Windows (MSYS2 UCRT64)
 
