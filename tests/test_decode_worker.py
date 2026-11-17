@@ -815,6 +815,60 @@ def test_a_gpu_decoder_that_does_not_keep_up_is_left_for_software(qapp, caplog):
     assert w._slow(None, 25, dec) is None
 
 
+def _lists(*types):
+    """A decoder as PyAV describes it, with hardware configurations for these device types."""
+    return SimpleNamespace(name="x", hardware_configs=[SimpleNamespace(device_type=SimpleNamespace(name=t)) for t in types])
+
+
+def test_a_drm_device_is_for_the_decoders_that_list_it(qapp, monkeypatch):
+    """A Raspberry Pi 5's HEVC decoder: FFmpeg with Raspberry Pi's patches lists a DRM device for `hevc`, and
+    for nothing else; the wheels list it for no decoder at all."""
+    assert videoworker.hwaccel_listed(_lists("drm"), "drm") and not videoworker.hwaccel_listed(_lists("cuda"), "drm")
+    assert not videoworker.hwaccel_listed(_lists(), "drm") and not videoworker.hwaccel_listed(object(), "drm")
+    assert not videoworker.hwaccel_listed("no such decoder", "drm")
+    assert "drm" in videoworker.HWACCEL_WHERE_LISTED and "drm" not in videoworker.HWACCEL_DEDICATED_ONLY
+    monkeypatch.setattr(videoworker, "accel_in_build", lambda a: True)
+    monkeypatch.setattr(videoworker, "accel_obstacle", lambda a: None)
+    w = _worker(accel="drm")
+    del w._accel_never
+    monkeypatch.setattr(videoworker, "listed_codecs", lambda a: [])                 # the wheel
+    assert w._accel_never() == ("no decoder of this FFmpeg build works through a DRM device (docs/custom-ffmpeg.md "
+                                "builds the one that decodes HEVC on a Raspberry Pi's decoder)")
+    monkeypatch.setattr(videoworker, "listed_codecs", lambda a: ["hevc"])           # the build for the board
+    assert w._accel_never() is None
+    h264 = SimpleNamespace(name="h264", hardware_configs=[])
+    assert w._accel_not_for(h264) == "this FFmpeg build decodes hevc through a DRM device, and the camera sends h264"
+    assert w._accel_not_for(_lists("drm")) is None
+    w.accel = "vaapi"                                                               # asked of every decoder
+    assert w._accel_not_for(h264) is None
+
+
+def test_an_accel_that_is_not_for_the_camera_s_codec_is_said_once_and_asked_again_for_another(qapp, clip, monkeypatch, caplog):
+    """--accel drm in [defaults] on a Raspberry Pi 5: its H.264 cameras are decoded in software, with one
+    line and no new try every five minutes; a camera that is switched to HEVC gets the decoder."""
+    monkeypatch.setattr(videoworker, "HWACCELS", ["drm"])
+    monkeypatch.setattr(videoworker, "listed_codecs", lambda a: ["hevc"])
+    monkeypatch.setattr(videoworker, "hwaccel_listed", lambda codec, a: getattr(codec, "name", codec) == "hevc")
+    caplog.set_level(logging.INFO)
+    w = _worker(str(clip), accel="drm")
+    w._open_hw_decoder = lambda *a: pytest.fail("no decoder for H.264 is there to open")
+    for _ in range(2):
+        with av.open(str(clip)) as c:
+            w._stream_loop(c, "clip")
+    said = _said(caplog, "cannot work here")
+    assert len(said) == 1, said
+    assert ("--accel=drm cannot work here: this FFmpeg build decodes hevc through a DRM device, and the camera "
+            "sends h264. Decoding in software (h264).") in said[0]
+    assert w._hw_never_codec == "h264" and not w._hw_retry_due() and len(_said(caplog, "First frame (h264, SW)")) == 2
+
+    asked = []
+    w._open_hw_decoder = lambda base, name: (asked.append(name), (None, None, "no device in this test"))[1]
+    dec = _VideoDecode(w, SimpleNamespace(codec_context=SimpleNamespace(codec=SimpleNamespace(name="hevc"), name="hevc")))
+    dec._use_sw = lambda: None
+    dec.open()                                             # the same camera, now sending HEVC
+    assert asked == ["hevc"] and w._hw_never_codec is None
+
+
 def test_vdpau_without_an_x_display_is_said_once(qapp, monkeypatch):
     """`nova record --accel vdpau` over ssh: `Cannot open the X11 display`, and a new try every few minutes."""
     monkeypatch.setattr(videoworker, "accel_in_build", lambda a: True)

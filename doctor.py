@@ -770,8 +770,15 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
     if IS_PI and "_v4l2m2m" in ffmpeg:
         missing = v4l2_obstacle(v4l2_decoders(), board_model())
         if missing:
-            out.append(("ℹ", f"{missing}: the ..._v4l2m2m codecs listed above have no device here, cameras are "
-                             f"decoded on the CPU and recorded with libx264"))
+            try:
+                from videoworker import listed_codecs
+                drm = listed_codecs("drm")
+            except Exception:
+                drm = []
+            how = (f"--accel drm decodes {' and '.join(drm)} on the board's decoder with this FFmpeg build, anything "
+                   f"else is decoded on the CPU") if drm else "cameras are decoded on the CPU"
+            out.append(("ℹ", f"{missing}: the ..._v4l2m2m codecs listed above have no device here; {how}, and "
+                             f"recorded with libx264"))
     # desktop
     if LINUX and (os.environ.get("XDG_SESSION_TYPE") == "wayland" or os.environ.get("WAYLAND_DISPLAY")):
         out.append(("ℹ", "Wayland session: windows run through XWayland, whatever QT_QPA_PLATFORM the desktop exports "
@@ -799,12 +806,20 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                 accels.add(m.group(1).lower())
         if accels and not no_numpy:              # videoworker imports numpy, and would end this report with it
             try:
-                from videoworker import accel_in_build
+                from videoworker import accel_in_build, listed_codecs, HWACCEL_WHERE_LISTED
                 for a in sorted(accels):
                     obstacle = accel_obstacle(a)
+                    listed = listed_codecs(a) if a in HWACCEL_WHERE_LISTED else None
                     if not accel_in_build(a):
                         out.append(("⚠", f"--accel {a} is in cameras.ini but this FFmpeg build has no {a} decoder: "
                                          f"software decoding (docs/install.md)"))
+                    elif listed is not None and not listed:
+                        out.append(("⚠", f"--accel {a} is in cameras.ini but no decoder of this FFmpeg build works "
+                                         f"through a {a.upper()} device: software decoding (docs/custom-ffmpeg.md "
+                                         f"builds the one for a Raspberry Pi's HEVC decoder)"))
+                    elif listed:
+                        out.append(("✓", f"--accel {a} decodes {' and '.join(listed)} in this FFmpeg build; "
+                                         f"a camera that sends another codec is decoded in software"))
                     elif obstacle:
                         out.append(("⚠", f"--accel {a} is in cameras.ini but {obstacle}: software decoding"))
                     else:

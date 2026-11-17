@@ -44,7 +44,7 @@ def build_parser():
         "--accel",
         type=str,
         default=None,
-        help='Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m ...)'
+        help='Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m, drm ...)'
     )
     parser.add_argument(
         "--gpu",

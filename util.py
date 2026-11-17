@@ -358,8 +358,8 @@ def v4l2_obstacle(decoders, model=""):
     None when one does, or when nothing is known."""
     if decoders is None or decoders:
         return None
-    pi5 = (" (a Raspberry Pi 5 has no H.264 decoder, and its HEVC decoder is of the stateless kind, which "
-           "this FFmpeg does not drive)") if "raspberry pi 5" in model.lower() else ""
+    pi5 = (" (a Raspberry Pi 5 has no H.264 decoder, and its HEVC decoder is of the stateless kind: that one "
+           "is --accel drm's, with an FFmpeg built for it)") if "raspberry pi 5" in model.lower() else ""
     return f"this machine has no V4L2 decoder that takes a camera's stream{pi5}"
 
 

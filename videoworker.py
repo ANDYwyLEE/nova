@@ -47,7 +47,13 @@ SEPARATE_DECODER_SUFFIX = {
 }
 # hwaccel device types that are never attached to the standard decoder (CodecContext with hwaccel=);
 # they are only used through their separate decoders.
-HWACCEL_DEDICATED_ONLY = {"qsv", "vulkan", "drm", "opencl"}
+HWACCEL_DEDICATED_ONLY = {"qsv", "vulkan", "opencl"}
+# A DRM device is attached where the build's decoder for the stream lists it among its hardware
+# configurations, and nowhere else.  FFmpeg with Raspberry Pi's patches decodes HEVC that way on the
+# board's own decoder (V4L2's request API; docs/custom-ffmpeg.md): a 2160p picture took 6.5 ms of CPU on a
+# Pi 5 in place of 42 ms.  The wheels list it for no decoder.
+HWACCEL_WHERE_LISTED = {"drm"}
+LISTED_CODECS = ("hevc", "h264", "vp9", "av1", "vp8", "mpeg2video")
 # Decoders that look for the stream's parameter sets (SPS/PPS, VPS) inside the packets only. A camera may
 # send them in the RTSP session description alone, where FFmpeg keeps them as extradata: h264_qsv then
 # answers "More data is required to decode header" to every packet and never delivers a picture
@@ -181,6 +187,22 @@ def accel_in_build(accel: str) -> bool:
         return True
     suffix = SEPARATE_DECODER_SUFFIX.get(a)
     return bool(suffix) and any(n.endswith("_" + suffix) for n in CODECS_AVAILABLE)
+
+def hwaccel_listed(codec, accel: str) -> bool:
+    """Does this build's decoder `codec` (an av.Codec, or its name) decode through a device of the type
+    `accel`: FFmpeg's hardware configurations of the decoder name it."""
+    try:
+        if isinstance(codec, str):
+            codec = av.Codec(codec, "r")
+        return any(c.device_type.name == accel for c in codec.hardware_configs)
+    except Exception:
+        return False
+
+
+def listed_codecs(accel: str) -> list[str]:
+    """The decoders among LISTED_CODECS that decode through a device of the type `accel` in this build."""
+    return [name for name in LISTED_CODECS if hwaccel_listed(name, accel)]
+
 
 def _decoder_candidates(accel: str, codec_name: str) -> list[str]:
     """Dedicated HW decoder names for the requested backend, e.g. cuda+h264 -> ['h264_cuvid']."""
@@ -338,10 +360,16 @@ class _VideoDecode:
 
     def open(self):
         w = self.w
+        if w._hw_never_codec and w._hw_never_codec != self.codec_name:
+            w._hw_fail = w._hw_never_codec = None       # the camera sends another codec than the one --accel is not for
         if w.accel and w._hw_fail is None:
             never = w._accel_never()
+            other = None if never else w._accel_not_for(self.base.codec)
             if never:
                 w._hw_failed(never, self.codec_name, never=True)
+            elif other:
+                w._hw_failed(other, self.codec_name, never=True)
+                w._hw_never_codec = self.codec_name
             else:
                 ctx, name, err = w._open_hw_decoder(self.base, self.codec_name)
                 if ctx is not None:
@@ -601,6 +629,7 @@ class VideoWorker(QThread):
         self._fps_warned = False
         self._hw_fail = None            # why the last hardware decoder failed; None: use hardware
         self._hw_retry_at = 0.0         # monotonic time after which hardware is tried again
+        self._hw_never_codec = None     # the codec --accel was found not to be for (_accel_not_for)
         self._hw_backoff = HW_RETRY_S
         self._gops = deque(maxlen=5)    # recent keyframe intervals (s), for the no-picture watchdog
         self._session_frames = 0        # video frames decoded on the current connection
@@ -937,7 +966,20 @@ class VideoWorker(QThread):
             return f"this FFmpeg build was made without {a} (it has: {', '.join(HWACCELS) or 'none'}{custom})"
         if a == "vdpau" and not os.environ.get("DISPLAY"):
             return "VDPAU decodes through an X display, and this camera runs without one (--accel vaapi does not need it)"
+        if a in HWACCEL_WHERE_LISTED and not listed_codecs(a):
+            return (f"no decoder of this FFmpeg build works through a {a.upper()} device (docs/custom-ffmpeg.md "
+                    f"builds the one that decodes HEVC on a Raspberry Pi's decoder)")
         return accel_obstacle(a)
+
+    def _accel_not_for(self, codec):
+        """Why --accel cannot decode what this camera sends, while it decodes something else here: a
+        Raspberry Pi 5's decoder is for HEVC, and the cameras beside it send H.264.  Said once for the
+        camera, and asked again when it sends another codec.  None: it is worth trying."""
+        a = self.accel.lower()
+        if a in HWACCEL_WHERE_LISTED and not hwaccel_listed(codec, a):
+            return (f"this FFmpeg build decodes {' and '.join(listed_codecs(a))} through a {a.upper()} device, "
+                    f"and the camera sends {codec.name}")
+        return None
 
     def _hw_failed(self, reason, codec_name, never=False):
         """A hardware decoder could not be used: software now, hardware again after a delay that
@@ -996,7 +1038,8 @@ class VideoWorker(QThread):
                 return ctx, d_name, None
             errors.append(f"{d_name}: {err}")
         # 2) the standard decoder with a hardware device (vaapi, videotoolbox, d3d11va, dxva2, vdpau, cuda ...)
-        if self.accel in HWACCELS and self.accel not in HWACCEL_DEDICATED_ONLY:
+        if (self.accel in HWACCELS and self.accel not in HWACCEL_DEDICATED_ONLY
+                and (self.accel not in HWACCEL_WHERE_LISTED or hwaccel_listed(base.codec, self.accel))):
             ctx, err = self._open_hwaccel_decoder(base)
             if ctx is not None:
                 return ctx, f"{codec_name} + {self.accel} hwaccel", None
