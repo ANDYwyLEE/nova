@@ -698,6 +698,7 @@ def test_a_connection_that_falls_behind_comes_back_with_frame_threads(qapp, tmp_
     clip = _write_clip(tmp_path / "busy.nut", frames=75)
     monkeypatch.setattr(videoworker, "LOAD_JUDGE_S", 0.4)
     monkeypatch.setattr(videoworker.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(videoworker, "cpu_idle", lambda: None)      # whatever else the test machine is doing
     caplog.set_level(logging.INFO)
     real = _VideoDecode.decode
 
@@ -723,6 +724,59 @@ def test_a_connection_that_falls_behind_comes_back_with_frame_threads(qapp, tmp_
     said = [r.getMessage() for r in caplog.records]
     assert any(f"First frame (h264, SW, {n} threads)" in m for m in said), said
     assert w._sw_threads == n and not any("threads from now on" in m for m in said), said
+
+
+def test_behind_is_no_verdict_while_the_machine_has_no_core_to_spare():
+    """Eight windows starting at once on a Raspberry Pi 5: a picture took 47 ms through the board's HEVC
+    decoder, which needs 16, and the decoder was left for the software one (four times the CPU)."""
+    idle = {"s": 0.0}
+    load = videoworker._Load(25, lambda: idle["s"])
+    t = 0.0
+    for stretch in range(3):                         # 58 ms a picture, and 0.1 of a core idle: nobody's verdict
+        for _ in range(40):
+            assert load.add(t, 0.058, 1) is None
+            t += 0.058
+            idle["s"] += 0.058 * 0.1
+    assert load.late == 3 and load.free == pytest.approx(0.1, abs=0.02)
+    verdict = None
+    while verdict is None:                           # the same with two cores idle: the thread is too slow
+        verdict = load.add(t, 0.058, 1)
+        t += 0.058
+        idle["s"] += 0.058 * 2.0
+    assert verdict == pytest.approx(0.058, rel=0.02) and load.late == 0
+    calm = videoworker._Load(25, lambda: 0.0, late=4)                # a new connection takes the count along ...
+    assert _feed(calm, 5, 0.004, every=0.04)[0] is None and calm.late == 0      # ... until a stretch is in time
+    assert _feed(videoworker._Load(25, lambda: None), 5, 0.058)[0] == pytest.approx(0.058, rel=0.02)   # not known: as before
+
+
+def test_a_late_picture_on_a_busy_machine_changes_no_decoder_and_is_said_once(qapp, tmp_path, monkeypatch, caplog):
+    clip = _write_clip(tmp_path / "starved.nut", frames=60)
+    monkeypatch.setattr(videoworker, "LOAD_JUDGE_S", 0.2)
+    monkeypatch.setattr(videoworker, "LOAD_LATE_S", 0.6)
+    monkeypatch.setattr(videoworker.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(videoworker, "cpu_idle", lambda: 0.0)       # every core busy, all the time
+    caplog.set_level(logging.INFO)
+    real = _VideoDecode.decode
+
+    def slow(self, packet):                  # 50 ms a picture, and the camera sends one every 40 ms
+        time.sleep(0.05)
+        return real(self, packet)
+
+    monkeypatch.setattr(_VideoDecode, "decode", slow)
+    w = _worker(str(clip), headless=False)
+    with av.open(str(clip)) as c:            # the cameras of a wall are still starting: nothing is said yet
+        w._stream_loop(RealTime(c, 0.04), "starved")
+    said = [r.getMessage() for r in caplog.records]
+    assert w._sw_threads == 0 and w._session_frames == 60, said          # no threads, no reconnect: to the end
+    assert w._late >= 3 and not any("CPU is busy" in m or "threads from now on" in m for m in said), said
+    monkeypatch.setattr(videoworker, "LOAD_SETTLED_S", 0.0)
+    for _ in range(2):
+        with av.open(str(clip)) as c:
+            w._stream_loop(RealTime(c, 0.04), "starved")
+    line = _said(caplog, "this machine's CPU is busy")
+    assert len(line) == 1, line
+    assert "have come late with 0.0 of its 4 cores idle. No other decoder and no thread more would change that" in line[0]
+    assert "fewer cameras at once on this machine" in line[0] and "--opengl (the GPU converts the pictures)" in line[0]
 
 
 def test_a_frame_threaded_decoder_is_drained_before_it_is_let_go(qapp, tmp_path):
@@ -869,6 +923,38 @@ def test_an_accel_that_is_not_for_the_camera_s_codec_is_said_once_and_asked_agai
     assert asked == ["hevc"] and w._hw_never_codec is None
 
 
+def test_a_gpu_decoder_is_not_left_for_one_late_stretch(qapp, caplog):
+    """Three HEVC cameras starting together on a Raspberry Pi 5 share its one decoder for their first
+    pictures: 55 ms for a 2160p picture that needs 16.  Software decoding, which the camera was moved to,
+    took two cores for it."""
+    caplog.set_level(logging.WARNING)
+    w = _worker(accel="drm")
+    dec = SimpleNamespace(is_hw=True, name="hevc + drm hwaccel", codec_name="hevc")
+    assert w._slow(0.055, 20, dec, 0.0, 1) is None and w._hw_slow == 0 and not caplog.records
+    # Measured there with three HEVC streams on the decoder: a 2160p picture took 47 ms of its 50, nearly all
+    # of it waiting for the decoder's turn, and all 20 pictures a second came out.  That is in time.
+    assert w._slow(0.047, 20, dec, 0.0, 5, False) is None and w._hw_slow == 0 and not caplog.records
+    assert w._slow(0.055, 20, dec, 0.0, 2) == "the GPU's decoder does not keep up with the camera: software decoding"
+    load = videoworker._Load(20)
+    rows = []
+    t = 0.0
+    while len(rows) < 3:                                  # 65 ms a picture, three of four come out: 1, 2, 3 in a row
+        if load.add(t, 0.065, 1) is not None:
+            rows.append((load.row, load.short))
+        t += 0.065
+    assert rows == [(1, True), (2, True), (3, True)]
+    for _ in range(100):                                  # in time again for five seconds: counted anew
+        assert load.add(t, 0.004, 1) is None
+        t += 0.05
+    assert load.row == 0
+    waiting, t, seen = videoworker._Load(20), 0.0, []     # 47 ms of every 50 at work, and every picture there
+    for _ in range(200):
+        if waiting.add(t, 0.047, 1) is not None:
+            seen.append((waiting.short, waiting.row))
+        t += 0.05
+    assert seen and set(seen) == {(False, 0)}
+
+
 def test_vdpau_without_an_x_display_is_said_once(qapp, monkeypatch):
     """`nova record --accel vdpau` over ssh: `Cannot open the X11 display`, and a new try every few minutes."""
     monkeypatch.setattr(videoworker, "accel_in_build", lambda a: True)
@@ -950,7 +1036,7 @@ def test_the_conversion_is_measured_on_a_real_connection(qapp, clip, monkeypatch
     """What _stream_loop hands to the verdict: the seconds a picture took and, of them, the conversion's."""
     w = _worker(str(clip), headless=False)
     seen = []
-    w._slow = lambda per, fps, dec=None, conv=0.0: seen.append((per, conv)) and None
+    w._slow = lambda per, fps, dec=None, conv=0.0, row=0, short=True: seen.append((per, conv)) and None
     # A clip is read hundreds of times faster than its frame rate.  When the wall clock's second changed
     # while it was read, the display rate's Skipper took that speed for the camera's and showed one picture
     # in a hundred: the others are not converted, and this test failed now and then (two of the install

@@ -243,6 +243,19 @@ def test_opengl_shortfall_names_a_context_that_is_too_old():
     assert util.opengl_needs("OpenGL 2.1") == "--opengl needs OpenGL 3.1, and the GPU's driver here offers OpenGL 2.1"
 
 
+def test_cpu_idle_is_the_idle_time_of_every_core_together(tmp_path, monkeypatch):
+    stat = tmp_path / "stat"
+    stat.write_text("cpu  5000 10 2000 80000 300 0 40 0 0 0\ncpu0 1200 2 500 20000 80 0 10 0 0 0\n")
+    monkeypatch.setattr(util, "LINUX", True)
+    monkeypatch.setattr(util.os, "sysconf", lambda name: 100, raising=False)
+    assert util.cpu_idle(str(stat)) == pytest.approx(803.0)            # idle and iowait, in seconds
+    assert util.cpu_idle(str(tmp_path / "none")) is None
+    stat.write_text("cpu\n")
+    assert util.cpu_idle(str(stat)) is None
+    monkeypatch.setattr(util, "LINUX", False)
+    assert util.cpu_idle() is None
+
+
 class _V4L2:
     """The V4L2 devices of a board, as the two questions util.v4l2_decoders asks of them answer."""
     M2M_MPLANE, CAPTURE_MPLANE, OUTPUT_MPLANE, DEVICE_CAPS = 0x4000, 0x1000, 0x2000, 0x80000000

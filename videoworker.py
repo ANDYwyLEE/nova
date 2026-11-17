@@ -23,7 +23,7 @@ from PySide6.QtCore import QThread, Signal
 import logsync  # installs logging.verbose / logging.trace
 from mytools import Skipper, FrameRator, Clock
 from util import (LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err as _short_err, hw_err as _hw_err,
-                  accel_obstacle, KNOWN_HWACCELS)
+                  accel_obstacle, KNOWN_HWACCELS, cpu_idle)
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS, rgba_array
@@ -85,6 +85,11 @@ FPS_MAX = 120               # a larger "frame rate" is a clock rate (90000), not
 LOAD_JUDGE_S = 2.0          # the software decoder's thread is judged over stretches of this long ...
 LOAD_BUSY = 0.9             # ... and does not keep up when its pictures take this share of the time
 LOAD_THREADS_MAX = 16       # frame threads the software decoder gets at most (FFmpeg's limit for its own choice)
+LOAD_FREE = 0.5             # with less than this many cores idle on the machine, a late picture is nobody's verdict
+LOAD_HW_ROW = 2             # stretches in a row a GPU's decoder has to be behind before it is left for software ...
+LOAD_SHORT = 0.9            # ... with fewer than this share of the camera's pictures coming out of it
+LOAD_LATE_S = 10.0          # late for this long with every core busy: the log says so ...
+LOAD_SETTLED_S = 60.0       # ... but not while the cameras of a wall are still starting beside this one
 CONV_NAMED = 0.1            # the conversion for the window is named in those lines from this share of a picture's time on
 RERESOLVE_AFTER = 3         # connection attempts without a picture before onvif:// etc. are resolved again
 RERESOLVE_MIN_S = 60.0
@@ -280,22 +285,34 @@ class _Load:
     it on before it reads the next packet, so a thread that works nearly all the time while no more
     pictures come out of it than the camera sends is falling behind: the camera's packets pile up, and
     the camera drops some and then the connection.  (A file, or the burst a camera opens with, is read
-    faster than the frame rate: busy as well, and not behind.)"""
+    faster than the frame rate: busy as well, and not behind.)
 
-    def __init__(self, fps):
+    Behind is no verdict while the machine has no core to spare (`idle`, util.cpu_idle; Linux).  Eight
+    windows starting at once on a four-core board made a picture take 47 ms through the board's HEVC
+    decoder, which needs 16: the decoder was called too slow and left for the software one, which
+    takes four times the CPU, and the next camera followed.  Neither another decoder nor more threads
+    help where every core is busy; `late` counts the stretches that have been behind that way."""
+
+    def __init__(self, fps, idle=None, late=0):
         self.fps = fps
+        self.idle = idle        # the machine's idle CPU seconds so far (a function), or None: not asked
         self.t0 = None          # start of the stretch being judged
+        self.i0 = None          # idle() at that moment
         self.busy = 0.0         # seconds of it spent on video packets
         self.converting = 0.0   # of those, the seconds spent converting pictures for the window
         self.pictures = 0
         self.conv = 0.0         # of the seconds a picture the last verdict returned: the conversion's
+        self.late = late        # stretches in a row that were behind while every core was busy
+        self.free = None        # the cores that were idle during the last such stretch
+        self.short = True       # the last verdict's stretch gave fewer pictures than the camera sends (LOAD_SHORT)
+        self.row = 0            # stretches in a row that ended in a verdict and were short of pictures
 
     def add(self, now, worked, pictures, converting=0.0):
         """A video packet that arrived at `now` and took `worked` seconds, `converting` of them for the
         conversion of its pictures.  Returns the seconds a picture takes when the stretch that ends
         here was too much for the thread, else None; `conv` then holds the conversion's part of them."""
         if self.t0 is None:
-            self.t0 = now
+            self.t0, self.i0 = now, self.idle() if self.idle else None
         self.busy += worked
         self.converting += converting
         self.pictures += pictures
@@ -310,10 +327,18 @@ class _Load:
         if self.t0 is None or now - self.t0 < least:
             return None
         span, busy, converting, n = now - self.t0, self.busy, self.converting, self.pictures
-        self.t0, self.busy, self.converting, self.pictures = now, 0.0, 0.0, 0
+        i0, i1 = self.i0, self.idle() if self.idle else None
+        free = max(0.0, i1 - i0) / span if i0 is not None and i1 is not None and span > 0 else None
+        self.t0, self.i0, self.busy, self.converting, self.pictures = now, i1, 0.0, 0.0, 0
         if n and busy >= LOAD_BUSY * span and n <= self.fps * span * 1.1:
+            if free is not None and free < LOAD_FREE:
+                self.late, self.free, self.row = self.late + 1, free, 0
+                return None
+            self.short = n < self.fps * span * LOAD_SHORT
+            self.late, self.row = 0, self.row + 1 if self.short else 0
             self.conv = min(converting, busy) / n
             return busy / n
+        self.late = self.row = 0
         return None
 
 
@@ -594,6 +619,9 @@ class VideoWorker(QThread):
         self.open_opts = self.ffopts.open
         self.dec_opts = self.ffopts.dec
         self._sw_threads = 0            # frame threads for the software decoder, once one thread proved too slow
+        self._late = 0                  # _Load.late, kept from one connection to the next
+        self._late_told = False
+        self._born = time.monotonic()
         self._hw_slow = 0               # times the GPU's decoder was the one that did not keep up
         self._slow_told = False         # the line about a CPU that cannot keep up was written
         self.enc_v_opts = self.ffopts.enc_v
@@ -1111,14 +1139,18 @@ class VideoWorker(QThread):
             logging.debug(msg)
         return fps
 
-    def _slow(self, per, fps, dec=None, conv=0.0):
+    def _slow(self, per, fps, dec=None, conv=0.0, row=LOAD_HW_ROW, short=True):
         """The connection's thread needs `per` seconds for a picture (None: it keeps up), `conv` of them
         to convert it for the window, and the camera sends `fps` a second.  More decoder threads from
         the next connection on, and the words that say so are returned; where that is not to be had
         (every core in use already, or --ffmpeg names the threads), one line in the log about what
         needs less, and None.  A GPU's decoder that is the slow one (an old card on a camera of today)
-        is left for the software decoder, for good.  Where the conversion is the slow part, no decoder
-        and no number of its threads changes anything: the line says that, and nothing is changed."""
+        is left for the software decoder, for good; not for one late stretch (`row`: how many have
+        followed one another), and not while every picture the camera sends still comes out of it
+        (`short`): cameras share a board's one decoder and wait for it most of the time, in time all
+        the same, and on a small board the software decoder is the costlier one by far.  Where the
+        conversion is the slow part, no decoder and no number of its threads changes anything: the line
+        says that, and nothing is changed."""
         if not per:
             return None
         every = 1.0 / fps
@@ -1130,6 +1162,11 @@ class VideoWorker(QThread):
         if conv >= LOAD_BUSY * every or (hw and conv > decoding):
             self._tell_slow(f"converting a picture for the window takes {ms(conv)} of the {ms(per)} a picture "
                             f"takes here, and the camera sends one every {ms(every)}", converting=True)
+            return None
+        if hw and (not short or row < LOAD_HW_ROW):
+            logging.debug(f"[VideoWorker] {dec.name}: a picture took {ms(decoding)} for a stretch (the camera sends "
+                          f"one every {ms(every)})" + (": left for software if the next is as late" if short
+                                                       else ", and every picture came"))
             return None
         if hw:
             # once may be a moment's load on the GPU (other cameras starting): hardware gets its second
@@ -1174,6 +1211,27 @@ class VideoWorker(QThread):
             less += ["a GPU decoder (--accel)"] + spare + ['--ffmpeg "-skip_frame nokey" (key pictures only)']
         logging.warning(f"[VideoWorker] ⚠️ this CPU does not keep up with the camera: {took}. "
                         f"What needs less: {'; '.join(less)}")
+
+    def _busy_machine(self, load):
+        """The stretch `load` has just judged was behind with every core of the machine busy, and so
+        were the ones before it for LOAD_LATE_S: one line, once.  Nothing is changed: no decoder and
+        no thread more would find a core."""
+        self._late = load.late
+        if self._late_told or load.late * LOAD_JUDGE_S < LOAD_LATE_S:
+            return
+        if time.monotonic() - self._born < LOAD_SETTLED_S:
+            return
+        self._late_told = True
+        less = ["fewer cameras at once on this machine", "the camera's second (smaller) stream",
+                "a lower resolution or frame rate set in the camera"]
+        if not self.headless:
+            if not self.opengl:
+                less.insert(1, "--opengl (the GPU converts the pictures)")
+            less.append("-f N (fewer pictures shown a second)")
+        logging.warning(f"[VideoWorker] ⚠️ this machine's CPU is busy: for {load.late * LOAD_JUDGE_S:.0f} s the "
+                        f"pictures of this camera have come late with {load.free:.1f} of its "
+                        f"{os.cpu_count() or 1} cores idle. No other decoder and no thread more would change "
+                        f"that. What needs less: {'; '.join(less)}")
 
     def _gop_s(self):
         return max(self._gops) if self._gops else GOP_UNKNOWN_S
@@ -1221,7 +1279,7 @@ class VideoWorker(QThread):
         v_ts = None                 # the last video packet's timestamp, in seconds
         t_back = back_s = None      # when the video timestamps went back (TS_BACK_S), and by how much
         v_pkts, v_wait = 0, 0.0     # since the last picture: video packets, and the longest wait for one
-        load = _Load(fps_cap)
+        load = _Load(fps_cap, cpu_idle, self._late)
         try:
             for packet in container.demux(*streams):
                 if not self.run_flag: break
@@ -1286,9 +1344,11 @@ class VideoWorker(QThread):
                         self.img_sig.emit()
 
                     more = self._slow(load.add(now, time.monotonic() - now, len(frames), converting),
-                                      fps_cap, dec, load.conv)
+                                      fps_cap, dec, load.conv, load.row, load.short)
                     if more:
                         raise _Reconnect(more)
+                    if load.late != self._late:
+                        self._busy_machine(load)
 
                 elif packet.stream.type == 'audio':
                     if t_apkt is None:
@@ -1357,9 +1417,10 @@ class VideoWorker(QThread):
             self._log_fail(re.sub(r"\d+", "#", str(r)), f"[VideoWorker] {r}; reconnecting. [{u_disp}]")
         finally:
             dec.release()
-            more = self._slow(load.end(time.monotonic()), fps_cap, dec, load.conv)
+            more = self._slow(load.end(time.monotonic()), fps_cap, dec, load.conv, load.row, load.short)
             if more:
                 logging.warning(f"[VideoWorker] {more}")
+            self._busy_machine(load)
 
     # ------------------------------------------------------------------ recorder / streamer hand-off
     def _dispatch_av(self, typ, frame):

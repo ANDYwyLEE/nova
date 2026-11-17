@@ -132,6 +132,19 @@ def get_os_type():
 CONV_THREADS = 1
 
 
+def cpu_idle(stat="/proc/stat"):
+    """Seconds of CPU time this machine's cores have had nothing to do since it started, all cores
+    together (Linux: idle and iowait of the first line of /proc/stat).  None where that cannot be read."""
+    if not LINUX:
+        return None
+    try:
+        with open(stat) as f:
+            fields = f.readline().split()
+        return (int(fields[4]) + int(fields[5])) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def parse_time(value):
     if isinstance(value, int): return value
     if not isinstance(value, str):
