@@ -850,23 +850,26 @@ def test_an_accel_this_machine_has_no_gpu_for_is_said_once(qapp, clip, monkeypat
     assert _said(caplog, "First frame (h264, SW)") and not w._hw_retry_due()
 
 
-def test_a_gpu_decoder_that_does_not_keep_up_is_left_for_software(qapp, caplog):
+def test_a_gpu_decoder_that_does_not_keep_up_stays_and_is_named_once(qapp, caplog):
     """An NVIDIA ION of 2010 decoding a 15 Mbit/s camera through VA-API: 57 ms a picture, one every 40 ms.
-    The camera ended the connection every six seconds and the log had nothing but `stream ended`."""
+    The camera ended the connection every six seconds and the log had nothing but `stream ended`.  For four
+    days Nova moved such a camera to the software decoder by itself; on a Raspberry Pi 5 that took a 2160p
+    stream off the board's decoder and filled the board.  A decoder that was asked for and delivers pictures
+    stays, and the log says what would help."""
     caplog.set_level(logging.WARNING)
     w = _worker(accel="vaapi")
     dec = SimpleNamespace(is_hw=True, name="h264 + vaapi hwaccel", codec_name="h264")
-    said = w._slow(0.057, 25, dec)
-    assert said == "the GPU's decoder does not keep up with the camera: software decoding"
-    first = [r.getMessage() for r in caplog.records][-1]
-    assert "No working HW decoder for --accel=vaapi (the GPU's decoder does not keep up with this camera: a picture " \
-           "takes 57 ms through h264 + vaapi hwaccel and the camera sends one every 40 ms)" in first
-    assert "hardware is tried again in 5 min" in first and w._sw_threads == 0      # once may be a moment's load
-    assert w._slow(0.060, 25, dec)
-    second = [r.getMessage() for r in caplog.records][-1]
-    assert "--accel=vaapi cannot work here: the GPU's decoder does not keep up" in second and "60 ms" in second
-    assert not w._hw_retry_due() and w._hw_retry_at == float("inf")               # twice: software for good
-    assert w._slow(None, 25, dec) is None
+    assert w._slow(0.057, 25, dec) is None
+    line = _said(caplog, "the GPU's decoder does not keep up")
+    assert len(line) == 1, line
+    assert ("the GPU's decoder does not keep up with this camera: a picture takes 57 ms through h264 + vaapi hwaccel "
+            "and the camera sends one every 40 ms. It stays in use (--accel=vaapi asked for it, and it delivers "
+            "pictures). What helps: the camera's second (smaller) stream;") in line[0]
+    assert "this camera without --accel, decoded on the CPU" in line[0]
+    assert w._hw_fail is None and w._sw_threads == 0 and not w._hw_retry_due()     # nothing is changed
+    assert w._slow(0.060, 25, dec) is None and w._slow(0.060, 25, dec) is None
+    assert len(_said(caplog, "the GPU's decoder does not keep up")) == 1           # once
+    assert not _said(caplog, "cannot work here") and not _said(caplog, "No working HW decoder")
 
 
 def _lists(*types):
@@ -923,18 +926,18 @@ def test_an_accel_that_is_not_for_the_camera_s_codec_is_said_once_and_asked_agai
     assert asked == ["hevc"] and w._hw_never_codec is None
 
 
-def test_a_gpu_decoder_is_not_left_for_one_late_stretch(qapp, caplog):
+def test_a_gpu_decoder_is_not_named_for_one_late_stretch(qapp, caplog):
     """Three HEVC cameras starting together on a Raspberry Pi 5 share its one decoder for their first
-    pictures: 55 ms for a 2160p picture that needs 16.  Software decoding, which the camera was moved to,
-    took two cores for it."""
+    pictures: 55 ms for a 2160p picture that needs 16."""
     caplog.set_level(logging.WARNING)
     w = _worker(accel="drm")
     dec = SimpleNamespace(is_hw=True, name="hevc + drm hwaccel", codec_name="hevc")
-    assert w._slow(0.055, 20, dec, 0.0, 1) is None and w._hw_slow == 0 and not caplog.records
+    assert w._slow(0.055, 20, dec, 0.0, 1) is None and not caplog.records
     # Measured there with three HEVC streams on the decoder: a 2160p picture took 47 ms of its 50, nearly all
     # of it waiting for the decoder's turn, and all 20 pictures a second came out.  That is in time.
-    assert w._slow(0.047, 20, dec, 0.0, 5, False) is None and w._hw_slow == 0 and not caplog.records
-    assert w._slow(0.055, 20, dec, 0.0, 2) == "the GPU's decoder does not keep up with the camera: software decoding"
+    assert w._slow(0.047, 20, dec, 0.0, 5, False) is None and not caplog.records
+    assert w._slow(0.055, 20, dec, 0.0, 2) is None and len(_said(caplog, "the GPU's decoder does not keep up")) == 1
+    assert w._hw_fail is None                              # said, and the decoder stays
     load = videoworker._Load(20)
     rows = []
     t = 0.0
@@ -1016,7 +1019,7 @@ def test_a_gpu_decoder_is_not_blamed_for_the_conversion(qapp, caplog):
     w = _worker(accel="vdpau", headless=False)
     dec = SimpleNamespace(is_hw=True, name="h264 + vdpau hwaccel", codec_name="h264")
     assert w._slow(0.038, 25, dec, 0.024) is None            # 14 ms through the GPU, 24 ms converting
-    assert w._hw_fail is None and w._hw_slow == 0
+    assert w._hw_fail is None and not w._hw_slow_told
     line = _said(caplog, "does not keep up")
     assert len(line) == 1 and "converting a picture for the window takes 24 ms of the 38 ms" in line[0], line
     assert "GPU's decoder" not in line[0] and "--opengl (the GPU converts the pictures)" in line[0]
@@ -1026,7 +1029,7 @@ def test_a_slow_gpu_decoder_is_named_with_the_conversion_beside_it(qapp, caplog)
     caplog.set_level(logging.WARNING)
     w = _worker(accel="vaapi", headless=False)
     dec = SimpleNamespace(is_hw=True, name="h264 + vaapi hwaccel", codec_name="h264")
-    assert w._slow(0.069, 25, dec, 0.012) == "the GPU's decoder does not keep up with the camera: software decoding"
+    assert w._slow(0.069, 25, dec, 0.012) is None
     said = [r.getMessage() for r in caplog.records][-1]
     assert ("a picture takes 57 ms through h264 + vaapi hwaccel, converting it for the window 12 ms more, and the "
             "camera sends one every 40 ms") in said, said

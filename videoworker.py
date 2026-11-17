@@ -86,7 +86,7 @@ LOAD_JUDGE_S = 2.0          # the software decoder's thread is judged over stret
 LOAD_BUSY = 0.9             # ... and does not keep up when its pictures take this share of the time
 LOAD_THREADS_MAX = 16       # frame threads the software decoder gets at most (FFmpeg's limit for its own choice)
 LOAD_FREE = 0.5             # with less than this many cores idle on the machine, a late picture is nobody's verdict
-LOAD_HW_ROW = 2             # stretches in a row a GPU's decoder has to be behind before it is left for software ...
+LOAD_HW_ROW = 2             # stretches in a row a GPU's decoder has to be behind before the log says so ...
 LOAD_SHORT = 0.9            # ... with fewer than this share of the camera's pictures coming out of it
 LOAD_LATE_S = 10.0          # late for this long with every core busy: the log says so ...
 LOAD_SETTLED_S = 60.0       # ... but not while the cameras of a wall are still starting beside this one
@@ -622,7 +622,7 @@ class VideoWorker(QThread):
         self._late = 0                  # _Load.late, kept from one connection to the next
         self._late_told = False
         self._born = time.monotonic()
-        self._hw_slow = 0               # times the GPU's decoder was the one that did not keep up
+        self._hw_slow_told = False      # the line about a GPU's decoder that does not keep up has been written
         self._slow_told = False         # the line about a CPU that cannot keep up was written
         self.enc_v_opts = self.ffopts.enc_v
         self.enc_a_opts = self.ffopts.enc_a
@@ -1144,13 +1144,15 @@ class VideoWorker(QThread):
         to convert it for the window, and the camera sends `fps` a second.  More decoder threads from
         the next connection on, and the words that say so are returned; where that is not to be had
         (every core in use already, or --ffmpeg names the threads), one line in the log about what
-        needs less, and None.  A GPU's decoder that is the slow one (an old card on a camera of today)
-        is left for the software decoder, for good; not for one late stretch (`row`: how many have
-        followed one another), and not while every picture the camera sends still comes out of it
-        (`short`): cameras share a board's one decoder and wait for it most of the time, in time all
-        the same, and on a small board the software decoder is the costlier one by far.  Where the
-        conversion is the slow part, no decoder and no number of its threads changes anything: the line
-        says that, and nothing is changed."""
+        needs less, and None.  A GPU's decoder that is the slow one (an old card on a camera of today,
+        a board's one decoder with too many cameras on it) stays in use: it was asked for, it opened and
+        it delivers pictures, and whether the CPU would do better is not Nova's to decide (on a small
+        board the software decoder is the costlier one by far).  One line says so, once, with what
+        helps; not for one late stretch (`row`: how many have followed one another), and not while every
+        picture the camera sends still comes out of the decoder (`short`): cameras that share a decoder
+        wait for it most of the time and are in time all the same.  Where the conversion is the slow
+        part, no decoder and no number of its threads changes anything: the line says that, and nothing
+        is changed."""
         if not per:
             return None
         every = 1.0 / fps
@@ -1165,18 +1167,19 @@ class VideoWorker(QThread):
             return None
         if hw and (not short or row < LOAD_HW_ROW):
             logging.debug(f"[VideoWorker] {dec.name}: a picture took {ms(decoding)} for a stretch (the camera sends "
-                          f"one every {ms(every)})" + (": left for software if the next is as late" if short
-                                                       else ", and every picture came"))
+                          f"one every {ms(every)})" + ("" if short else ", and every picture came"))
             return None
         if hw:
-            # once may be a moment's load on the GPU (other cameras starting): hardware gets its second
-            # try after the usual delay; twice is a GPU that is too slow for this camera
-            self._hw_slow += 1
-            more = f", converting it for the window {ms(conv)} more," if named else ""
-            self._hw_failed(f"the GPU's decoder does not keep up with this camera: a picture takes "
-                            f"{ms(decoding)} through {dec.name}{more} and the camera sends one every "
-                            f"{ms(every)}", dec.codec_name, never=self._hw_slow >= 2)
-            return "the GPU's decoder does not keep up with the camera: software decoding"
+            if not self._hw_slow_told:
+                self._hw_slow_told = True
+                more = f", converting it for the window {ms(conv)} more," if named else ""
+                logging.warning(f"[VideoWorker] ⚠️ the GPU's decoder does not keep up with this camera: a picture "
+                                f"takes {ms(decoding)} through {dec.name}{more} and the camera sends one every "
+                                f"{ms(every)}. It stays in use (--accel={self.accel} asked for it, and it "
+                                f"delivers pictures). What helps: the camera's second (smaller) stream; a lower "
+                                f"resolution or frame rate set in the camera; fewer cameras on this decoder; or "
+                                f"this camera without --accel, decoded on the CPU")
+            return None
         most = min(os.cpu_count() or 1, LOAD_THREADS_MAX)
         asked = any(k in self.dec_opts for k in ("threads", "thread_type"))
         took = (f"a picture takes {ms(per)} here" + (f" on {self._sw_threads} threads" if self._sw_threads else "")
