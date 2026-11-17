@@ -164,6 +164,11 @@ def test_static_codec_tables_match_the_pyav_build():
     av = pytest.importorskip("av")
     if tuple(av.library_versions.get("libavcodec", ())) != tuple(T.LIBAVCODEC):
         pytest.skip(f"PyAV has libavcodec {av.library_versions.get('libavcodec')}, the tables {T.LIBAVCODEC}")
+    import doctor
+    if "PyPI wheel" not in dict(doctor.ffmpeg_lines()).get("PyAV", ""):
+        # a PyAV built against an FFmpeg of one's own (docs/custom-ffmpeg.md) has that build's options, which
+        # are read at run time: Raspberry Pi's branch of 9.0.2 gives its V4L2 decoders a pixel_format option
+        pytest.skip("this PyAV is built from source: its FFmpeg is not the wheel's, whose options the tables list")
     idx = ffparser._index_from_pyav()
     assert idx is not None and "PyAV" in idx.source
     # ffmpeg -h lists only options flagged for encoding or decoding; the rest are never routed
