@@ -90,12 +90,15 @@ nova restart [ID ...] [options]      stop, then start again as launched (record 
 nova status                          launched cameras: running or exited, uptime, and what each is doing now
 nova list                            cameras, enabled state and options (passwords masked)
 nova doctor                          versions, drivers, the FFmpeg build, cameras.ini summary: paste it into a bug report
+nova desktop install                 Linux: a desktop entry and Nova's icon in ~/.local/share (the icon on a Wayland task bar)
+nova desktop remove                  take them away again
 nova -h                              help; `python nova.py --help` lists the camera options
 nova -c FILE <command>               use FILE instead of cameras.ini
 ```
 
 - Words that do not start with `-` are camera ids; everything from the first option on is passed to `nova.py`: `nova start frontdoor -r` shows the window and records, `nova record yard -t rtmp://…` records without a window and streams.
 - Options a camera should always get belong in its `cameras.ini` section (`opts = -r`), so a plain `nova start` does the right thing per camera.
+- **The icon on the task bar (Linux)**: an X11 panel is handed the icon by the window itself. The task bar of a Wayland desktop is told an application id and looks for a desktop entry of that name; without one Nova's windows have a blank icon there (seen on the Raspberry Pi's desktop). `nova desktop install` writes `nova.desktop`, `nova.wayland.desktop` (the id of a native Wayland window) and the icon into `~/.local/share` (`$XDG_DATA_HOME`). Windows opened after that have the icon, and the desktop's menu has Nova, which runs `nova start`. The entry names this folder: run the command again after moving it. `nova desktop remove` deletes those files and nothing else; `nova doctor` names the command on a Wayland desktop that has no entry.
 - `start` and `record` detach from the terminal, write each camera's output to `logs/ID.log` (moved to `ID.log.1` at a start once it passes 50 MB) and remember the process ids in `.nova-pids.json`. A camera that exits within the first seconds is reported with the end of its log instead of being called "running".
 - A launched camera gets only its id on the command line (`nova.py --camera ID --config cameras.ini`) and reads URL, name and options from `cameras.ini` itself: a process's command line is visible to every user of the machine (`ps`), its passwords and stream keys are not.
 - Each camera has a **control channel**, a socket only you can open (in `$XDG_RUNTIME_DIR/nova/`; a named pipe on Windows). `stop`, `status` and `layout apply` use it; cameras started by an older Nova are still stopped with a signal. A camera removes its socket when it ends. One that was killed cannot (`kill -9`, the kernel when memory ran out): `nova status` lists it as `exited`, and the next `nova start` or `nova stop` removes every socket there that nobody listens on.

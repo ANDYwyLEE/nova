@@ -777,6 +777,11 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         out.append(("ℹ", "Wayland session: windows run through XWayland, whatever QT_QPA_PLATFORM the desktop exports "
                          "(QT_QPA_PLATFORM = wayland in [env] for native windows); placement differs per compositor "
                          "(docs/user-guide.md, Layouts)"))
+        import cams
+        if not cams.desktop_installed():
+            out.append(("ℹ", "the task bar of a Wayland desktop takes a window's icon from a desktop entry, and "
+                             "Nova has none here: `nova desktop install` writes one, with the icon, into "
+                             "~/.local/share"))
     gpus = drm_gpus() if LINUX else []
     blocked = node_access(gpus) if LINUX else []
     closed = {b[2] for b in blocked}

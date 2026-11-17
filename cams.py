@@ -60,6 +60,9 @@ nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.
   nova layout apply NAME                   move the open windows to that layout's places now
   nova layout export NAME FORMAT           window rules that place that layout on a Wayland desktop
                                            (FORMAT: sway, kwin, hyprland = Lua 0.55+, hyprlang = 0.53-0.54)
+  nova desktop install                     Linux: a desktop entry and Nova's icon in ~/.local/share, where the
+                                           task bar of a Wayland desktop looks a window's icon up (and a menu entry)
+  nova desktop remove                      take them away again
   nova -h                                  this text          nova.py --help    every camera option
   -c FILE                                  use FILE instead of cameras.ini (stop and restart without ids
                                            then mean the cameras launched with FILE)
@@ -1066,6 +1069,88 @@ def cmd_run(defaults, env, cams, args):
         return 130
 
 
+# ------------------------------------------------------------------ desktop entry (Linux)
+# A window hands its icon to an X11 panel itself.  The task bar of a Wayland desktop (and GNOME's dash) is
+# told an application id and looks the icon up in a desktop entry of that name: without one Nova's windows
+# had a blank icon on a Raspberry Pi's desktop, and Qt logged "Failed to register with host portal ... App
+# info not found for 'nova'" at every start.  The ids are those of nova.py (util.NATIVE_APP_ID).
+DESKTOP_IDS = (("nova", False), ("nova.wayland", True))      # (application id, hidden from the menu)
+DESKTOP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)          # icons/nova-N.png
+
+
+def data_home():
+    return os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+
+
+def _exec_arg(text):
+    """`text` as one argument of a desktop entry's Exec line: in double quotes, with a backslash before
+    the four characters the specification names; every backslash doubled, as in any string of such a
+    file; % doubled, which would start a field code."""
+    quoted = re.sub(r'(["`$\\])', r"\\\1", text)
+    return '"' + quoted.replace("\\", "\\\\").replace("%", "%%") + '"'
+
+
+def desktop_entry(app_id, hidden):
+    lines = ["[Desktop Entry]", "Type=Application", "Version=1.0", "Name=Nova",
+             "Comment=Camera windows: every enabled camera of cameras.ini",
+             f"Exec={_exec_arg(os.path.join(HERE, 'nova'))} start", "Icon=nova", "Terminal=false",
+             "Categories=AudioVideo;Video;", f"StartupWMClass={app_id}"]
+    if hidden:
+        lines.append("NoDisplay=true")
+    return "\n".join(lines) + "\n"
+
+
+def desktop_files(home=None):
+    """{file under the user's data folder: its text, or the file in icons/ it is a copy of}."""
+    home = home or data_home()
+    files = {os.path.join(home, "applications", f"{app_id}.desktop"): desktop_entry(app_id, hidden)
+             for app_id, hidden in DESKTOP_IDS}
+    icons = os.path.join(HERE, "icons")
+    for size in DESKTOP_ICON_SIZES:
+        files[os.path.join(home, "icons", "hicolor", f"{size}x{size}", "apps", "nova.png")] = \
+            os.path.join(icons, f"nova-{size}.png")
+    files[os.path.join(home, "icons", "hicolor", "scalable", "apps", "nova.svg")] = os.path.join(icons, "nova.svg")
+    return files
+
+
+def desktop_installed(home=None):
+    return os.path.exists(os.path.join(home or data_home(), "applications", f"{DESKTOP_IDS[0][0]}.desktop"))
+
+
+def cmd_desktop(tokens):
+    import shutil
+    sub = tokens[0] if tokens else ""
+    if sub not in ("install", "remove") or len(tokens) > 1:
+        sys.exit("usage: nova desktop install | remove")
+    if not sys.platform.startswith("linux"):
+        sys.exit("nova desktop is for Linux desktops: on Windows and macOS the task bar and the Dock take the "
+                 "icon from the window itself")
+    files = desktop_files()
+    shown = data_home().replace(os.path.expanduser("~"), "~", 1)
+    if sub == "remove":
+        gone = 0
+        for path in files:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
+                gone += 1
+        print(f"removed {gone} file(s) of Nova's desktop entry and icon from {shown}" if gone else
+              f"nothing of Nova's in {shown}")
+        return 0
+    for path, source in files.items():
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.isfile(source):
+            shutil.copyfile(source, path)
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(source)
+        os.chmod(path, 0o644)
+    print(f"wrote {shown}/applications/{DESKTOP_IDS[0][0]}.desktop (and {DESKTOP_IDS[1][0]}.desktop for native "
+          f"Wayland windows) and the icon under {shown}/icons/hicolor.\n"
+          f"Windows opened from now on have Nova's icon on the task bar; the menu has Nova, which runs `nova start`.\n"
+          f"`nova desktop remove` takes them away. They name this folder: run install again after moving it.")
+    return 0
+
+
 def cmd_layout(defaults, env, cams, args):
     sub = args.ids[0] if args.ids else "list"
     if sub == "list" and len(args.ids) <= 1:
@@ -1195,6 +1280,8 @@ def main(argv=None):
         import doctor                                # works without cameras.ini, so before load()
         sys.stdout.write(doctor.report(config if config != INI or os.path.exists(INI) else INI))
         return 0
+    if cmd == "desktop":
+        return cmd_desktop(tokens)
     if cmd not in COMMANDS:
         sys.exit(f"unknown command '{cmd}'\n\n{USAGE.rstrip()}")
     if cmd in ("start", "record", "run", "restart", "layout") and util.cpu_message():
