@@ -300,15 +300,89 @@ def pci_gpus(root="/sys/bus/pci/devices"):
     return out
 
 
+# What FFmpeg's ..._v4l2m2m decoders hand to the kernel: the camera's stream as it comes.  A device takes it
+# on its OUTPUT queue under one of these names.  A stateless decoder (a Raspberry Pi 5's for HEVC: 'S265')
+# wants the stream taken apart first, which this FFmpeg has no part for.
+V4L2_STREAM_FORMATS = {"H264": "h264", "HEVC": "hevc", "MPG1": "mpeg1video", "MPG2": "mpeg2video",
+                       "MPG4": "mpeg4", "H263": "h263", "VC1G": "vc1", "VP80": "vp8", "VP90": "vp9"}
+_VIDIOC_QUERYCAP, _VIDIOC_ENUM_FMT = 0x80685600, 0xC0405602
+_V4L2_M2M = 0x4000 | 0x8000             # V4L2_CAP_VIDEO_M2M_MPLANE, V4L2_CAP_VIDEO_M2M
+_V4L2_OUTPUT_QUEUES = (10, 2)           # V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, V4L2_BUF_TYPE_VIDEO_OUTPUT
+
+
+def v4l2_decoders(pattern="/dev/video*"):
+    """The codecs (FFmpeg's names) a V4L2 decoder of this machine takes as a stream, sorted: what
+    --accel v4l2m2m can decode here.  None where that cannot be asked (not Linux, or a device that this
+    user may not open)."""
+    if not LINUX:
+        return None
+    try:
+        import fcntl
+        import struct
+    except ImportError:
+        return None
+    found = set()
+    for dev in sorted(glob.glob(pattern)):
+        try:
+            fd = os.open(dev, os.O_RDWR | os.O_NONBLOCK)
+        except PermissionError:
+            return None
+        except OSError:
+            continue
+        try:
+            cap = bytearray(104)
+            fcntl.ioctl(fd, _VIDIOC_QUERYCAP, cap)
+            caps, device_caps = struct.unpack_from("II", cap, 84)
+            if not (device_caps if caps & 0x80000000 else caps) & _V4L2_M2M:
+                continue
+            for queue in _V4L2_OUTPUT_QUEUES:
+                for i in range(64):
+                    fmt = bytearray(64)
+                    struct.pack_into("II", fmt, 0, i, queue)
+                    try:
+                        fcntl.ioctl(fd, _VIDIOC_ENUM_FMT, fmt)
+                    except OSError:
+                        break
+                    codec = V4L2_STREAM_FORMATS.get(bytes(fmt[44:48]).decode("ascii", "replace"))
+                    if codec:
+                        found.add(codec)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+    return sorted(found)
+
+
+def v4l2_obstacle(decoders, model=""):
+    """The sentence for a machine whose V4L2 devices decode no stream (`decoders`: v4l2_decoders());
+    None when one does, or when nothing is known."""
+    if decoders is None or decoders:
+        return None
+    pi5 = (" (a Raspberry Pi 5 has no H.264 decoder, and its HEVC decoder is of the stateless kind, which "
+           "this FFmpeg does not drive)") if "raspberry pi 5" in model.lower() else ""
+    return f"this machine has no V4L2 decoder that takes a camera's stream{pi5}"
+
+
+def board_model(path="/proc/device-tree/model"):
+    """What an ARM board calls itself ('Raspberry Pi 5 Model B Rev 1.1'), '' elsewhere."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().strip("\x00 \n")
+    except OSError:
+        return ""
+
+
 def accel_obstacle(accel, gpus=None):
     """What stands between --accel and this machine whatever is installed in Python, in words for the log
-    and for nova doctor; None when nothing is known to (and always outside Linux, and where the kernel
-    shows no display controller at all: a container, an ARM board).  `gpus`: pci_gpus()."""
+    and for nova doctor; None when nothing is known to (and always outside Linux; for a GPU's API also
+    where the kernel shows no display controller at all: a container, an ARM board).  `gpus`: pci_gpus()."""
+    a = (accel or "").lower()
+    if a == "v4l2m2m":
+        return v4l2_obstacle(v4l2_decoders(), board_model())
     if gpus is None:
         gpus = pci_gpus() if LINUX and not WSL else []       # WSL reaches the GPU through /dev/dxg
     if not gpus:
         return None
-    a = (accel or "").lower()
     if a in ("cuda", "cuvid", "nvdec"):
         nvidia = [g for g in gpus if g[0] == "NVIDIA"]
         if not nvidia:

@@ -26,7 +26,7 @@ from collections import Counter
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from util import (opengl_shortfall, opengl_needs, mask_url, find_secrets, vaapi_node, drm_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
-                  wheels_too_new_for_cpu, cpu_message, av_import_help,
+                  wheels_too_new_for_cpu, cpu_message, av_import_help, v4l2_decoders, v4l2_obstacle, board_model,
                   LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI)
 
 NVIDIA_MIN_DRIVER = 570          # the PyPI wheel's NVENC needs this (string in its libavcodec)
@@ -766,6 +766,12 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                          "`nova record` (no window) still works"))
     else:
         out.append(("✓", "OpenGL comes from a GPU driver"))
+    # a board whose FFmpeg lists V4L2 codecs and whose kernel has no device for them (a Raspberry Pi 5)
+    if IS_PI and "_v4l2m2m" in ffmpeg:
+        missing = v4l2_obstacle(v4l2_decoders(), board_model())
+        if missing:
+            out.append(("ℹ", f"{missing}: the ..._v4l2m2m codecs listed above have no device here, cameras are "
+                             f"decoded on the CPU and recorded with libx264"))
     # desktop
     if LINUX and (os.environ.get("XDG_SESSION_TYPE") == "wayland" or os.environ.get("WAYLAND_DISPLAY")):
         out.append(("ℹ", "Wayland session: windows run through XWayland, whatever QT_QPA_PLATFORM the desktop exports "

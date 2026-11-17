@@ -242,3 +242,64 @@ def test_opengl_shortfall_names_a_context_that_is_too_old():
     assert util.opengl_shortfall(3, 2, es=True) == "OpenGL ES 3.2"          # ES of any version: other shaders
     assert util.opengl_needs("OpenGL 2.1") == "--opengl needs OpenGL 3.1, and the GPU's driver here offers OpenGL 2.1"
 
+
+class _V4L2:
+    """The V4L2 devices of a board, as the two questions util.v4l2_decoders asks of them answer."""
+    M2M_MPLANE, CAPTURE_MPLANE, OUTPUT_MPLANE, DEVICE_CAPS = 0x4000, 0x1000, 0x2000, 0x80000000
+
+    def __init__(self, monkeypatch, devices, denied=()):
+        import fcntl
+        self.devices, self.denied, self.fds = devices, denied, {}
+        monkeypatch.setattr(util, "LINUX", True)
+        monkeypatch.setattr(util.glob, "glob", lambda pattern: list(devices) + list(denied))
+        monkeypatch.setattr(util.os, "open", self.open)
+        monkeypatch.setattr(util.os, "close", lambda fd: self.fds.pop(fd))
+        monkeypatch.setattr(fcntl, "ioctl", self.ioctl)
+
+    def open(self, path, flags):
+        if path in self.denied:
+            raise PermissionError(13, "Permission denied", path)
+        fd = 1000 + len(self.fds)
+        self.fds[fd] = self.devices[path]
+        return fd
+
+    def ioctl(self, fd, request, buf):
+        import struct
+        caps, formats = self.fds[fd]
+        if request == util._VIDIOC_QUERYCAP:
+            struct.pack_into("II", buf, 84, caps | self.DEVICE_CAPS, caps)
+            return 0
+        index, queue = struct.unpack_from("II", buf, 0)
+        names = formats.get(queue, [])
+        if index >= len(names):
+            raise OSError(22, "Invalid argument")
+        buf[44:48] = names[index].encode()
+        return 0
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NONBLOCK"), reason="V4L2 is Linux's")
+def test_v4l2_decoders_are_the_devices_that_take_a_stream(monkeypatch):
+    """--accel v4l2m2m on a Raspberry Pi 5 failed at every camera and was tried again every five minutes:
+    the board has no H.264 decoder, and its HEVC decoder takes slices ('S265'), not the stream."""
+    pytest.importorskip("fcntl")
+    v = _V4L2
+    pi5 = {"/dev/video19": (v.M2M_MPLANE, {10: ["S265"]}),
+           "/dev/video20": (v.CAPTURE_MPLANE | v.OUTPUT_MPLANE, {10: ["YU12", "NV12"]})}
+    fake = _V4L2(monkeypatch, pi5)
+    assert util.v4l2_decoders() == [] and not fake.fds                 # every device closed again
+    said = util.v4l2_obstacle([], "Raspberry Pi 5 Model B Rev 1.1")
+    assert said.startswith("this machine has no V4L2 decoder that takes a camera's stream (a Raspberry Pi 5 has no H.264")
+    assert util.v4l2_obstacle([], "") == "this machine has no V4L2 decoder that takes a camera's stream"
+    monkeypatch.setattr(util, "board_model", lambda: "Raspberry Pi 5 Model B Rev 1.1")
+    assert util.accel_obstacle("v4l2m2m", []) == said                  # no PCI GPU is no reason to say nothing
+    pi4 = {"/dev/video10": (v.M2M_MPLANE, {10: ["H264", "MPG4", "H263", "MPG2", "VC1G"]}),
+           "/dev/video11": (v.M2M_MPLANE, {10: ["YU12", "NV12"]}),      # the encoder: pictures go in
+           "/dev/video19": (v.M2M_MPLANE, {10: ["S265"]})}
+    _V4L2(monkeypatch, pi4)
+    assert util.v4l2_decoders() == ["h263", "h264", "mpeg2video", "mpeg4", "vc1"]
+    assert util.accel_obstacle("v4l2m2m", []) is None and util.v4l2_obstacle(["h264"], "Raspberry Pi 4") is None
+    _V4L2(monkeypatch, pi5, denied=["/dev/video99"])                    # not in the video group: nothing is known
+    assert util.v4l2_decoders() is None and util.accel_obstacle("v4l2m2m", []) is None
+    monkeypatch.setattr(util, "LINUX", False)
+    assert util.v4l2_decoders() is None
+

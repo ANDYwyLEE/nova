@@ -162,6 +162,23 @@ def test_no_opengl_context_says_windows_need_one(monkeypatch, tmp_path):
     assert "Nova windows need one with or without --opengl" in out and "falls back to QPainter" not in out
 
 
+def test_a_board_without_a_v4l2_decoder_is_told_what_its_codec_list_means(monkeypatch, tmp_path):
+    """A Raspberry Pi 5: the report lists h264_v4l2m2m and hevc_v4l2m2m (they are in the wheel), and the
+    board has no device for either."""
+    ffmpeg = "HW decoders h264_v4l2m2m hevc_v4l2m2m"
+    said = lambda: [t for _, t in doctor.checks("skipped", ffmpeg, "", None, None, str(tmp_path / "none.ini"))]
+    monkeypatch.setattr(doctor, "IS_PI", True)
+    monkeypatch.setattr(doctor, "board_model", lambda: "Raspberry Pi 5 Model B Rev 1.1")
+    monkeypatch.setattr(doctor, "v4l2_decoders", lambda: [])
+    line = [t for t in said() if "V4L2" in t]
+    assert len(line) == 1 and "a Raspberry Pi 5 has no H.264 decoder" in line[0] and "decoded on the CPU" in line[0], line
+    monkeypatch.setattr(doctor, "v4l2_decoders", lambda: ["h264"])             # a Raspberry Pi 4
+    assert not [t for t in said() if "V4L2" in t]
+    monkeypatch.setattr(doctor, "v4l2_decoders", lambda: [])
+    monkeypatch.setattr(doctor, "IS_PI", False)                                 # a PC: the same wheel lists them too
+    assert not [t for t in said() if "V4L2" in t]
+
+
 def test_an_opengl_context_below_3_1_is_named(monkeypatch, tmp_path):
     """A driver that stops below OpenGL 3.1 (a Raspberry Pi 3: 2.1): the report said `✓ OpenGL comes from a GPU
     driver`, and an --opengl window did not open.  A Raspberry Pi 5's 3.1 is enough."""
