@@ -897,6 +897,11 @@ def test_the_conversion_is_measured_on_a_real_connection(qapp, clip, monkeypatch
     w = _worker(str(clip), headless=False)
     seen = []
     w._slow = lambda per, fps, dec=None, conv=0.0: seen.append((per, conv)) and None
+    # A clip is read hundreds of times faster than its frame rate.  When the wall clock's second changed
+    # while it was read, the display rate's Skipper took that speed for the camera's and showed one picture
+    # in a hundred: the others are not converted, and this test failed now and then (two of the install
+    # guide's fifteen jobs in one run, one in another).
+    monkeypatch.setattr(videoworker.Skipper, "is_skip", lambda self: False)
     real = videoworker._Load.add
     monkeypatch.setattr(videoworker._Load, "add", lambda self, now, worked, pictures, converting=0.0:
                         (seen.append(("add", worked, pictures, converting)), real(self, now, worked, pictures, converting))[1])
