@@ -387,6 +387,77 @@ def test_pictures_in_device_memory_are_read_once(qapp):
     assert other.is_hw and not other.copies
 
 
+def test_a_decoder_that_never_answers_is_left_for_the_software_one(qapp, monkeypatch, caplog):
+    """A Raspberry Pi 4 decodes two 1080p cameras; the third camera's h264_v4l2m2m took its packets and
+    answered nothing, FFmpeg waited for the device without a limit, and the camera's thread with it: a
+    window without a picture and a log without a line."""
+    import threading
+    monkeypatch.setattr(videoworker, "HW_ANSWER_S", 0.2)
+    never = threading.Event()
+    w = _worker(accel="v4l2m2m")
+    hw = FakeCtx("h264_v4l2m2m", out=lambda p: never.wait(30) and [])        # the device stays silent
+    sw = FakeCtx(out=lambda p: [_frame(p.pts)])
+    dec, _ = _decode(w, sw, [(hw, "h264_v4l2m2m", None)])
+    dec.open()
+    left = len(videoworker._LEFT_BEHIND)
+    with caplog.at_level(logging.WARNING):
+        t0 = time.monotonic()
+        frames = dec.decode(_real_pkt(SPS_PPS + IDR, 0, True))
+    assert 0.2 <= time.monotonic() - t0 < 5
+    assert [f.pts for f in frames] == [0] and not dec.is_hw and dec.guard is None       # this very picture, in software
+    assert "--accel=v4l2m2m cannot work here: h264_v4l2m2m has not answered for 0.2 s" in caplog.text
+    assert "Decoding in software (h264)" in caplog.text
+    assert len(videoworker._LEFT_BEHIND) == left + 1 and videoworker._LEFT_BEHIND[-1].ctx is hw      # not freed
+    assert w._hw_retry_at == float("inf") and not w._hw_retry_due()                    # and not tried again
+    assert [f.pts for f in dec.decode(_real_pkt(PFRAME, 9000))] == [9000]
+    dec.release()
+    never.set()
+
+
+def test_a_v4l2_decoder_that_answers_is_used_as_any_other(qapp, monkeypatch):
+    monkeypatch.setattr(videoworker, "HW_ANSWER_S", 5)
+    w = _worker(accel="v4l2m2m")
+    calls = []
+
+    def out(p):
+        calls.append(__import__("threading").current_thread().name)
+        if p.pts == 18000:
+            raise av.error.InvalidDataError(22, "Invalid data found when processing input")
+        return [_frame(p.pts)]
+
+    dec, _ = _decode(w, FakeCtx(), [(FakeCtx("h264_v4l2m2m", out=out), "h264_v4l2m2m", None)])
+    dec.open()
+    assert [f.pts for f in dec.decode(_real_pkt(SPS_PPS + IDR, 0, True))] == [0] and dec.is_hw
+    assert [f.pts for f in dec.decode(_real_pkt(PFRAME, 9000))] == [9000]
+    assert dec.decode(_real_pkt(PFRAME, 18000)) == [] and dec.is_hw and dec.errors == 1      # an error is an error
+    assert set(calls) == {"HWDecode"}                     # every call on the decoder's own thread
+    guard = dec.guard
+    dec.release()
+    assert dec.guard is None and not guard.hung
+    other, _ = _decode(_worker(accel="cuda"), FakeCtx(), [(FakeCtx("h264_cuvid"), "h264_cuvid", None)])
+    other.open()
+    assert other.guard is None                            # decoders that answer or fail are called directly
+
+
+def test_a_retried_decoder_that_never_answers_ends_the_retries(qapp, monkeypatch, caplog):
+    import threading
+    monkeypatch.setattr(videoworker, "HW_ANSWER_S", 0.2)
+    never = threading.Event()
+    w = _worker(accel="v4l2m2m")
+    hw = FakeCtx("h264_v4l2m2m", out=lambda p: never.wait(30) and [])
+    sw = FakeCtx(out=lambda p: [_frame(p.pts)])
+    dec, _ = _decode(w, sw, [(None, None, "h264_v4l2m2m: Device or resource busy"), (hw, "h264_v4l2m2m", None)])
+    dec.open()
+    dec.decode(_real_pkt(IDR, 0, True))
+    w._hw_retry_at = 0
+    with caplog.at_level(logging.WARNING):
+        frames = dec.decode(_real_pkt(IDR, 9000, True))   # the trial starts on this keyframe, and stays silent
+    assert [f.pts for f in frames] == [9000] and not dec.is_hw and dec.trial is None and dec.trial_guard is None
+    assert "cannot work here: h264_v4l2m2m has not answered" in caplog.text and not w._hw_retry_due()
+    dec.release()
+    never.set()
+
+
 def test_a_quick_sync_retry_gets_the_parameter_sets_too(qapp):
     w = _worker(accel="qsv")
     fed = []

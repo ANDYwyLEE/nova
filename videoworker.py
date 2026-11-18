@@ -66,6 +66,15 @@ INBAND_HEADER_DECODERS = ("_qsv", "_v4l2m2m")
 # once: by the OpenGL window's upload when nothing else wants it, else by one copy that the scaler, the
 # recorder and the streamer then read (and the device has its buffer back before their queues fill).
 DEVICE_MEMORY_DECODERS = ("_v4l2m2m",)
+# Decoders whose calls may never come back.  FFmpeg's V4L2 decoders wait for the device without a limit,
+# and a board's decoder that has no room for one more camera takes the packets it is given and answers
+# nothing, no error either (Raspberry Pi 4: two 1080p cameras decode, the third stood in that call for
+# good: a window without a picture and a log without a line).  Their calls are made on a thread of their
+# own and given HW_ANSWER_S; a decoder that does not answer is left to that thread, and this camera is
+# decoded in software until it is started again.
+MAY_HANG_DECODERS = ("_v4l2m2m",)
+HW_ANSWER_S = 5.0            # less than the 10 s without a picture that end a connection
+_LEFT_BEHIND = []           # decoders that never answered: their thread is inside them, they are not freed
 # schemes whose host is probed with a plain TCP connect before av.open(), and their default ports
 PROBE_PORTS = {"rtsp": 554, "rtsps": 322, "rtmp": 1935, "rtmps": 443, "http": 80, "https": 443, "tcp": None}
 _CONNECT_IN_PROGRESS = {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
@@ -287,6 +296,47 @@ class _Reconnect(Exception):
     """Ends the current connection; the text says why."""
 
 
+class _NoAnswer(Exception):
+    """A decoder's call did not come back within HW_ANSWER_S."""
+
+
+class _Answering:
+    """decode() of a decoder of MAY_HANG_DECODERS: on a thread of its own, with a time limit."""
+    _END = object()
+
+    def __init__(self, ctx, name):
+        self.ctx, self.name, self.hung = ctx, name, False
+        self._in, self._out = queue.SimpleQueue(), queue.SimpleQueue()
+        threading.Thread(target=self._run, name="HWDecode", daemon=True).start()
+
+    def _run(self):
+        while True:
+            packet = self._in.get()
+            if packet is self._END:
+                return
+            try:
+                self._out.put((self.ctx.decode(packet), None))
+            except BaseException as e:
+                self._out.put((None, e))
+
+    def decode(self, packet):
+        self._in.put(packet)
+        try:
+            frames, err = self._out.get(timeout=HW_ANSWER_S)
+        except queue.Empty:
+            self.hung = True
+            _LEFT_BEHIND.append(self)
+            raise _NoAnswer(f"{self.name} has not answered for {HW_ANSWER_S:g} s (a board's decoder that has no "
+                            f"room for one more camera takes its packets and stays silent)") from None
+        if err is not None:
+            raise err
+        return frames
+
+    def end(self):
+        if not self.hung:
+            self._in.put(self._END)
+
+
 class _Load:
     """Does the connection's thread keep up with the camera?  It decodes a picture, converts it and hands
     it on before it reads the next packet, so a thread that works nearly all the time while no more
@@ -389,6 +439,8 @@ class _VideoDecode:
         self.wait_kf = False     # the decoder (re)starts at the next keyframe
         self.headers = None      # parameter sets the decoder in use needs in its keyframes (else None)
         self.copies = False      # the decoder in use hands out device memory (DEVICE_MEMORY_DECODERS)
+        self.guard = None        # the decoder in use is called through this (MAY_HANG_DECODERS), else None
+        self.trial_guard = None
         self.threads = 0         # frame threads the worker gave the software decoder (0: FFmpeg's default)
         self.trial = None        # hardware decoder on trial, fed alongside the software one
         self.trial_name = ""
@@ -430,6 +482,10 @@ class _VideoDecode:
         and has a line for the log waits for that same lock, and the process stands still for good,
         Ctrl-C and `nova stop` included.  So the pictures in flight are decoded out first, with the lock
         released as in every decode call; threads that have no work left say nothing when they are ended."""
+        for guard in (self.guard, self.trial_guard):
+            if guard is not None:
+                guard.end()
+        self.guard = self.trial_guard = None
         seen = []
         for ctx in (self.base, self.ctx, self.trial):
             if ctx is None or any(ctx is c for c in seen):
@@ -446,6 +502,17 @@ class _VideoDecode:
         self.kf, self.got, self.errors, self.last_err = 0, False, 0, ""
         self.headers = self._headers_for(name) if is_hw else None
         self.copies = is_hw and name.endswith(DEVICE_MEMORY_DECODERS)
+        if self.guard is not None and self.guard.ctx is not ctx:
+            self.guard.end()
+            self.guard = None
+        if self.trial_guard is not None and self.trial_guard.ctx is ctx:        # the trial takes over
+            self.guard, self.trial_guard = self.trial_guard, None
+        elif is_hw and self.guard is None:
+            self.guard = self._guard_for(ctx, name)
+
+    @staticmethod
+    def _guard_for(ctx, name):
+        return _Answering(ctx, name) if name.endswith(MAY_HANG_DECODERS) else None
 
     def _headers_for(self, name):
         """The stream's parameter sets when decoder `name` has to find them inside the packets, else None.
@@ -536,7 +603,12 @@ class _VideoDecode:
                 self.fallback_sw(f"{self.name} produced no frames after {self.kf} keyframes{why}", key)
             self.kf += 1
         try:
-            frames = self.ctx.decode(self._with_headers(packet, self.headers) if key and self.headers else packet)
+            frames = (self.guard or self.ctx).decode(self._with_headers(packet, self.headers)
+                                                     if key and self.headers else packet)
+        except _NoAnswer as e:
+            self.guard = None                       # left to its thread, with its decoder (_LEFT_BEHIND)
+            self.fallback_sw(str(e), key, never=True)
+            return self.decode(packet) if key else []
         except av.error.FFmpegError as e:
             return self._rejected(packet, key, e)
         self.errors = 0
@@ -585,13 +657,18 @@ class _VideoDecode:
         logging.debug(f"[VideoWorker] trying {name} again, alongside the software decoder")
         self.trial, self.trial_name, self.trial_kf, self.trial_errors = ctx, name, 0, 0
         self.trial_headers = self._headers_for(name)
+        self.trial_guard = self._guard_for(ctx, name)
 
     def _feed_trial(self, packet, key):
         if key:
             self.trial_kf += 1
         try:
-            frames = self.trial.decode(self._with_headers(packet, self.trial_headers)
-                                       if key and self.trial_headers else packet)
+            frames = (self.trial_guard or self.trial).decode(self._with_headers(packet, self.trial_headers)
+                                                             if key and self.trial_headers else packet)
+        except _NoAnswer as e:
+            self.trial_guard = None
+            self._end_trial(str(e), never=True)
+            return None
         except av.error.FFmpegError as e:
             self.trial_errors += 1
             if self.trial_errors >= GIVE_UP_KEYFRAMES:
@@ -605,9 +682,12 @@ class _VideoDecode:
             self._end_trial(f"{self.trial_name} produced no frames after {self.trial_kf - 1} keyframes")
         return None
 
-    def _end_trial(self, reason):
+    def _end_trial(self, reason, never=False):
+        if self.trial_guard is not None:
+            self.trial_guard.end()
+            self.trial_guard = None
         self.trial = None
-        self.w._hw_failed(reason, self.codec_name)
+        self.w._hw_failed(reason, self.codec_name, never=never)
 
 
 class VideoWorker(QThread):

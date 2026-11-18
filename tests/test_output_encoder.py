@@ -499,3 +499,41 @@ def test_a_v4l2_encoders_packets_are_copied_out_of_the_devices_buffers():
     assert q is not p and bytes(q) == IDR
     assert (q.pts, q.dts, q.duration, q.time_base, q.is_keyframe) == (900, 800, 100, Fraction(1, 1000), True)
     assert w._owned([]) == []
+
+
+def test_an_encoder_that_opens_and_takes_no_picture_is_left_for_the_next(caplog):
+    """Six cameras recording through a Raspberry Pi 4's encoder, which has room for two: h264_v4l2m2m opened
+    for every one and answered each picture with EAGAIN.  The recorder counted 60 errors, gave up, and
+    began again a minute later, with a kernel warning and its call trace for every picture."""
+    class Stream:
+        def __init__(self, name, fail):
+            self.name, self.fail, self.fed = name, fail, 0
+            self.codec_context = SimpleNamespace(is_open=True)
+
+        def encode(self, frame):
+            self.fed += 1
+            if self.fail:
+                raise BlockingIOError(11, "Resource temporarily unavailable", "avcodec_send_frame()")
+            return []
+
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)
+    hw, sw = Stream("h264_v4l2m2m", True), Stream("libx264", False)
+    w.v_stream, w.v_encoder, w.v_frames, w.last_v_pts, w.v_time_base = hw, "h264_v4l2m2m", 0, -1, Fraction(1, 90000)
+    w._colour, w._v_opts_checked, w._applied_v = (None, None, None, None), True, {}
+    w._fit = lambda frame, pts: frame
+    w._mux = lambda packets: None
+    said = []
+
+    def next_encoder(e, taking=False):
+        said.append((type(e).__name__, taking))
+        w.v_stream, w.v_encoder = sw, "libx264"
+
+    w._next_video_encoder = next_encoder
+    for i in range(5):
+        w._encode_video(SimpleNamespace(), i / 10)
+    assert said == [("BlockingIOError", True)]            # at the first picture, and once
+    assert (hw.fed, sw.fed, w.v_frames) == (1, 5, 5)
+    sw.fail = True                                        # an encoder that has taken pictures: its errors are the recorder's
+    with pytest.raises(BlockingIOError):
+        w._encode_video(SimpleNamespace(), 0.6)
+    assert len(said) == 1

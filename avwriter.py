@@ -1120,16 +1120,22 @@ class AVWriter:
             self._colour = _frame_colour(frame)
         while True:
             ctx, f = self.v_stream.codec_context, self._fit(frame, pts)
-            if ctx.is_open:
+            if ctx.is_open and self.v_frames:
                 packets = self.v_stream.encode(f)
                 break
-            self._carry_colour(ctx, f)
+            opened = ctx.is_open
+            if not opened:
+                self._carry_colour(ctx, f)
             try:
                 packets = self.v_stream.encode(f)        # the first call opens the encoder
                 break
             except Exception as e:
-                if ctx.is_open: raise
-                self._next_video_encoder(e)
+                # An encoder that opens and does not take its first picture is one that does not open.  A
+                # board's V4L2 encoder with more cameras than it has room for opens for each and answers
+                # every picture with EAGAIN (Raspberry Pi 4: two 1080p cameras at a time), and the kernel
+                # writes a warning with a call trace for every try: 60 pictures a camera before the
+                # recorder gave up, and again a minute later, took the board down.
+                self._next_video_encoder(e, taking=opened or ctx.is_open)
         self._mux(self._owned(packets))
         self.v_frames += 1
         if not self._v_opts_checked:
@@ -1161,12 +1167,15 @@ class AVWriter:
         if self._colour and self._colour[0] == 2:
             logging.debug("[AVWriter] the camera sends full-range video: the recording says so")
 
-    def _next_video_encoder(self, e):
+    def _next_video_encoder(self, e, taking=False):
         """The video encoder opens at its first frame, at the real size; the probe ran at 640x360 and
         can pass where this fails (NVENC's session limit with many cameras, a GPU fault). The failed
         context must never be used again (a second avcodec_open2() on it segfaults), so the container
-        is rebuilt around the next candidate, ending at libx264."""
+        is rebuilt around the next candidate, ending at libx264.  `taking`: it opened, and the first
+        picture is what it refused."""
         failed, err = self.v_encoder, _short_err(e)
+        does_not = "opens and takes no picture (as an encoder does that has no room for one more camera)" if taking \
+            else "does not open"
         if "nvenc" in failed and self.gpu_idx not in (0, None):
             # --gpu N with fewer NVIDIA cards than that: the same encoder on GPU 0 before giving it up
             logging.warning(f"[AVWriter] ⚠️ {failed} does not open on GPU {self.gpu_idx} ({err}); trying GPU 0 "
@@ -1179,10 +1188,10 @@ class AVWriter:
         first = mgr.reject(failed)
         nxt = mgr.get_encoder(*self._enc_args)
         if nxt in self._tried:
-            self.open_failed = f"video encoder {failed} does not open at {self.width}x{self.height}: {err}"
+            self.open_failed = f"video encoder {failed} {does_not} at {self.width}x{self.height}: {err}"
             raise OutputOpenError(f"cannot start: {self.open_failed}") from e
         (logging.warning if first else logging.info)(
-            f"[AVWriter] ⚠️ {failed} does not open at {self.width}x{self.height} ({err}); using {nxt}, "
+            f"[AVWriter] ⚠️ {failed} {does_not} at {self.width}x{self.height} ({err}); using {nxt}, "
             f"{failed} is tried again in {FAILED_RETRY_S // 60} min")
         self._rebuild(nxt)
 
