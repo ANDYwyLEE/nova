@@ -867,6 +867,10 @@ class AVWriter:
             final_v_opts['bf'] = '0'
         if c_name.endswith("_mf"):
             final_v_opts = _mf_opts(c_name, final_v_opts)
+        if c_name.endswith(DEVICE_PACKET_ENCODERS) and 'num_capture_buffers' not in final_v_opts:
+            # four by default, and all of them are out while the encoder is emptied at the end of a file
+            # (FFmpeg: "All capture buffers returned to userspace", a warning in the log every segment)
+            final_v_opts['num_capture_buffers'] = '16'
         if c_name.endswith(BITRATE_NEEDED) and not any(k in final_v_opts for k in ('b', 'bit_rate')):
             try: v_ctx.bit_rate = _default_bitrate(self.width, self.height, self.fps)
             except Exception as e: logging.debug(f"[AVWriter] bit_rate not settable: {e}")

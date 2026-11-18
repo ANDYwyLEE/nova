@@ -298,12 +298,20 @@ class _Load:
     windows starting at once on a four-core board made a picture take 47 ms through the board's HEVC
     decoder, which needs 16: the decoder was called too slow and left for the software one, which
     takes four times the CPU, and the next camera followed.  Neither another decoder nor more threads
-    help where every core is busy; `late` counts the stretches that have been behind that way."""
+    help where every core is busy; `late` counts the stretches that have been behind that way.
+
+    A connection's first stretch is no verdict either, while the connection goes on: the camera opens
+    with a burst, and what starts beside the thread (the recorder and its encoder, the window) takes
+    time from it.  On a Raspberry Pi 3 B+ a 10 fps camera that takes 40 ms a picture took 97 for the two
+    seconds in which its recording started: the decoder got a thread it did not need, by a reconnection
+    that left a hole at the start of the file.  A connection that ends inside that stretch is judged
+    (`end`): that one may be the camera giving up on a thread that is behind."""
 
     def __init__(self, fps, idle=None, late=0):
         self.fps = fps
         self.idle = idle        # the machine's idle CPU seconds so far (a function), or None: not asked
         self.t0 = None          # start of the stretch being judged
+        self.first = True       # ... and it is the connection's first
         self.i0 = None          # idle() at that moment
         self.busy = 0.0         # seconds of it spent on video packets
         self.converting = 0.0   # of those, the seconds spent converting pictures for the window
@@ -323,21 +331,22 @@ class _Load:
         self.busy += worked
         self.converting += converting
         self.pictures += pictures
-        return self._judge(now + worked, LOAD_JUDGE_S)
+        return self._judge(now + worked, LOAD_JUDGE_S, starting=True)
 
     def end(self, now):
         """The same for the stretch the end of the connection cut short: an overloaded connection may not
         live long enough for a whole one."""
         return self._judge(now, LOAD_JUDGE_S / 2)
 
-    def _judge(self, now, least):
+    def _judge(self, now, least, starting=False):
         if self.t0 is None or now - self.t0 < least:
             return None
+        first, self.first = self.first, False
         span, busy, converting, n = now - self.t0, self.busy, self.converting, self.pictures
         i0, i1 = self.i0, self.idle() if self.idle else None
         free = max(0.0, i1 - i0) / span if i0 is not None and i1 is not None and span > 0 else None
         self.t0, self.i0, self.busy, self.converting, self.pictures = now, i1, 0.0, 0.0, 0
-        if n and busy >= LOAD_BUSY * span and n <= self.fps * span * 1.1:
+        if n and busy >= LOAD_BUSY * span and n <= self.fps * span * 1.1 and not (first and starting):
             if free is not None and free < LOAD_FREE:
                 self.late, self.free, self.row = self.late + 1, free, 0
                 return None

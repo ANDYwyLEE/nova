@@ -667,7 +667,7 @@ def _feed(load, seconds, worked, every=None):
 def test_load_tells_a_thread_that_falls_behind_from_one_that_is_merely_busy():
     # an Atom D525 on a 1080p camera at 25 fps: 58 ms a picture, 17 a second come out
     verdict, when = _feed(videoworker._Load(25), 5, 0.058)
-    assert verdict == pytest.approx(0.058, rel=0.02) and 2.0 <= when < 2.2
+    assert verdict == pytest.approx(0.058, rel=0.02) and 4.0 <= when < 4.2    # the second stretch: see below
     # the same camera on a machine that decodes it in 5 ms: the thread waits most of the time
     assert _feed(videoworker._Load(25), 10, 0.005, every=0.04) == (None, pytest.approx(10, abs=0.1))
     # a file, or the burst a camera opens with: busy all the time, and far ahead of the frame rate
@@ -675,6 +675,29 @@ def test_load_tells_a_thread_that_falls_behind_from_one_that_is_merely_busy():
     # a 10 fps camera whose pictures take 85 ms: it keeps up, with little to spare; at 95 ms it is at the limit
     assert _feed(videoworker._Load(10), 10, 0.085, every=0.1)[0] is None
     assert _feed(videoworker._Load(10), 10, 0.095, every=0.1)[0] == pytest.approx(0.095, rel=0.02)
+
+
+def test_a_connections_first_stretch_is_no_verdict():
+    """A Raspberry Pi 3 B+ showing and recording a 10 fps camera: 97 ms a picture for the two seconds in
+    which the recorder and its encoder started, 40 ms after them.  The decoder got a second thread by a
+    reconnection, which left a hole at the start of the file (and the camera, at its limit of sessions,
+    kept the board out for 46 s)."""
+    load, t = videoworker._Load(10), 0.0
+    while t < 2.2:                                        # the start: at the limit
+        assert load.add(t, 0.097, 1) is None
+        t += 0.1
+    while t < 12:                                         # and then as the camera is on this board
+        assert load.add(t, 0.040, 1) is None
+        t += 0.1
+    slow, t = videoworker._Load(10), 0.0                  # a thread that stays behind is told one stretch later
+    while t < 2.2:
+        assert slow.add(t, 0.097, 1) is None
+        t += 0.1
+    said = None
+    while said is None and t < 6:
+        said = slow.add(t, 0.097, 1)
+        t += 0.1
+    assert said == pytest.approx(0.097, rel=0.02) and 4.0 <= t < 4.4
 
 
 def test_load_judges_the_stretch_a_dropped_connection_cut_short():
@@ -763,7 +786,8 @@ def test_behind_is_no_verdict_while_the_machine_has_no_core_to_spare():
     idle = {"s": 0.0}
     load = videoworker._Load(25, lambda: idle["s"])
     t = 0.0
-    for stretch in range(3):                         # 58 ms a picture, and 0.1 of a core idle: nobody's verdict
+    for stretch in range(4):                         # 58 ms a picture, and 0.1 of a core idle: nobody's verdict
+                                                     # (the first stretch of a connection is not counted)
         for _ in range(40):
             assert load.add(t, 0.058, 1) is None
             t += 0.058
