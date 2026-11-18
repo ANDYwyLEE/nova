@@ -213,7 +213,10 @@ def test_wheels_built_for_a_newer_cpu_are_found_without_importing_them(tmp_path)
     assert wheels == [("PySide6", "6.12.0", "6.9.3"), ("numpy", "2.5.4", "2.3.5")]
     said = util.cpu_message(wheels)
     assert "this CPU has no SSE4.2, and PySide6 6.12.0 and numpy 2.5.4 are built for it" in said
-    assert "-m pip install PySide6==6.9.3 numpy==2.3.5" in said and "docs/install.md" in said
+    assert "-m pip install PySide6_Essentials==6.9.3 numpy==2.3.5" in said and "docs/install.md" in said
+    # requirements.txt names PySide6_Essentials: that is the distribution an installation has
+    essentials = {"PySide6_Essentials": "6.12.0", "numpy": "2.3.5"}.get
+    assert util.wheels_too_new_for_cpu(str(atom), essentials) == [("PySide6", "6.12.0", "6.9.3")]
     assert util.wheels_too_new_for_cpu(str(atom), {"PySide6": "6.9.3", "numpy": "2.3.5"}.get) == []
     only = util.wheels_too_new_for_cpu(str(atom), {"PySide6": "6.9.3", "numpy": "2.4.0"}.get)
     assert only == [("numpy", "2.4.0", "2.3.5")] and "numpy 2.4.0 is built for it" in util.cpu_message(only)

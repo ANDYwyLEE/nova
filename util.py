@@ -453,6 +453,11 @@ def av_import_help(e):
 # still runs on an older CPU. Seen on an Atom D525: the newer ones end the process with an illegal
 # instruction at import, before Python can say a word (PySide6: in libshiboken6).
 CPU_V2_WHEELS = (("PySide6", (6, 10), "6.9.3"), ("numpy", (2, 4), "2.3.5"))
+# The distribution pip knows a package by, where that is not the package's name: requirements.txt asks for
+# PySide6_Essentials (the Qt modules Nova uses: QtCore, QtGui, QtNetwork, QtSvg), not for the PySide6 that
+# brings Qt's add-ons and its web engine along (350 MB more to download, which a board with 1 GB of memory
+# could not even hold in its /tmp while pip worked: Raspberry Pi 3 B+).
+WHEEL_DISTRIBUTIONS = {"PySide6": "PySide6_Essentials"}
 
 
 def cpu_has_sse42(cpuinfo="/proc/cpuinfo"):
@@ -485,7 +490,7 @@ def wheels_too_new_for_cpu(cpuinfo="/proc/cpuinfo", installed=None):
                 return None
     out = []
     for name, first, last in CPU_V2_WHEELS:
-        have = installed(name)
+        have = installed(WHEEL_DISTRIBUTIONS.get(name, name)) or installed(name)
         if have and tuple(int(x) for x in re.findall(r"\d+", have)[:2]) >= first:
             out.append((name, have, last))
     return out
@@ -497,7 +502,7 @@ def cpu_message(wheels=None):
     if not wheels:
         return None
     have = " and ".join(f"{n} {v}" for n, v, _ in wheels)
-    pip = " ".join(f"{n}=={last}" for n, _, last in wheels)
+    pip = " ".join(f"{WHEEL_DISTRIBUTIONS.get(n, n)}=={last}" for n, _, last in wheels)
     return (f"this CPU has no SSE4.2, and {have} {'are' if len(wheels) > 1 else 'is'} built for it "
             f"(an `Illegal instruction` ends whatever imports {'them' if len(wheels) > 1 else 'it'}): "
             f"{sys.executable} -m pip install {pip}   (docs/install.md, A CPU without SSE4.2)")
