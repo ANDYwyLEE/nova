@@ -356,6 +356,37 @@ def test_parameter_sets_are_added_for_quick_sync_and_annex_b_only(qapp):
     assert _qsv_feed(qapp, "vp9_qsv", SPS_PPS, pkts(), codec="vp9")[0][0] == IDR
 
 
+def test_a_v4l2_decoder_gets_the_parameter_sets_too(qapp):
+    """A V4L2 decoder is handed the packets and nothing else: the wheel's h264_v4l2m2m took every packet of
+    such a camera without a picture, an error or an event (Raspberry Pi 4, lounge camera)."""
+    fed = _qsv_feed(qapp, "h264_v4l2m2m", SPS_PPS, [_real_pkt(IDR, 0, True), _real_pkt(SPS_PPS + IDR, 9000, True)])
+    assert [f[0] for f in fed] == [SPS_PPS + IDR, SPS_PPS + IDR]
+
+
+def test_pictures_in_device_memory_are_read_once(qapp):
+    """A V4L2 decoder's pictures lie in the device's buffers, mapped without the CPU's cache (14 ms to copy a
+    1080p picture out on a Raspberry Pi 4, 2 ms from ordinary memory): the OpenGL upload reads one as it
+    is, everything else reads one copy."""
+    w = _worker(accel="v4l2m2m")
+    dec, _ = _decode(w, FakeCtx(), [(FakeCtx("h264_v4l2m2m"), "h264_v4l2m2m", None)])
+    dec.open()
+    assert dec.is_hw and dec.copies
+    frame = av.VideoFrame.from_ndarray(np.full((36, 64, 3), 77, np.uint8), format="rgb24").reformat(format="yuv420p")
+    frame.pts, frame.time_base, frame.key_frame = 1234, Fraction(1, 90000), True
+    assert w._read_once(frame, direct=True) is frame            # an --opengl window and nothing else
+    plain = w._read_once(frame, direct=False)                   # the scaler would read it more than once
+    assert plain is not frame and (plain.pts, plain.time_base, plain.key_frame) == (1234, Fraction(1, 90000), True)
+    assert np.array_equal(plain.to_ndarray(), frame.to_ndarray())
+    for rec, strm in ((True, False), (False, True), (True, True)):
+        w.rec_on, w.stream_on = rec, strm
+        assert w._read_once(frame, direct=True) is not frame    # a queue would hold the device's buffer
+    dec.fallback_sw("h264_v4l2m2m: gone", True)
+    assert not dec.copies                                       # the software decoder's memory is ordinary
+    other, _ = _decode(_worker(accel="cuda"), FakeCtx(), [(FakeCtx("h264_cuvid"), "h264_cuvid", None)])
+    other.open()
+    assert other.is_hw and not other.copies
+
+
 def test_a_quick_sync_retry_gets_the_parameter_sets_too(qapp):
     w = _worker(accel="qsv")
     fed = []

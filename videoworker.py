@@ -57,8 +57,15 @@ LISTED_CODECS = ("hevc", "h264", "vp9", "av1", "vp8", "mpeg2video")
 # Decoders that look for the stream's parameter sets (SPS/PPS, VPS) inside the packets only. A camera may
 # send them in the RTSP session description alone, where FFmpeg keeps them as extradata: h264_qsv then
 # answers "More data is required to decode header" to every packet and never delivers a picture
-# (Intel UHD 620, November 2026). Their keyframes get the parameter sets in front.
-INBAND_HEADER_DECODERS = ("_qsv",)
+# (Intel UHD 620, November 2026), and a V4L2 decoder, which is handed the packets and nothing else, takes
+# them all without a picture or a word (Raspberry Pi 4). Their keyframes get the parameter sets in front.
+INBAND_HEADER_DECODERS = ("_qsv", "_v4l2m2m")
+# Decoders whose pictures lie in memory of the device: a V4L2 decoder hands out its own buffers, and they
+# are mapped without the CPU's cache.  Copying a 1080p picture out of one took 14 ms on a Raspberry Pi 4
+# (2 ms from ordinary memory), the scaler reading it for a plain window 40 ms.  So such a picture is read
+# once: by the OpenGL window's upload when nothing else wants it, else by one copy that the scaler, the
+# recorder and the streamer then read (and the device has its buffer back before their queues fill).
+DEVICE_MEMORY_DECODERS = ("_v4l2m2m",)
 # schemes whose host is probed with a plain TCP connect before av.open(), and their default ports
 PROBE_PORTS = {"rtsp": 554, "rtsps": 322, "rtmp": 1935, "rtmps": 443, "http": 80, "https": 443, "tcp": None}
 _CONNECT_IN_PROGRESS = {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
@@ -372,6 +379,7 @@ class _VideoDecode:
         self.last_err = ""       # the last rejection, for the give-up message
         self.wait_kf = False     # the decoder (re)starts at the next keyframe
         self.headers = None      # parameter sets the decoder in use needs in its keyframes (else None)
+        self.copies = False      # the decoder in use hands out device memory (DEVICE_MEMORY_DECODERS)
         self.threads = 0         # frame threads the worker gave the software decoder (0: FFmpeg's default)
         self.trial = None        # hardware decoder on trial, fed alongside the software one
         self.trial_name = ""
@@ -428,6 +436,7 @@ class _VideoDecode:
         self.ctx, self.is_hw, self.name = ctx, is_hw, name
         self.kf, self.got, self.errors, self.last_err = 0, False, 0, ""
         self.headers = self._headers_for(name) if is_hw else None
+        self.copies = is_hw and name.endswith(DEVICE_MEMORY_DECODERS)
 
     def _headers_for(self, name):
         """The stream's parameter sets when decoder `name` has to find them inside the packets, else None.
@@ -1331,6 +1340,9 @@ class VideoWorker(QThread):
                             self.sz_sig.emit(w, h)
                             logging.verbose(f"[VideoWorker] emit video width:{w}, height:{h}")
 
+                        direct = self.opengl and pix_fmt in GL_DIRECT_FORMATS
+                        if dec.copies:
+                            frame = self._read_once(frame, direct)
                         self._dispatch_av(1, frame)
 
                         if self.headless: continue
@@ -1338,7 +1350,7 @@ class VideoWorker(QThread):
                         sk.update(fr.get_fps())
                         if sk.is_skip() and not frame.key_frame: continue
 
-                        if self.opengl and pix_fmt in GL_DIRECT_FORMATS:
+                        if direct:
                             self.frame_q.append(DisplayFrame.from_av_frame(frame))
                         else:
                             t_conv = time.monotonic()
@@ -1455,6 +1467,13 @@ class VideoWorker(QThread):
             n, t = 0, now
         self._drops[name] = (n, t)
 
+    def _read_once(self, frame, direct):
+        """A picture that lies in device memory (DEVICE_MEMORY_DECODERS), as its readers should get it:
+        itself when the OpenGL window's upload is the only one (`direct`), else a copy."""
+        if direct and not (self.rec_on or self.stream_on):
+            return frame
+        return self._clone_frame(frame) or frame
+
     def _clone_frame(self, frame):
         try:
             return _copy_frame(frame)
@@ -1484,7 +1503,7 @@ def _copy_frame(frame):
         c = av.VideoFrame(frame.width, frame.height, frame.format.name)
         for s, d in zip(frame.planes, c.planes):
             _copy_plane(s, d, min(s.height, d.height))
-        for attr in ("colorspace", "color_range", "color_primaries", "color_trc", "chroma_location"):
+        for attr in ("colorspace", "color_range", "color_primaries", "color_trc", "chroma_location", "key_frame"):
             try: setattr(c, attr, getattr(frame, attr))
             except Exception: pass
     else:
