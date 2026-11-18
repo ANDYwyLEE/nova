@@ -45,11 +45,51 @@ def _mf_opts(encoder_name, opts):
     return opts
 
 
-def _mf_bitrate(width, height, fps):
-    """Media Foundation refuses an output type without a bitrate ("could not set output type"), and a stream
-    made by add_stream has none: 0.1 bit per pixel and frame (1080p25: 5.2 Mbit/s, 1080p10: 2.1), as much
-    as h264_amf writes for the same cameras by default."""
+# Encoders that have to be told a bit rate, and a stream made by add_stream has none: Media Foundation
+# refuses the output type ("could not set output type"), and a V4L2 encoder takes FFmpeg's 200 kbit/s (a
+# 1080p camera in 120 kbit/s on a Raspberry Pi 4).
+BITRATE_NEEDED = ("_mf", "_v4l2m2m")
+# Encoders whose packets lie in buffers of the device, of which there are a handful (FFmpeg's V4L2
+# encoders: four by default).  A packet the muxer keeps while it waits for the other stream holds one;
+# with all of them out the encoder stands ("All capture buffers returned to userspace").  Their packets
+# are copied as they come.
+DEVICE_PACKET_ENCODERS = ("_v4l2m2m",)
+
+
+def _default_bitrate(width, height, fps):
+    """The bit rate for an encoder of BITRATE_NEEDED when the user named none: 0.1 bit per pixel and frame
+    (1080p25: 5.2 Mbit/s, 1080p10: 2.1), as much as h264_amf writes for the same cameras by default."""
     return max(500_000, int(width * height * max(1, fps) * 0.1))
+
+
+def _only_param_sets(data, hevc):
+    """Is this Annex B packet parameter sets (H.264 SPS/PPS, HEVC VPS/SPS/PPS) and no picture?"""
+    found, i = False, 0
+    while True:
+        j = data.find(b"\x00\x00\x01", i)
+        if j < 0 or j + 3 >= len(data):
+            return found
+        h = data[j + 3]
+        t = (h >> 1) & 0x3f if hevc else h & 0x1f
+        if (t < 32) if hevc else (1 <= t <= 5):
+            return False                            # a slice
+        if t in ((32, 33, 34) if hevc else (7, 8)):
+            found = True
+        i = j + 3
+
+
+def _own_packet(packet):
+    """A copy of an encoder's packet in memory of its own (DEVICE_PACKET_ENCODERS)."""
+    p = av.Packet(bytes(packet))
+    p.pts, p.dts = packet.pts, packet.dts
+    if packet.duration:
+        p.duration = packet.duration
+    if packet.time_base is not None:
+        p.time_base = packet.time_base
+    p.is_keyframe = packet.is_keyframe
+    if packet.stream is not None:
+        p.stream = packet.stream
+    return p
 
 
 LIVE_FORMATS = ("flv", "mpegts", "hls", "rtsp", "rtp_mpegts")
@@ -827,9 +867,9 @@ class AVWriter:
             final_v_opts['bf'] = '0'
         if c_name.endswith("_mf"):
             final_v_opts = _mf_opts(c_name, final_v_opts)
-            if not any(k in final_v_opts for k in ('b', 'bit_rate')):
-                try: v_ctx.bit_rate = _mf_bitrate(self.width, self.height, self.fps)
-                except Exception as e: logging.debug(f"[AVWriter] bit_rate not settable: {e}")
+        if c_name.endswith(BITRATE_NEEDED) and not any(k in final_v_opts for k in ('b', 'bit_rate')):
+            try: v_ctx.bit_rate = _default_bitrate(self.width, self.height, self.fps)
+            except Exception as e: logging.debug(f"[AVWriter] bit_rate not settable: {e}")
         v_ctx.options.update(final_v_opts)
 
         tag = v_tag
@@ -937,6 +977,8 @@ class AVWriter:
                 continue
             if not self._video_started:
                 if self.v_stream is not None and packet.stream is self.v_stream:
+                    if self._takes_headers(packet):
+                        continue
                     self._video_started = True
                     self._write(packet)
                     for a in self._held_audio:
@@ -947,6 +989,27 @@ class AVWriter:
                     self._held_audio.append(packet)
                     continue
             self._write(packet)
+
+    def _takes_headers(self, packet):
+        """Is this packet, the encoder's first, the stream's header and not a picture?  FFmpeg's V4L2
+        encoders, asked for a global header (MP4, FLV), put the parameter sets into a packet of their own
+        and leave the extradata empty: an MP4 written from that has no avcC and its first sample is no
+        picture, so nothing plays it (Raspberry Pi 4, h264_v4l2m2m).  The packet becomes the encoder's
+        extradata, which the muxer is given with the first packet that is written."""
+        ctx = self.v_stream.codec_context
+        try:
+            if ctx.extradata:
+                return False
+            data = bytes(packet)
+            if not _only_param_sets(data, _family(self.v_encoder) == "hevc"):
+                return False
+            ctx.extradata = data
+        except Exception as e:
+            logging.debug(f"[AVWriter] the encoder's first packet was not looked at: {_short_err(e)}")
+            return False
+        logging.debug(f"[AVWriter] {self.v_encoder} sent its parameter sets as a packet of their own "
+                      f"({len(data)} bytes): they are the stream's header now")
+        return True
 
     _dts_warned = set()             # encoders whose dts has been reported (once per process)
 
@@ -1063,11 +1126,16 @@ class AVWriter:
             except Exception as e:
                 if ctx.is_open: raise
                 self._next_video_encoder(e)
-        self._mux(packets)
+        self._mux(self._owned(packets))
         self.v_frames += 1
         if not self._v_opts_checked:
             self._v_opts_checked = True
             self._report_unused(self.v_stream.codec_context, "video encoder", self._applied_v)
+
+    def _owned(self, packets):
+        if packets and self.v_encoder.lower().endswith(DEVICE_PACKET_ENCODERS):
+            return [_own_packet(p) for p in packets]
+        return packets
 
     def _carry_colour(self, ctx, frame):
         """Tell an encoder that is about to open what the camera's pictures are. Without it the file says
@@ -1263,7 +1331,7 @@ class AVWriter:
             pending, self._pending = self._pending, []
             self._mux(pending)
         if self.v_frames and self.v_stream:
-            self._mux(self.v_stream.encode())
+            self._mux(self._owned(self.v_stream.encode()))
         if self.a_frames and self.a_stream:
             self._mux(self.a_stream.encode())
         if self._held_audio:                          # no video packet ever came out

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 from fractions import Fraction
+from types import SimpleNamespace
 
 import av
 import numpy as np
@@ -145,9 +146,9 @@ def test_media_foundation_means_the_hardware_encoder_with_a_bitrate():
     assert avwriter._mf_opts("hevc_mf", {"hw_encoding": "0", "b": "4M"}) == {"hw_encoding": "0", "b": "4M"}
     assert avwriter._mf_opts("h264_amf", {"usage": "transcoding"}) == {"usage": "transcoding"}
     assert avwriter._mf_opts("libx264", {}) == {}
-    assert avwriter._mf_bitrate(1920, 1080, 25) == 5_184_000
-    assert avwriter._mf_bitrate(1920, 1080, 10) == 2_073_600
-    assert avwriter._mf_bitrate(320, 180, 5) == 500_000
+    assert avwriter._default_bitrate(1920, 1080, 25) == 5_184_000
+    assert avwriter._default_bitrate(1920, 1080, 10) == 2_073_600
+    assert avwriter._default_bitrate(320, 180, 5) == 500_000
 
 
 @pytest.mark.skipif("h264_mf" not in av.codecs_available, reason="no Media Foundation encoder in this FFmpeg (Windows only)")
@@ -404,3 +405,97 @@ def test_limited_range_and_unsaid_stay_limited(tmp_path):
 
 def test_a_colour_range_given_with_ffmpeg_options_wins(tmp_path):
     assert _recorded(tmp_path, "forced.mp4", _yuv_frames(12, rng=2), color_range="tv")[0] != 2
+
+
+# ---------------------------------------------------------------- V4L2 encoders (Raspberry Pi 4)
+SPS_PPS = b"\x00\x00\x00\x01\x67\x4d\x00\x28\x9a" + b"\x00\x00\x00\x01\x68\xee\x3c\x80"
+IDR = b"\x00\x00\x00\x01\x65\x88\x84\x00\x33"
+
+
+def test_a_packet_of_parameter_sets_alone_is_told_from_a_picture():
+    only = avwriter._only_param_sets
+    assert only(SPS_PPS, False) and not only(SPS_PPS + IDR, False) and not only(IDR, False)
+    assert only(b"\x00\x00\x01\x09\xf0" + SPS_PPS, False)                  # behind an access unit delimiter
+    assert not only(b"\x00\x00\x01\x09\xf0", False) and not only(b"", False) and not only(b"\x00\x00\x01", False)
+    vps, sps, slice_ = b"\x00\x00\x00\x01\x40\x01\x0c", b"\x00\x00\x00\x01\x42\x01\x01", b"\x00\x00\x00\x01\x26\x01\xaf"
+    assert only(vps + sps, True) and not only(vps + sps + slice_, True) and not only(slice_, True)
+
+
+def test_v4l2_and_media_foundation_encoders_are_told_a_bit_rate():
+    """h264_v4l2m2m without one wrote a 1080p camera in 120 kbit/s (FFmpeg's default of 200)."""
+    assert "h264_v4l2m2m".endswith(avwriter.BITRATE_NEEDED) and "h264_mf".endswith(avwriter.BITRATE_NEEDED)
+    assert not "libx264".endswith(avwriter.BITRATE_NEEDED) and not "h264_nvenc".endswith(avwriter.BITRATE_NEEDED)
+
+
+def _split_first(packets):
+    """An encoder's packets as a V4L2 encoder hands them out: the parameter sets as a packet of their own."""
+    first = bytes(packets[0])
+    cut = first.index(b"\x00\x00\x01\x65")                      # the IDR slice
+    cut -= 1 if first[cut - 1] == 0 else 0
+    head = [n for n in first[:cut].split(b"\x00\x00\x00\x01") if n and n[0] & 0x1f in (7, 8)]
+    hdr = av.Packet(b"".join(b"\x00\x00\x00\x01" + n for n in head))
+    pic = av.Packet(first[cut:])
+    for p in (hdr, pic):
+        p.pts, p.dts, p.time_base, p.stream = packets[0].pts, packets[0].dts, packets[0].time_base, packets[0].stream
+    pic.is_keyframe = True
+    return [hdr, pic] + list(packets[1:])
+
+
+@pytest.mark.parametrize("movflags", ["", "+frag_keyframe+empty_moov+default_base_moof"])
+def test_parameter_sets_that_come_as_a_packet_become_the_mp4_header(tmp_path, movflags):
+    """FFmpeg's V4L2 encoders, asked for a global header, send SPS/PPS as a first packet of their own and
+    leave the extradata empty: the MP4 had no avcC and a first sample that is no picture (Raspberry Pi 4).
+    Here libx264 without its global header plays that encoder; what is written must read as any MP4."""
+    path = str(tmp_path / "v.mp4")
+    out = av.open(path, "w", format="mp4", options={"movflags": movflags} if movflags else {})
+    st = out.add_stream("libx264", rate=10)
+    st.width, st.height, st.pix_fmt = 320, 180, "yuv420p"
+    ctx = st.codec_context
+    ctx.flags &= ~int(av.codec.context.Flags.global_header)      # headers inside the stream, none in the context
+    ctx.options = {"bf": "0", "tune": "zerolatency"}
+    packets = []
+    for i in range(12):
+        f = av.VideoFrame.from_ndarray(np.full((180, 320, 3), 20 * i, np.uint8), format="rgb24").reformat(format="yuv420p")
+        f.pts = i
+        packets += st.encode(f)
+    packets += st.encode(None)
+    assert not ctx.extradata
+    packets = _split_first(packets)
+    assert avwriter._only_param_sets(bytes(packets[0]), False)
+
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)
+    w.v_stream, w.v_encoder, w._video_started, w._held_audio, w._audio_pending = st, "libx264", False, [], False
+    written = []
+    w._write = lambda p: (written.append(p), out.mux(p))
+    w._mux(packets)
+    out.close()
+    assert len(written) == 12 and bytes(ctx.extradata) == bytes(packets[0])
+    with av.open(path) as c:
+        v = c.streams.video[0]
+        assert bytes(v.codec_context.extradata)[:1] == b"\x01"            # an avcC, as every player expects
+        assert sum(1 for _ in c.decode(v)) == 12
+
+
+def test_a_first_packet_with_a_picture_is_written_as_it_is():
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)
+    ctx = SimpleNamespace(extradata=None)
+    w.v_stream, w.v_encoder = SimpleNamespace(codec_context=ctx), "h264_v4l2m2m"
+    assert not w._takes_headers(av.Packet(SPS_PPS + IDR)) and ctx.extradata is None
+    assert w._takes_headers(av.Packet(SPS_PPS)) and ctx.extradata == SPS_PPS
+    ctx.extradata = b"\x01avcC"
+    assert not w._takes_headers(av.Packet(SPS_PPS)) and ctx.extradata == b"\x01avcC"   # an encoder with a header of its own
+
+
+def test_a_v4l2_encoders_packets_are_copied_out_of_the_devices_buffers():
+    """Four buffers by default; the muxer keeps video packets while it waits for audio, and with all four
+    out FFmpeg warned "All capture buffers returned to userspace" (Raspberry Pi 4)."""
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)
+    p = av.Packet(IDR)
+    p.pts, p.dts, p.duration, p.time_base, p.is_keyframe = 900, 800, 100, Fraction(1, 1000), True
+    w.v_encoder = "libx264"
+    assert w._owned([p])[0] is p
+    w.v_encoder = "h264_v4l2m2m"
+    (q,) = w._owned([p])
+    assert q is not p and bytes(q) == IDR
+    assert (q.pts, q.dts, q.duration, q.time_base, q.is_keyframe) == (900, 800, 100, Fraction(1, 1000), True)
+    assert w._owned([]) == []
