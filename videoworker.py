@@ -23,7 +23,7 @@ from PySide6.QtCore import QThread, Signal
 import logsync  # installs logging.verbose / logging.trace
 from mytools import Skipper, FrameRator, Clock
 from util import (LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err as _short_err, hw_err as _hw_err,
-                  accel_obstacle, KNOWN_HWACCELS, cpu_idle)
+                  accel_obstacle, v4l2_decoders, KNOWN_HWACCELS, cpu_idle)
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS, rgba_array
@@ -1105,6 +1105,12 @@ class VideoWorker(QThread):
         if a in HWACCEL_WHERE_LISTED and not hwaccel_listed(codec, a):
             return (f"this FFmpeg build decodes {' and '.join(listed_codecs(a))} through a {a.upper()} device, "
                     f"and the camera sends {codec.name}")
+        if a == "v4l2m2m":
+            # a Raspberry Pi 4's is for H.264: an HEVC camera met FFmpeg's "Could not find a valid device"
+            # at every connection, and a new try every five minutes
+            takes = v4l2_decoders()
+            if takes and codec.name not in takes:
+                return f"this machine's V4L2 decoder takes {' and '.join(takes)}, and the camera sends {codec.name}"
         return None
 
     def _hw_failed(self, reason, codec_name, never=False):

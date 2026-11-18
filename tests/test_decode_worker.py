@@ -1024,6 +1024,14 @@ def test_a_drm_device_is_for_the_decoders_that_list_it(qapp, monkeypatch):
     assert w._accel_not_for(_lists("drm")) is None
     w.accel = "vaapi"                                                               # asked of every decoder
     assert w._accel_not_for(h264) is None
+    # a Raspberry Pi 4's V4L2 decoder is for H.264: its HEVC camera is told so, not tried every five minutes
+    w.accel = "v4l2m2m"
+    hevc = SimpleNamespace(name="hevc", hardware_configs=[])
+    monkeypatch.setattr(videoworker, "v4l2_decoders", lambda: ["h264"])
+    assert w._accel_not_for(h264) is None
+    assert w._accel_not_for(hevc) == "this machine's V4L2 decoder takes h264, and the camera sends hevc"
+    monkeypatch.setattr(videoworker, "v4l2_decoders", lambda: None)                 # not known: worth a try
+    assert w._accel_not_for(hevc) is None
 
 
 def test_an_accel_that_is_not_for_the_camera_s_codec_is_said_once_and_asked_again_for_another(qapp, clip, monkeypatch, caplog):
