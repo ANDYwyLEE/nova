@@ -70,8 +70,10 @@ DEVICE_MEMORY_DECODERS = ("_v4l2m2m",)
 # and a board's decoder that has no room for one more camera takes the packets it is given and answers
 # nothing, no error either (Raspberry Pi 4: two 1080p cameras decode, the third stood in that call for
 # good: a window without a picture and a log without a line).  Their calls are made on a thread of their
-# own and given HW_ANSWER_S; a decoder that does not answer is left to that thread, and this camera is
-# decoded in software until it is started again.
+# own and given HW_ANSWER_S; a decoder that does not answer is left to that thread.  One that never gave
+# a picture is a decoder that does not work: software, until the camera is started again.  One that had
+# been decoding the camera is not replaced (it was asked for and it worked): the connection ends, and
+# the next one asks the device again.
 MAY_HANG_DECODERS = ("_v4l2m2m",)
 HW_ANSWER_S = 5.0            # less than the 10 s without a picture that end a connection
 _LEFT_BEHIND = []           # decoders that never answered: their thread is inside them, they are not freed
@@ -607,6 +609,10 @@ class _VideoDecode:
                                                      if key and self.headers else packet)
         except _NoAnswer as e:
             self.guard = None                       # left to its thread, with its decoder (_LEFT_BEHIND)
+            if self.got:
+                # It was attached and delivered pictures: not Nova's to take the camera off it.  The
+                # connection ends, and the next one asks the device for a decoder again.
+                raise _Reconnect(f"{e}; it had been decoding this camera, and is asked again") from None
             self.fallback_sw(str(e), key, never=True)
             return self.decode(packet) if key else []
         except av.error.FFmpegError as e:

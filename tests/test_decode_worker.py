@@ -414,6 +414,27 @@ def test_a_decoder_that_never_answers_is_left_for_the_software_one(qapp, monkeyp
     never.set()
 
 
+def test_a_decoder_that_worked_and_stops_answering_is_asked_again_not_replaced(qapp, monkeypatch, caplog):
+    """What was asked for, attached and delivered pictures is not moved to the CPU by Nova: the connection
+    ends with the reason, and the next one opens the board's decoder again."""
+    import threading
+    monkeypatch.setattr(videoworker, "HW_ANSWER_S", 0.2)
+    never = threading.Event()
+    w = _worker(accel="v4l2m2m")
+    hw = FakeCtx("h264_v4l2m2m", out=lambda p: [_frame(p.pts)] if p.pts < 18000 else never.wait(30) and [])
+    sw = FakeCtx(out=lambda p: [_frame(p.pts)])
+    dec, _ = _decode(w, sw, [(hw, "h264_v4l2m2m", None)])
+    dec.open()
+    assert [f.pts for f in dec.decode(_real_pkt(SPS_PPS + IDR, 0, True))] == [0] and dec.got
+    assert [f.pts for f in dec.decode(_real_pkt(PFRAME, 9000))] == [9000]
+    with pytest.raises(_Reconnect, match="h264_v4l2m2m has not answered for 0.2 s.*is asked again"):
+        dec.decode(_real_pkt(PFRAME, 18000))
+    assert dec.is_hw and sw.fed == [] and w._hw_fail is None        # nothing was decoded in software, nothing given up
+    assert w.accel == "v4l2m2m" and videoworker._LEFT_BEHIND[-1].ctx is hw
+    dec.release()
+    never.set()
+
+
 def test_a_v4l2_decoder_that_answers_is_used_as_any_other(qapp, monkeypatch):
     monkeypatch.setattr(videoworker, "HW_ANSWER_S", 5)
     w = _worker(accel="v4l2m2m")
