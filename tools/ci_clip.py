@@ -1,7 +1,7 @@
 """For the install-guide workflow: make a short test clip, and check that a folder holds a recording of it.
 
     python tools/ci_clip.py clip.mp4        30 s of 640x360 at 10 fps (libx264 from the av wheel)
-    python tools/ci_clip.py --check DIR     the first .mp4 under DIR decodes to more than 30 pictures
+    python tools/ci_clip.py --check DIR     the .mp4 files under DIR decode to more than 30 pictures together
 """
 import glob
 import os
@@ -15,9 +15,14 @@ if sys.argv[1] == "--check":
     files = sorted(glob.glob(os.path.join(sys.argv[2], "**", "*.mp4"), recursive=True))
     if not files:
         sys.exit(f"no recording under {sys.argv[2]}")
-    with av.open(files[0]) as c:
-        n = sum(1 for _ in c.decode(video=0))
-    print(files[0], n, "pictures")
+    # every file: a recording that runs across a half hour of the clock is two (a new file begins there),
+    # and the first of them may hold two seconds
+    n = 0
+    for path in files:
+        with av.open(path) as c:
+            k = sum(1 for _ in c.decode(video=0))
+        print(path, k, "pictures")
+        n += k
     sys.exit(0 if n > 30 else f"only {n} pictures")
 
 with av.open(sys.argv[1], "w") as c:
