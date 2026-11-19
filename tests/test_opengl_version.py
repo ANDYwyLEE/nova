@@ -65,7 +65,9 @@ def _mesa(tmp_path, version, glsl):
     """The environment of an X display whose OpenGL is Mesa's software renderer held at `version`."""
     if not LINUX or not shutil.which("Xvfb"):
         pytest.skip("needs Linux with Xvfb")
-    x = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "640x480x24", "-nolisten", "tcp"],
+    # -noreset: an X server starts anew when its last client leaves, and a client that connects in that moment
+    # waits for an answer that never comes (openSUSE Leap 16.0: the second program of a test, every time)
+    x = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "640x480x24", "-nolisten", "tcp", "-noreset"],
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
         number = x.stdout.readline().strip()

@@ -10,7 +10,7 @@ import os
 import sys
 import time
 
-# a run that hangs says where, and ends: one did on a CI runner (openSUSE Leap 16.0, 2026-11-19), 120 s without a line
+# a run that hangs says where, and ends (one did for 120 s without a line: an X server that was starting anew)
 faulthandler.dump_traceback_later(60, exit=True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
