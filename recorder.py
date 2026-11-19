@@ -5,7 +5,8 @@ import av
 from PySide6.QtCore import Signal, Slot, QTimer
 from player import Player
 from recworker import AVRecWorker, ErrorLog, WorkerRefused, RETRY_DELAYS, STABLE_AFTER
-from avwriter import AVWriter, OutputOpenError, timestamp_watch
+from avwriter import AVWriter, OutputOpenError, CopyRefused, timestamp_watch
+from campacket import AUDIO, PACKET, wants_copy
 
 try: import fcntl
 except ImportError: fcntl = None
@@ -169,6 +170,8 @@ class AVRecorder(Player):
         self._locked_out = False    # set on the worker thread: another process records this camera
         self._lock_reported = False
         self._unsaved = []          # (path, start, end) of finished segments whose rename failed
+        self._copy_why = None       # -e copy: why this camera's recording is encoded all the same
+        self._copy_codec = None     # ... and the codec that was found for
 
         self.set_dir(self.dir)
 
@@ -196,12 +199,32 @@ class AVRecorder(Player):
         return self.flag and self._retry_timer.isActive()
 
     def encoder_note(self):
-        """AVWriter.encoder_note() of the file being written, for `nova status`; None without one."""
-        w = self.writer
+        """AVWriter.encoder_note() of the file being written, for `nova status`; None without one.  With
+        -e copy that could not be done: the encoder that writes in its place, and why."""
+        w, why = self.writer, self._copy_why
         try:
+            if why:
+                return w.copy_note(why) if w is not None and not w.copy else f"encoded in place of -e copy ({why})"
             return w.encoder_note() if w is not None else None
         except Exception:
             return None
+
+    def _copy_asked(self):
+        return wants_copy(self.encoder or getattr(self.vid_worker.get_ffopts(), "v_encoder", None))
+
+    def _tell_worker(self, name, *args):
+        f = getattr(self.vid_worker, name, None)
+        if f is not None:
+            f(*args)
+
+    def _no_copy(self, codec, why):
+        """-e copy cannot be done for what the camera sends: the recording is encoded while it sends that.
+        Said once here; `nova status` goes on saying it (encoder_note)."""
+        if why != self._copy_why:
+            logging.warning(f"[AVRecorder] ⚠️ -e copy is not possible here: {why}. The recording is encoded "
+                            f"in its place")
+        self._copy_why, self._copy_codec = why, codec
+        self._tell_worker("refuse_copy", "recorder", codec)
 
     def state(self):
         """'off', 'on', or 'waiting' (switched on, restart pending). Cheap, for the GUI thread."""
@@ -220,6 +243,8 @@ class AVRecorder(Player):
         self.flag = True
         self._retries = 0
         self._lock_reported = False
+        self._copy_why = self._copy_codec = None
+        self._tell_worker("allow_copy", "recorder")
         self._start_worker()
         self.stat_sig.emit(True)
         logging.info(f"[AVRecorder] starting: {self.url_name}, interval={self.interval_s}s")
@@ -242,6 +267,7 @@ class AVRecorder(Player):
         self.worker = AVRecWorker(self, self.q)
         self.worker.exit_sig.connect(self._on_worker_exit)
         self.worker.start()
+        self._tell_worker("set_rec_copy", self._copy_asked())
         self.vid_worker.set_rec_on(True)
 
     def _stop_worker(self):
@@ -333,20 +359,36 @@ class AVRecorder(Player):
             self._release_lock()
 
     def write(self, typ, frame):
+        """typ: a picture to encode (FRAME), sound (AUDIO), or with -e copy a packet of the camera's video
+        (PACKET).  A file of packets begins with a key picture: a segment ends with the picture before the
+        first key picture past its boundary."""
         if not self.flag: return
 
         now = time.time()
-        if typ == 1:                            # segments start with a video frame, at its size
-            if self.writer is None:
-                self._start_segment(now, frame)
+        if typ != AUDIO:                        # segments start with a video frame, at its size
+            packet = typ == PACKET
+            if packet and self._copy_codec is not None and frame.cam.codec == self._copy_codec:
+                return                          # queued before copy was refused: pictures are on their way
+            key = not packet or frame.key
+            w = self.writer
+            if w is None:
+                if not (key and self._start_segment(now, frame)):
+                    return
                 logging.info(f"[AVRecorder] recording: {self.path}, next={int(self.next_ts)}")
             elif self._time_jump(now):
                 # an outage longer than the jump limit (or the clock was set): the old segment ends
                 # with its last frame, not at the reconnect hours later
                 logging.debug(f"[AVRecorder] time-jump: {self.url_name}, last={int(self.last_now)}, now={int(now)}")
-                self._rollover("time-jump", now, end_ts=int(self.last_now), frame=frame)
-            elif now >= self.next_ts:
-                self._rollover("interval", now, end_ts=int(self.next_ts), frame=frame)
+                if not self._rollover("time-jump", now, end_ts=int(self.last_now), frame=frame if key else None):
+                    return
+            elif now >= self.next_ts and key:
+                if not self._rollover("interval", now, end_ts=int(self.next_ts), frame=frame):
+                    return
+            elif getattr(w, "copy", False) != packet or (packet and (key or frame.cam is not w.cam) and not w.takes(frame)):
+                # not what this file holds: the camera sends another stream (a new connection's codec or
+                # size, other parameter sets), or -e copy ends or begins for it
+                if not (key and self._rollover("stream", now, end_ts=int(now), frame=frame)):
+                    return
         elif self.writer is None or self._time_jump(now):
             return                              # audio waits for the video frame that opens the segment
         elif now >= self.next_ts and now - self.last_v_now > PICTURE_GONE_S:
@@ -356,21 +398,27 @@ class AVRecorder(Player):
             return
         self.last_now = now
 
-        if typ == 1:
-            self.last_v_now = now
-            self.writer.write_video(frame)
-        else:
+        if typ == AUDIO:
             self.writer.write_audio(frame)
+        else:
+            self.last_v_now = now
+            if typ == PACKET:
+                self.writer.write_packet(frame)
+            else:
+                self.writer.write_video(frame)
 
     def _rollover(self, reason, now, end_ts, frame):
+        """The file ends and the next one begins with `frame` (None: with a later one).  True when a file
+        is open afterwards."""
         old_writer, old_path, old_start = self.writer, self.path, self.start_ts
         self.writer = None
         # finish the old segment first: if its rename fails, the new one must take another file name
         # (it used to reopen the same name and truncate it)
         self._finish(old_writer, old_path, old_start, end_ts)
-        self._start_segment(now, frame)
+        started = frame is not None and self._start_segment(now, frame)
         logging.debug(f"[AVRecorder] chunked: {self.url_name}, reason={reason}, "
                       f"{int(old_start)}->{int(end_ts)}, next={int(self.next_ts)}")
+        return started
 
     def _temp_path(self, sub):
         """<name>_output.mp4, unless a finished segment whose rename failed still has that name."""
@@ -381,16 +429,22 @@ class AVRecorder(Player):
         return path
 
     def _start_segment(self, now, frame):
+        """A new file that begins with `frame` (a picture, or with -e copy a key packet).  False: -e copy
+        cannot be done for this stream (_no_copy), and the file begins with a picture that is on its way."""
         sub = self._folder()
         vw = self.vid_worker
         ff = vw.get_ffopts()
+        packet = hasattr(frame, "cam")
+        encoder = self.encoder or ff.v_encoder
+        if wants_copy(encoder) and not packet:
+            encoder = None                      # copy was refused for this stream: the encoder Nova chooses
         try:
             os.makedirs(sub, exist_ok=True)
             path = self._temp_path(sub)
             writer = AVWriter(
                     self.accel,
                     path=path, width=frame.width, height=frame.height, fps=vw.get_fps(),
-                    encoder=self.encoder or ff.v_encoder,
+                    encoder=encoder,
                     source_codec=vw.get_stream_codec(),
                     enc_v_opts=ff.enc_v,
                     enc_a_opts=ff.enc_a,
@@ -403,16 +457,23 @@ class AVRecorder(Player):
                     vf=ff.vf, metadata=ff.metadata,
                     live=False,
                     timestamps=timestamp_watch(vw),
+                    first=frame if packet else None,
                 )
+        except CopyRefused as e:
+            self._no_copy(frame.cam.codec, str(e))
+            return False
         except OutputOpenError:
             raise
         except Exception as e:
             raise OutputOpenError(f"cannot start a segment: {e}") from e
+        if packet:
+            self._copy_why = self._copy_codec = None        # (a camera that changed back to what can be copied)
         # only now: a failure above must leave no half-set segment state behind
         self.writer, self.path = writer, path
         self.start_ts = int(now)
         self.next_ts = next_boundary(now, self.interval_s)
         self.last_now = self.last_v_now = now
+        return True
 
     def _finish(self, writer, path, start, end_ts):
         try:

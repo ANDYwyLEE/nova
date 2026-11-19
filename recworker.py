@@ -48,7 +48,8 @@ class ErrorLog:
 
 
 class AVRecWorker(QThread):
-    """Drains an (typ, frame) queue into an AVRecorder/AVStreamer.
+    """Drains an (typ, frame) queue into an AVRecorder/AVStreamer (typ: a picture, sound, or with -e copy
+    a packet of the camera's video: campacket.FRAME, AUDIO, PACKET).
 
     The owner's writer is opened and closed on *this* thread so that slow operations
     (connecting to an RTMP server, initialising a GPU encoder) never block the GUI."""
@@ -99,7 +100,7 @@ class AVRecWorker(QThread):
                 failure = f"write timed out: {e}"
                 break
             except Exception as e:
-                what = "video" if typ == 1 else "audio"
+                what = "audio" if typ == 2 else "video"
                 errors[typ] = errors.get(typ, 0) + 1
                 errlog.report(f"{what} write", e)
                 if errors[typ] >= self.MAX_CONSECUTIVE_ERRORS:

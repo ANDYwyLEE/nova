@@ -3,7 +3,8 @@ with growing delays, the LIVE icon."""
 import logging
 from player import Player
 from recworker import AVRecWorker, ErrorLog, RETRY_DELAYS, STABLE_AFTER
-from avwriter import AVWriter, OutputOpenError, is_network_target, timestamp_watch
+from avwriter import AVWriter, OutputOpenError, CopyRefused, is_network_target, timestamp_watch
+from campacket import AUDIO, PACKET, wants_copy
 from util import mask_url
 from PySide6.QtCore import Slot, Signal, QTimer
 
@@ -29,6 +30,8 @@ class AVStreamer(Player):
         self._retry_timer = QTimer(self)
         self._retry_timer.setSingleShot(True)
         self._retry_timer.timeout.connect(self._reconnect)
+        self._copy_why = None       # -e copy: why this camera's stream is encoded all the same
+        self._copy_codec = None     # ... and the codec that was found for
 
     @Slot(str)
     def _handle_worker_error(self, err_msg):
@@ -60,12 +63,31 @@ class AVStreamer(Player):
         return self._retry_timer.isActive()
 
     def encoder_note(self):
-        """AVWriter.encoder_note() of the file being written, for `nova status`; None without one."""
-        w = self.writer
+        """AVWriter.encoder_note() of the stream being sent, for `nova status`; None without one.  With
+        -e copy that could not be done: the encoder that works in its place, and why."""
+        w, why = self.writer, self._copy_why
         try:
+            if why:
+                return w.copy_note(why) if w is not None and not w.copy else f"encoded in place of -e copy ({why})"
             return w.encoder_note() if w is not None else None
         except Exception:
             return None
+
+    def _copy_asked(self):
+        return wants_copy(self.encoder or getattr(self.vid_worker.get_ffopts(), "v_encoder", None))
+
+    def _tell_worker(self, name, *args):
+        f = getattr(self.vid_worker, name, None)
+        if f is not None:
+            f(*args)
+
+    def _no_copy(self, codec, why):
+        """-e copy cannot be done for what the camera sends (an RTMP server takes H.264, and the camera
+        sends HEVC): the stream is encoded while it sends that.  Said once; `nova status` goes on saying it."""
+        if why != self._copy_why:
+            logging.warning(f"[AVStreamer] ⚠️ -e copy is not possible here: {why}. The stream is encoded in its place")
+        self._copy_why, self._copy_codec = why, codec
+        self._tell_worker("refuse_copy", "streamer", codec)
 
     def state(self):
         """'off', 'on', or 'waiting' (switched on, reconnect pending). Cheap, for the GUI thread."""
@@ -97,6 +119,8 @@ class AVStreamer(Player):
         logging.info(f"[AVStreamer] starting stream to: {mask_url(self.target_url)}")
         self._on = True
         self._retries = 0
+        self._copy_why = self._copy_codec = None
+        self._tell_worker("allow_copy", "streamer")
         self._start_worker()
         self.stat_sig.emit(True)
 
@@ -118,6 +142,7 @@ class AVStreamer(Player):
         self.worker = AVRecWorker(self, self.q)
         self.worker.exit_sig.connect(self._handle_worker_error)
         self.worker.start()
+        self._tell_worker("set_stream_copy", self._copy_asked())
         self.vid_worker.set_stream_on(True)
 
     def _stop_worker(self):
@@ -134,13 +159,19 @@ class AVStreamer(Player):
         self.writer = None
 
     def _new_writer(self, frame):
+        """The writer of a stream that begins with `frame` (a picture, or with -e copy a key packet).
+        None: -e copy cannot be done for this camera's stream (_no_copy), and pictures are on their way."""
         vw = self.vid_worker
         ff = vw.get_ffopts()
+        packet = hasattr(frame, "cam")
+        encoder = self.encoder or ff.v_encoder
+        if wants_copy(encoder) and not packet:
+            encoder = None                      # copy was refused for this stream: the encoder Nova chooses
         try:
-            return AVWriter(
+            writer = AVWriter(
                 accel=self.accel,
                 path=self.target_url, width=frame.width, height=frame.height, fps=vw.get_fps(),
-                encoder=self.encoder or ff.v_encoder,
+                encoder=encoder,
                 source_codec=vw.get_stream_codec(),
                 enc_v_opts=ff.enc_v,
                 enc_a_opts=ff.enc_a,
@@ -153,11 +184,18 @@ class AVStreamer(Player):
                 vf=ff.vf, metadata=ff.metadata,
                 live=True,
                 timestamps=timestamp_watch(vw),
+                first=frame if packet else None,
             )
+        except CopyRefused as e:
+            self._no_copy(frame.cam.codec, str(e))
+            return None
         except OutputOpenError:
             raise
         except Exception as e:
             raise OutputOpenError(f"cannot start the stream: {e}") from e
+        if packet:
+            self._copy_why = self._copy_codec = None
+        return writer
 
     def _output_live(self):
         w = self.writer
@@ -169,11 +207,29 @@ class AVStreamer(Player):
             w.close()
 
     def write(self, typ, frame):
+        """typ: a picture to encode (FRAME), sound (AUDIO), or with -e copy a packet of the camera's video
+        (PACKET), which can begin a stream only as a key picture."""
         if not self._on: return
-        if self.writer is None:
-            if typ != 1: return             # the stream starts with a video frame
-            self.writer = self._new_writer(frame)
-        if typ == 1:
-            self.writer.write_video(frame)
+        if typ == AUDIO:
+            if self.writer is not None:     # the stream starts with a video frame
+                self.writer.write_audio(frame)
+            return
+        packet = typ == PACKET
+        if packet and self._copy_codec is not None and frame.cam.codec == self._copy_codec:
+            return                          # queued before copy was refused: pictures are on their way
+        key = not packet or frame.key
+        w = self.writer
+        if w is not None and (getattr(w, "copy", False) != packet or (packet and (key or frame.cam is not w.cam) and not w.takes(frame))):
+            # not the stream that is being sent (the camera changed its codec, its size or its parameter
+            # sets, or -e copy ends or begins for it): a new session for what comes now
+            if not key: return
+            self._close_writer()
+            w = None
+        if w is None:
+            if not key: return
+            self.writer = w = self._new_writer(frame)
+            if w is None: return
+        if packet:
+            w.write_packet(frame)
         else:
-            self.writer.write_audio(frame)
+            w.write_video(frame)

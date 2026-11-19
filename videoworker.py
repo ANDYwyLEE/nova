@@ -27,6 +27,7 @@ from util import (LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err 
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS, rgba_array
+from campacket import CamStream, CamPacket, FRAME, PACKET
 
 import av
 from av.codec.hwaccel import HWAccel, hwdevices_available
@@ -763,6 +764,10 @@ class VideoWorker(QThread):
         self.rec_on = False
         self.stream_on = False
         self.audio_on = False
+        # -e copy: who is handed the camera's packets in place of pictures, and the codec that was refused
+        # for (a container that does not carry it): that one gets pictures to encode while the camera sends it
+        self.copy_asked = {"recorder": False, "streamer": False}
+        self._copy_refused = {}
         self._a_stall_wait = _audio_stall_s()   # how long audio may be missing before a reconnect (0: never)
         self.run_flag = True
         self.gpu_idx = _pick_gpu_index(gpu)
@@ -798,6 +803,26 @@ class VideoWorker(QThread):
     def set_rec_on(self, v: bool): self.rec_on = bool(v)
     def set_stream_on(self, v: bool): self.stream_on = bool(v)
     def set_audio_on(self, v: bool): self.audio_on = bool(v)
+    def set_rec_copy(self, v: bool): self.copy_asked["recorder"] = bool(v)
+    def set_stream_copy(self, v: bool): self.copy_asked["streamer"] = bool(v)
+    def refuse_copy(self, who, codec): self._copy_refused[who] = codec
+    def allow_copy(self, who): self._copy_refused.pop(who, None)
+
+    def _wants_packets(self, who):
+        """Does the recorder / the streamer write this connection's video as it comes (-e copy)?"""
+        return self.copy_asked[who] and self._copy_refused.get(who) != self.codec_name
+
+    def _frames_to(self, who):
+        """Are pictures queued for the recorder / the streamer?"""
+        return (self.rec_on if who == "recorder" else self.stream_on) and not self._wants_packets(who)
+
+    def _pictures_wanted(self, cam):
+        """Does anything take this connection's pictures?  Not where no window shows them and whoever
+        writes takes the camera's packets (`cam`: -e copy has been asked for, and the size of the picture
+        is known without decoding one): such a camera is not decoded at all."""
+        if not self.headless or cam is None or not cam.width:
+            return True
+        return self._frames_to("recorder") or self._frames_to("streamer")
 
     def _audio_wanted(self):
         """Something uses this camera's sound: it is played, or a recording or stream carries it."""
@@ -1163,6 +1188,8 @@ class VideoWorker(QThread):
         that it is not the one in use."""
         if not self.accel or self._hw_fail is None or self.decoder_hw:
             return None
+        if not self.decoder and self._session_frames:
+            return None                 # nothing is decoded (-e copy, and no window): nothing runs on the CPU
         return f"--accel {self.accel} is not in use ({_mask(self._hw_fail)}): decoded on the CPU"
 
     def _hw_succeeded(self, name):
@@ -1388,7 +1415,13 @@ class VideoWorker(QThread):
         self.codec_name = dec.codec_name
         logging.debug(f"[VideoWorker] Stream codec: {dec.codec_name} ({get_friendly_codec_name(dec.codec_name)}) "
                       f"{dec.base.width}x{dec.base.height}")
-        dec.open()
+        # -e copy: the stream as its packets are handed on; made here when one asks already, else when one does
+        cam = CamStream(video_stream) if self.copy_asked["recorder"] or self.copy_asked["streamer"] else None
+        decoding = self._pictures_wanted(cam)       # the decoder is open and fed
+        passed = False              # video packets of this connection went by undecoded
+        undecoded_said = False
+        if decoding:
+            dec.open()
         audio_context = audio_stream.codec_context if audio_stream else None
         self.audio_codec = _audio_desc(audio_stream)
         if audio_stream is not None:
@@ -1416,6 +1449,7 @@ class VideoWorker(QThread):
         v_ts = None                 # the last video packet's timestamp, in seconds
         t_back = back_s = None      # when the video timestamps went back (TS_BACK_S), and by how much
         v_pkts, v_wait = 0, 0.0     # since the last picture: video packets, and the longest wait for one
+        handed = {"recorder": False, "streamer": False}     # -e copy: packets go there, from a key picture on
         load = _Load(fps_cap, cpu_idle, self._late)
         try:
             for packet in container.demux(*streams):
@@ -1438,11 +1472,48 @@ class VideoWorker(QThread):
                             self._gops.append(now - t_key)
                         t_key = now
 
-                    frames = dec.decode(packet)
+                    if self.copy_asked["recorder"] or self.copy_asked["streamer"]:
+                        # before it is decoded: what the decoder makes of a packet is not the file's business
+                        if cam is None:
+                            cam = CamStream(video_stream)
+                        self._hand_on(packet, cam, handed)
+
+                    if self._pictures_wanted(cam):
+                        if not decoding:
+                            decoding = True
+                            dec.open()
+                            dec.wait_kf = passed            # what went by is missing: on with a key picture
+                            if passed:
+                                logging.info("[VideoWorker] the camera's pictures are decoded again, from its next "
+                                             "key picture on: something takes them now")
+                        frames = dec.decode(packet)
+                    else:
+                        # Nothing shows this camera's pictures and nothing encodes them (-e copy writes its
+                        # packets): they are not decoded, and no decoder is held, a GPU's or a board's least
+                        # of all.  A packet stands for a picture where the connection is watched.
+                        if decoding:
+                            dec.release()
+                            dec, decoding = _VideoDecode(self, video_stream), False
+                            self.decoder, self.decoder_hw = "", False
+                        if not undecoded_said:
+                            undecoded_said = True
+                            self._fail_streak, self._last_fail = 0, None
+                            logging.info(f"[VideoWorker] {'From here on' if passed or first_frame_logged else 'First packet'} "
+                                         f"({cam.codec} {cam.width}x{cam.height}) not decoded: -e copy writes the "
+                                         f"camera's packets, and no window shows its pictures")
+                        passed, frames = True, ()
+                        v_pkts, v_wait = 0, 0.0
+                        t_vframe = self.last_frame_time = now
+                        self._session_frames += 1
+                        if (cam.width, cam.height) != self._size:
+                            self._size = (cam.width, cam.height)
+                            self.sz_sig.emit(cam.width, cam.height)
                     converting = 0.0
                     for frame in frames:
                         w, h = frame.width, frame.height
                         if w <= 0 or h <= 0: continue
+                        if cam is not None and not cam.width:
+                            cam.width, cam.height = w, h    # the connection did not say: the first picture does
                         pix_fmt = frame.format.name
                         if t_vframe is not None and now - t_vframe > GAP_SAID_S:
                             # a hole in the picture (and in a recording) that nothing else in the log explains
@@ -1468,7 +1539,7 @@ class VideoWorker(QThread):
                         direct = self.opengl and pix_fmt in GL_DIRECT_FORMATS
                         if dec.copies:
                             frame = self._read_once(frame, direct)
-                        self._dispatch_av(1, frame)
+                        self._dispatch_av(FRAME, frame)
 
                         if self.headless: continue
 
@@ -1483,12 +1554,13 @@ class VideoWorker(QThread):
                             converting += time.monotonic() - t_conv
                         self.img_sig.emit()
 
-                    more = self._slow(load.add(now, time.monotonic() - now, len(frames), converting),
-                                      fps_cap, dec, load.conv, load.row, load.short)
-                    if more:
-                        raise _Reconnect(more)
-                    if load.late != self._late:
-                        self._busy_machine(load)
+                    if decoding:
+                        more = self._slow(load.add(now, time.monotonic() - now, len(frames), converting),
+                                          fps_cap, dec, load.conv, load.row, load.short)
+                        if more:
+                            raise _Reconnect(more)
+                        if load.late != self._late:
+                            self._busy_machine(load)
 
                 elif packet.stream.type == 'audio':
                     if t_apkt is None:
@@ -1569,6 +1641,8 @@ class VideoWorker(QThread):
         only when both are active is one copy made for the second (each writer sets pts and
         picture type on the frame it gets)."""
         rec, strm = self.rec_on, self.stream_on
+        if typ == FRAME:                    # not for the one that writes the camera's packets (-e copy)
+            rec, strm = self._frames_to("recorder"), self._frames_to("streamer")
         if not (rec or strm): return
         if rec and strm:
             clone = self._clone_frame(frame)
@@ -1579,6 +1653,23 @@ class VideoWorker(QThread):
             self._put(self.rec_q, (typ, frame), "recorder")
         else:
             self._put(self.stream_q, (typ, frame), "streamer")
+
+    def _hand_on(self, packet, cam, handed):
+        """-e copy: this packet of the camera's video, as it came, for the recorder and the streamer that
+        write it without encoding.  Each gets a connection's packets from a key picture on (what comes
+        before one cannot be read), and none before the size of the picture is known (CamStream)."""
+        item = None
+        for who, q, on in (("recorder", self.rec_q, self.rec_on), ("streamer", self.stream_q, self.stream_on)):
+            if not (on and cam.width and self._wants_packets(who)):
+                handed[who] = False
+                continue
+            if not handed[who]:
+                if not packet.is_keyframe:
+                    continue
+                handed[who] = True
+            if item is None:
+                item = CamPacket.of(packet, cam)
+            self._put(q, (PACKET, item), who)
 
     def _put(self, q, item, name):
         """Queue a frame for the recorder/streamer. Frames dropped because it cannot keep up (slow disk,
@@ -1595,7 +1686,7 @@ class VideoWorker(QThread):
     def _read_once(self, frame, direct):
         """A picture that lies in device memory (DEVICE_MEMORY_DECODERS), as its readers should get it:
         itself when the OpenGL window's upload is the only one (`direct`), else a copy."""
-        if direct and not (self.rec_on or self.stream_on):
+        if direct and not (self._frames_to("recorder") or self._frames_to("streamer")):
             return frame
         return self._clone_frame(frame) or frame
 

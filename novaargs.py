@@ -110,7 +110,9 @@ def build_parser():
     parser.add_argument(
         "-e", "--encoder",
         type=str,
-        help="Explicitly specify video encoder (e.g., h264_nvenc, hevc_nvenc, libx264)"
+        help="Explicitly specify video encoder (e.g., h264_nvenc, hevc_nvenc, libx264). copy: no encoder, the "
+             "camera's video is recorded and streamed as it comes, and with --headless it is not decoded either "
+             "(docs/recording.md)."
     )
     parser.add_argument(
         "--record-interval",

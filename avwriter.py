@@ -13,6 +13,7 @@ from fractions import Fraction
 
 import av
 import logsync  # installs logging.verbose / logging.trace
+from campacket import wants_copy
 from ffparser import for_codec
 from util import (WINDOWS, MAC, IS_PI, MSYS, CONV_THREADS, get_os_type, vaapi_node, short_err as _short_err,
                   hw_err as _hw_err)
@@ -648,12 +649,20 @@ class OutputOpenError(Exception):
     reconnect once per packet)."""
 
 
+class CopyRefused(Exception):
+    """-e copy cannot be done for this camera and this output, and why: the caller encodes instead."""
+
+
 class AVWriter:
     """Encodes decoded frames into a file or a live stream.
 
     live=True (RTMP/SRT/HLS targets) additionally synthesises a silent AAC track when the
-    camera has no audio, because YouTube and most ingest servers reject video-only streams."""
+    camera has no audio, because YouTube and most ingest servers reject video-only streams.
+
+    first (a CamPacket: -e copy): no video encoder.  The camera's packets are written as they come
+    (write_packet), beginning with this one, a key picture; the sound is encoded as ever."""
     V_TB = Fraction(1, 90000)
+    copy, cam = False, None         # (a writer that encodes)
 
     def __init__(
             self, accel,
@@ -671,7 +680,14 @@ class AVWriter:
             vf=None, metadata=None,
             audio_wait=None,
             timestamps=None,
+            first=None,
         ):
+        self.cam = first.cam if first is not None else None     # -e copy: the stream whose packets are written
+        self.copy = self.cam is not None
+        self._need_key = True           # (copy) the next packet written has to be a key picture
+        self._last = None               # (copy) the stream and the count of the last packet that came
+        self._left_out = 0              # (copy) packets not written because what they refer to is missing
+        self._sets = b""                # (copy) the parameter sets the file's pictures are read with
         self.path = path
         self.src_width, self.src_height = width, height
         self.width, self.height = width, height
@@ -721,10 +737,13 @@ class AVWriter:
         self._a_conv = None             # camera audio -> the encoder's format/layout/rate
         self._a_conv_key = None
 
+        if self.copy:
+            self._copy_unused()
         out_size = _parse_size(self.enc_v_opts.pop('s', None))
         if out_size: self.width, self.height = out_size
-        self.width -= self.width % 2
-        self.height -= self.height % 2
+        if not self.copy:
+            self.width -= self.width % 2
+            self.height -= self.height % 2
         if self.width <= 0 or self.height <= 0:
             # an encoder would fail to open, and that failure would be blamed on the encoder
             raise ValueError(f"no video size yet ({width}x{height})")
@@ -754,17 +773,23 @@ class AVWriter:
         self._v_tag = v_tag
         self._enc_args = (accel, encoder, source_codec, dict(self.enc_v_opts), allowed)
         self._tried = set()             # video encoders that did not open for this writer
+        if self.copy:
+            self._copy_possible(first, allowed)     # CopyRefused, before there is a file
         self.container = self._open_container()
 
         try:
-            EncoderManager().gpu_idx = self._device_gpu
-            self.v_encoder = EncoderManager().get_encoder(*self._enc_args)
-            if encoder and allowed and _family(encoder) not in allowed and (encoder, fmt) not in _WARNED:
-                # e.g. -e hevc_nvenc in [defaults]: an RTMP stream in HEVC shows "no data" on YouTube
-                _WARNED.add((encoder, fmt))
-                logging.warning(f"[AVWriter] ⚠️ -e {encoder}: {fmt} carries {', '.join(allowed)} only; "
-                                f"using {self.v_encoder}")
-            self._setup_video(v_tag)
+            if self.copy:
+                self.v_encoder = "copy"
+                self._setup_copy(first, v_tag)
+            else:
+                EncoderManager().gpu_idx = self._device_gpu
+                self.v_encoder = EncoderManager().get_encoder(*self._enc_args)
+                if encoder and allowed and _family(encoder) not in allowed and (encoder, fmt) not in _WARNED:
+                    # e.g. -e hevc_nvenc in [defaults]: an RTMP stream in HEVC shows "no data" on YouTube
+                    _WARNED.add((encoder, fmt))
+                    logging.warning(f"[AVWriter] ⚠️ -e {encoder}: {fmt} carries {', '.join(allowed)} only; "
+                                    f"using {self.v_encoder}")
+                self._setup_video(v_tag)
             self._setup_audio(audio_enable, a_encoder)
             if self.metadata:
                 self.container.metadata.update(self.metadata)
@@ -779,7 +804,8 @@ class AVWriter:
         self.a_tl = _Timeline(self.origin, lead, self.watch)
         self.v_tl.peer, self.a_tl.peer = self.a_tl, self.v_tl
         self._held_v = 0                # video frames dropped to stay real time (live), for the log
-        logging.info(f"[AVWriter] {self.v_encoder} {self.width}x{self.height}@{self.fps} -> {fmt} "
+        what = f"copy ({self.cam.codec} as the camera sends it)" if self.copy else self.v_encoder
+        logging.info(f"[AVWriter] {what} {self.width}x{self.height}@{self.fps} -> {fmt} "
                      f"audio={'silence' if self.silence else (self.a_stream.codec_context.codec.name if self.a_stream else 'none')}"
                      f"{' (waiting for camera audio)' if self._audio_pending else ''}")
 
@@ -811,6 +837,118 @@ class AVWriter:
         except Exception as e:
             self.open_failed = self.open_failed or f"could not set up {v_encoder}: {_short_err(e)}"
             raise OutputOpenError(f"cannot start: {self.open_failed}") from e
+
+    # ---- -e copy ---------------------------------------------------------------------------
+    def _copy_unused(self):
+        """-e copy with an encoder's or a filter's options: they are named once, and not used."""
+        unused = [f"-{k} {v}" for k, v in self.enc_v_opts.items()] + ([f"-vf {self.vf}"] if self.vf else [])
+        self.enc_v_opts, self._applied_v, self.vf = {}, {}, None
+        key = ("copy", tuple(unused))
+        if unused and key not in _WARNED:
+            _WARNED.add(key)
+            logging.warning(f"[AVWriter] ⚠️ -e copy writes the camera's pictures as they come: {', '.join(unused)} "
+                            f"{'is' if len(unused) == 1 else 'are'} not used (an encoder's options)")
+
+    def _copy_possible(self, first, allowed):
+        cam = self.cam
+        if cam.template is None:
+            raise CopyRefused(cam.why or f"the camera's {cam.codec} stream cannot be handed on as it is")
+        family = cam.codec if cam.codec in ("h264", "hevc", "av1", "vp9") else None
+        if allowed and family and family not in allowed:
+            raise CopyRefused(f"{self.fmt} carries {' and '.join(allowed)} only, and the camera sends {cam.codec}")
+        if cam.has_sets and not (first.sets() or cam.extradata):
+            raise CopyRefused(f"the camera's {cam.codec} stream names no parameter sets, and a file of it "
+                              f"could not be read")
+
+    def _setup_copy(self, first, v_tag):
+        """The file's video stream is the camera's own: made from the connection's template, and no codec
+        is opened for it (PyAV opens none for a stream that came from a template)."""
+        cam = self.cam
+        try:
+            self.v_stream = self.container.add_stream_from_template(cam.template, opaque=True)
+        except Exception as e:
+            raise CopyRefused(f"{self.fmt} does not take the camera's {cam.codec} stream ({_short_err(e)})") from e
+        ctx = self.v_stream.codec_context
+        # The parameter sets the file's pictures are read with (MP4 and FLV keep them in the header): the
+        # ones the camera sends in front of its key pictures, where it does; else the ones it named when
+        # the connection was made (RTSP: in the SDP).
+        sets = first.sets()
+        self._sets = sets or cam.header()
+        if sets:
+            ctx.extradata = sets
+        if not ctx.width or not ctx.height:
+            ctx.width, ctx.height = self.width, self.height
+        self.v_time_base = self.V_TB
+        try: self.v_stream.time_base = self.V_TB        # (PyAV brings each packet's times into the stream's)
+        except Exception as e: logging.debug(f"[AVWriter] time_base not settable: {e}")
+        tag = v_tag or ("hvc1" if cam.hevc and self.fmt in ("mp4", "mov", "hls") else None)
+        if tag:
+            try: ctx.codec_tag = tag
+            except Exception as e: logging.debug(f"[AVWriter] codec_tag {tag} rejected: {e}")
+        self._v_pix_fmt = None
+        logging.debug(f"[AVWriter] video: the camera's {cam.codec}, header of {len(ctx.extradata or b'')} bytes "
+                      f"({'from its key picture' if sets else 'as the connection named it'})")
+
+    def takes(self, pkt):
+        """Can this packet's stream go on in this file?  Not when the camera has changed what it sends:
+        another codec or size (a new connection's), or other parameter sets in front of a key picture."""
+        if not self.copy:
+            return False
+        cam, mine = pkt.cam, self.cam
+        if cam is not mine:
+            if (cam.codec, cam.width, cam.height, cam.annexb) != (mine.codec, mine.width, mine.height, mine.annexb):
+                return False
+            if not mine.annexb and cam.extradata != mine.extradata:
+                return False
+        if pkt.key and self._sets:
+            sets = pkt.sets() or (cam.header() if cam is not mine else b"")
+            if sets and sets != self._sets:
+                return False
+        self.cam = cam
+        return True
+
+    def write_packet(self, pkt):
+        """-e copy: a packet of the camera's video, written as it is at the time the timeline gives it.
+        Packets come in the order they are decoded in: the timeline is asked with the dts, and the pts
+        keeps its distance from it (a camera that sends B-frames)."""
+        if pkt is None or not self.run_flag: return
+        if self.open_failed: self._refuse()
+        last, self._last = self._last, (pkt.cam, pkt.n)
+        if last is not None and (last[0] is not pkt.cam or pkt.n != last[1] + 1):
+            self._need_key = True               # a new connection, or packets a full queue dropped
+        if self._need_key and not pkt.key:
+            self._left_out += 1
+            return
+        tb = pkt.time_base
+        dts = pkt.dts if pkt.dts is not None else pkt.pts
+        out_t = self.v_tl.map(dts * tb if dts is not None and tb else None)
+        if self.v_tl.held:
+            self._held_v += 1                   # part of a burst beyond LIVE_MAX_LEAD (see write_video)
+            self._need_key = True               # what follows refers to it: on with the next key picture
+            return
+        self._need_key = False
+        if self._held_v or self._left_out:
+            logging.info(f"[AVWriter] {self._held_v + self._left_out} packet(s) of the camera's video left out "
+                         f"({'the source ran ahead of real time' if self._held_v else 'some were missing'}): "
+                         f"on with a key picture")
+            self._held_v = self._left_out = 0
+        out_dts = int(round(out_t / self.v_time_base))
+        if out_dts <= self.last_v_pts:
+            out_dts = self.last_v_pts + 1
+        self.last_v_pts = out_dts
+        lead = 0
+        if pkt.pts is not None and dts is not None and tb:
+            lead = max(0, int(round((pkt.pts - dts) * tb / self.v_time_base)))
+        p = av.Packet(pkt.data)
+        p.stream = self.v_stream
+        p.time_base = self.v_time_base
+        p.dts, p.pts = out_dts, out_dts + lead
+        if pkt.duration and tb:
+            p.duration = max(0, int(round(pkt.duration * tb / self.v_time_base)))
+        p.is_keyframe = pkt.key
+        self._mux([p])
+        self.v_frames += 1
+        self._after_video(out_t)
 
     def _setup_video(self, v_tag):
         hw = _encoder_hwaccel(self.v_encoder, self._device_gpu)
@@ -990,7 +1128,7 @@ class AVWriter:
                 continue
             if not self._video_started:
                 if self.v_stream is not None and packet.stream is self.v_stream:
-                    if self._takes_headers(packet):
+                    if not self.copy and self._takes_headers(packet):
                         continue
                     self._video_started = True
                     self._write(packet)
@@ -1094,7 +1232,10 @@ class AVWriter:
 
         for f in self._filter(frame):
             self._encode_video(f, out_t)
+        self._after_video(out_t)
 
+    def _after_video(self, out_t):
+        """What a written picture means for the sound: the end of the wait for the camera's, more silence."""
         if self._audio_pending:
             if self._audio_deadline is None:
                 self._audio_deadline = out_t + self.audio_wait
@@ -1170,6 +1311,12 @@ class AVWriter:
         tried = [n for n in mgr._candidates(accel, None, source, allowed) if mgr.why(n)]
         why = f" ({tried[0]}: {mgr.why(tried[0])})" if tried else ""
         return f"{used}{cpu}: no hardware encoder is in use for --accel {accel}{why}"
+
+    def copy_note(self, why):
+        """For `nova status`: this writer encodes where -e copy was asked for, and why."""
+        used = self.v_encoder
+        cpu = " on the CPU" if any(used in names for names in SOFTWARE_ENCODERS.values()) else ""
+        return f"{used}{cpu} in place of -e copy ({why})"
 
     def _owned(self, packets):
         if packets and self.v_encoder.lower().endswith(DEVICE_PACKET_ENCODERS):
@@ -1372,7 +1519,7 @@ class AVWriter:
             self._audio_pending = False
             pending, self._pending = self._pending, []
             self._mux(pending)
-        if self.v_frames and self.v_stream:
+        if self.v_frames and self.v_stream and not self.copy:
             self._mux(self._owned(self.v_stream.encode()))
         if self.a_frames and self.a_stream:
             self._mux(self.a_stream.encode())

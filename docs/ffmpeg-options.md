@@ -89,7 +89,7 @@ and moves on (usually to libx264), which is probably not what you wanted.
 
 | option | libx264 / libx265 | h264_nvenc / hevc_nvenc / av1_nvenc | notes |
 |---|---|---|---|
-| `-c:v NAME`, `-vcodec NAME` | ✓ | ✓ | same as `-e NAME`; ignored with a warning when the output cannot carry that codec (RTMP: H.264 only) |
+| `-c:v NAME`, `-vcodec NAME` | ✓ | ✓ | same as `-e NAME`; ignored with a warning when the output cannot carry that codec (RTMP: H.264 only). `copy`: no encoder, the camera's packets are written as they come ([Recording without an encoder](recording.md#recording-without-an-encoder)) |
 | `-b:v 4M` | ✓ ABR | ✓ | measured: 1 Mbit/s requested → 1.2 / 0.94 Mbit/s |
 | `-maxrate 4M -bufsize 8M` | ✓ (VBV) | ✓ | |
 | `-crf 23` | ✓ | accepted, no effect (use `-cq`) | default libx264 quality is CRF 23 |

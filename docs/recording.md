@@ -5,6 +5,7 @@
 - [Why fragmented MP4](#why-fragmented-mp4)
 - [Timestamps and A/V sync](#timestamps-and-av-sync)
 - [Which encoder is used](#which-encoder-is-used)
+- [Recording without an encoder](#recording-without-an-encoder)
 - [Tuning](#tuning)
 - [Disk usage and housekeeping](#disk-usage-and-housekeeping)
 
@@ -63,11 +64,38 @@ Encoders are probed once per process, in this order, and the first that opens is
 | RTMP (`flv`) | H.264 only |
 | HLS / MPEG-TS | H.264, HEVC |
 
-Order: `-e` / `-c:v` (only if the output can carry that codec: `-e hevc_nvenc` is ignored with a warning for RTMP), then with `--accel` the matching hardware encoders (`cuda` → NVENC, `qsv` → Quick Sync, `vaapi` → the VAAPI encoders of a custom FFmpeg build, `videotoolbox`, AMF, and on Windows last the GPU's Media Foundation encoder: `h264_mf` with `hw_encoding=1`, at 0.1 bit per pixel and frame unless you give `-b:v`) for each allowed family, then `libx264` and the other software encoders (`libx265`, `libsvtav1`). Without `--accel` only software encoders are used. An encoder that passed the probe but does not open at the real size (NVENC's session limit, a GPU fault) is skipped for an hour and the writer continues with the next one, so no frame is lost (`X does not open at WxH; using Y`); an audio encoder that cannot open leaves the audio track out. A hardware encoder that rejects your `--ffmpeg` options is skipped with a warning (`h264_nvenc rejects your --ffmpeg options …`). An encoder you asked for with `-e` that does not open on this machine is named too (`-e hevc_nvenc does not open here (…); using libx264`): without that line a recording could go to the CPU unnoticed.
+`-e copy` is no encoder at all: [the next section](#recording-without-an-encoder). Order otherwise: `-e` / `-c:v` (only if the output can carry that codec: `-e hevc_nvenc` is ignored with a warning for RTMP), then with `--accel` the matching hardware encoders (`cuda` → NVENC, `qsv` → Quick Sync, `vaapi` → the VAAPI encoders of a custom FFmpeg build, `videotoolbox`, AMF, and on Windows last the GPU's Media Foundation encoder: `h264_mf` with `hw_encoding=1`, at 0.1 bit per pixel and frame unless you give `-b:v`) for each allowed family, then `libx264` and the other software encoders (`libx265`, `libsvtav1`). Without `--accel` only software encoders are used. An encoder that passed the probe but does not open at the real size (NVENC's session limit, a GPU fault) is skipped for an hour and the writer continues with the next one, so no frame is lost (`X does not open at WxH; using Y`); an audio encoder that cannot open leaves the audio track out. A hardware encoder that rejects your `--ffmpeg` options is skipped with a warning (`h264_nvenc rejects your --ffmpeg options …`). An encoder you asked for with `-e` that does not open on this machine is named too (`-e hevc_nvenc does not open here (…); using libx264`): without that line a recording could go to the CPU unnoticed.
 
 The recording keeps the camera's colours: its range (limited, or full as with `yuvj420p` cameras) and, where the camera names them, its matrix, primaries and transfer are written into the file, and the sample values are not rescaled. `--ffmpeg "-color_range tv"` and the like override that.
 
 Defaults applied unless you override them: keyframe interval 2 s (`-g`), `hvc1` tag for HEVC in MP4, pixel format `nv12` for hardware encoders and `yuv420p` for software ones, and no B-frames for Quick Sync (`-bf 0`): its encoders work out each packet's decode time from the nominal frame rate, which does not fit a camera's real frame times. With `-bf 2` they still record (a decode time that would run backwards is moved, with one warning), at the price of a frame shown a few milliseconds off now and then.
+
+## Recording without an encoder
+
+`-e copy` (or `--ffmpeg "-c:v copy"`: it is FFmpeg's word) writes the camera's video into the file as it comes. No encoder runs, and the pictures in the file are the camera's own, bit for bit: what the file is like is then set in the camera, its resolution, frame rate, bit rate and codec.
+
+```bash
+python nova.py -i rtsp://... -r -e copy            # watched in a window, recorded as the camera sends it
+nova record cam1 cam2 -e copy                      # recorders without a window: read and written, nothing more
+```
+
+- **What it costs.** Encoding is the expensive half of a recording, and it is gone. Without a window (`--headless -r`, `nova record`) decoding is gone as well: nothing shows the pictures and nothing encodes them, so the camera is read and written, and no decoder is held for it, a GPU's or a board's least of all. The log says so once per connection: `From here on (h264 1920x1080) not decoded: -e copy writes the camera's packets, and no window shows its pictures` after the first picture (which starts the recording), and `First packet (…) not decoded` for every connection after that. Measured with 1080p cameras, in percent of one core:
+
+  | machine | camera | `-e copy`, no window | encoded, no window |
+  |---|---|---|---|
+  | Raspberry Pi 4 | 10 fps H.264, with sound | 8.7 % (3.8 % with `-aac_coder fast`, 2.1 % with `-an`) | 22 % with the board's encoder, 235 % with `libx264` |
+  | Raspberry Pi 4 | 25 fps HEVC, no sound | 2.8 % | |
+  | Raspberry Pi 4 | six cameras (four at 10 fps, one at 20, the HEVC one) | 40 % together, a tenth of the board (28 % with `-aac_coder fast`) | the board's encoder has room for two |
+  | Raspberry Pi 3 B+ | 10 fps H.264, with sound | 13.4 % (6.1 % with `-aac_coder fast`) | 47 % with the board's encoder |
+  | Raspberry Pi 3 B+ | four cameras at 10 fps, `-aac_coder fast` | 26 % together | |
+
+  In a window the camera is decoded for the window as ever, and the recording adds little to it: on the Pi 4 a camera at 10 fps took 24.7 % of a core shown with `--opengl` and recorded with `-e copy`, 20.9 % shown alone and 38.5 % recorded through the board's encoder. On the Pi 3 B+ it took 37 % with `--ffmpeg "-aac_coder fast"`, which is what the window takes alone (36 %).
+- **The sound is encoded as ever**, to AAC (an MP4 does not carry a camera's G.711). On a small board that is now most of what such a recorder costs: FFmpeg's AAC encoder took 6 % of a Pi 4's core and 11 % of a Pi 3's for one 8 kHz camera, and a third of that with `--ffmpeg "-aac_coder fast"`. The fast coder was as close to the cameras' sound as the default one (38 to 43 dB above the difference, two cameras) and wrote it in 43 kbit/s where the default takes 28. On the Pi 3 B+ a camera that is shown as well wants it: with the default coder the decoder's thread fell behind there each time (`a picture takes 104 ms here …`, a reconnection, 10 to 15 s missing in the file), and never with the fast one or without sound. `--ffmpeg "-an"` records no sound.
+- **A file begins with a key picture.** Recording that is switched on begins with the camera's next key picture (the cameras here send one every 2 s), and a segment ends with the picture before the first key picture past its boundary: `…_1000_1030.mp4` runs a moment past 10:30:00, and no picture is missing between it and the next file.
+- **What the camera changes, changes the file.** A new connection of the same stream goes on in the same file, with its gap, as in every recording. A camera that sends another codec, another size or other parameter sets gets a new file from that key picture on.
+- **An encoder's options have nothing to act on**: `-b:v`, `-g`, `-preset`, `-vf`, `-s`, `-r` and the like are named once in the log (`-e copy writes the camera's pictures as they come: -b 4M is not used`) and left out. The audio options, `-movflags`, `-metadata` and `-tag:v` work as ever, and so do the segments, their names and the timestamps of the section above.
+- **Where it cannot be done, the recording is encoded, and says so.** A container that does not carry what the camera sends (an RTMP server takes H.264, a file `.mp4` H.264, HEVC and AV1 and what FFmpeg's MP4 writer takes besides), or a source that sends no compressed stream (a webcam's raw pictures): one line in the log, `-e copy is not possible here: flv carries h264 only, and the camera sends hevc. The stream is encoded in its place`, and a `!` line under the camera in `nova status` for as long as it lasts (`! streaming with libx264 on the CPU in place of -e copy (…)`). That is decided where a file or a stream begins, for the codec the camera sends then: a recording that runs is never moved from one way to the other, and it is asked again when the camera sends another codec or recording is switched on again.
+- **What the encoder did besides.** A decoder repairs what it can of a damaged picture, and an encoded recording holds the repaired one. With `-e copy` the file holds what came: a packet lost on the way (RTSP over UDP, a machine too busy to read its network in time) is a damaged stretch up to the next key picture, as it is in the camera's own stream. Packets the recorder itself could not take in time (`recorder cannot keep up: N frame(s) dropped`, a disk that stalls) are not written half: the file goes on with the next key picture, and the log says `N packet(s) of the camera's video left out`.
 
 ## Tuning
 
@@ -130,6 +158,7 @@ Size ≈ bitrate × time: 4 Mbit/s is about 1.8 GB per hour and 43 GB per day pe
 | `libx264` | 2.0 Mbit/s | 47 % |
 | `h264_amf` (AMD Radeon, Ryzen 5900HX) | 7.3 Mbit/s | 4 % |
 | `h264_mf` (Windows Media Foundation) | 2.1 Mbit/s: Nova asks for 0.1 bit per pixel and frame, the encoder has no default | |
+| `-e copy` ([no encoder](#recording-without-an-encoder)) | what the camera sends: 0.1 to 0.5 Mbit/s for these cameras, by the scene | 2 % without a window (nothing is decoded then) |
 
 So on an NVIDIA machine `--ffmpeg "-b:v 2M"` cuts the disk use to a sixth (on an AMD one to a quarter), and `libx264` wants `-preset veryfast` when many cameras record on the CPU. Nova does not delete old recordings. A daily cron job keeps a rolling window:
 
