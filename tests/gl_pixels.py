@@ -5,9 +5,13 @@ given pictures of one colour, as yuv420p and as nv12, and says what colour its f
 
 GL_PIXELS_NO_VAO=1: as on a driver whose OpenGL 2.x has no vertex array objects.
 """
+import faulthandler
 import os
 import sys
 import time
+
+# a run that hangs says where, and ends: one did on a CI runner (openSUSE Leap 16.0, 2026-11-19), 120 s without a line
+faulthandler.dump_traceback_later(60, exit=True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
