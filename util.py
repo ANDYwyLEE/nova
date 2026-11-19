@@ -467,7 +467,7 @@ def av_import_help(e):
 # instruction at import, before Python can say a word (PySide6: in libshiboken6).
 CPU_V2_WHEELS = (("PySide6", (6, 10), "6.9.3"), ("numpy", (2, 4), "2.3.5"))
 # The distribution pip knows a package by, where that is not the package's name: requirements.txt asks for
-# PySide6_Essentials (the Qt modules Nova uses: QtCore, QtGui, QtNetwork, QtSvg), not for the PySide6 that
+# PySide6_Essentials (the Qt modules Nova uses: QtCore, QtGui, QtNetwork, QtOpenGL, QtSvg), not for the PySide6 that
 # brings Qt's add-ons and its web engine along (350 MB more to download, which a board with 1 GB of memory
 # could not even hold in its /tmp while pip worked: Raspberry Pi 3 B+).
 WHEEL_DISTRIBUTIONS = {"PySide6": "PySide6_Essentials"}
