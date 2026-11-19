@@ -1,7 +1,7 @@
 """Run by test_opengl_version.py in an environment whose OpenGL is held at a version: a NovaGL window is
 given pictures of one colour, as yuv420p and as nv12, and says what colour its framebuffer holds.
 
-    python tests/gl_pixels.py  ->  lines "FORMAT R G B" and "GL VERSION legacy=BOOL vaos=BOOL mipmaps=BOOL"
+    python tests/gl_pixels.py  ->  lines "FORMAT R G B" and "GL VERSION legacy=BOOL vaos=BOOL mipmaps=BOOL alpha=BITS"
 
 GL_PIXELS_NO_VAO=1: as on a driver whose OpenGL 2.x has no vertex array objects.
 """
@@ -68,6 +68,7 @@ for fmt in ("yuv420p", "nv12"):
     if w.seen is None or w._gl_failures:
         sys.exit(f"{fmt}: nothing was drawn (exposed {w.isExposed()}, failures {w._gl_failures})")
     print(fmt, *w.seen, flush=True)
-print("GL", ".".join(map(str, w.format().version())), f"legacy={w.legacy} vaos={w.vaos} mipmaps={w.mipmaps}", flush=True)
+print("GL", ".".join(map(str, w.format().version())), f"legacy={w.legacy} vaos={w.vaos} mipmaps={w.mipmaps} "
+      f"alpha={w.requestedFormat().alphaBufferSize()}", flush=True)
 w.is_running = False
 os._exit(0)

@@ -2,7 +2,7 @@
 RGB in a shader, the overlay as an RGBA texture, fit and zoom as a model matrix."""
 import traceback, logging, sys, ctypes, time, re
 import numpy as np
-from util import WINDOWS, opengl_shortfall
+from util import WINDOWS, opengl_shortfall, opaque_windows
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage, QSurfaceFormat, QOpenGLContext, QOffscreenSurface, QPainter, QColor
 
@@ -30,6 +30,7 @@ GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FF
 # asked for in this order: what the shaders are written for, what a Raspberry Pi 4 and 5 give, and what
 # every GPU with shaders gives (a Raspberry Pi 3, Intel graphics of 2010)
 CONTEXTS = ((3, 3), (3, 1), (2, 1))
+OPAQUE = [False]                    # opengl_offered met a context for which windows are made without alpha
 
 
 def context_format(version, base=None):
@@ -77,6 +78,11 @@ def opengl_offered():
         current = ctx.makeCurrent(surface)
         try:
             got = ctx.format()
+            OPAQUE[0] = opaque_windows((got.majorVersion(), got.minorVersion()))
+            if OPAQUE[0]:
+                opaque = QSurfaceFormat.defaultFormat()
+                opaque.setAlphaBufferSize(0)
+                QSurfaceFormat.setDefaultFormat(opaque)
             return opengl_shortfall(got.majorVersion(), got.minorVersion(), ctx.isOpenGLES())
         finally:
             if current:
@@ -217,7 +223,7 @@ class NovaGL(Nova):
         # its number (opengl_offered), the default format holds that number.
         asked = QSurfaceFormat.defaultFormat().version()
         fmt = context_format(asked if asked in CONTEXTS else CONTEXTS[0])
-        fmt.setAlphaBufferSize(8)
+        fmt.setAlphaBufferSize(0 if OPAQUE[0] or opaque_windows() else 8)
         fmt.setDepthBufferSize(24)
         fmt.setStencilBufferSize(8)
         if WINDOWS: fmt.setSwapInterval(0)

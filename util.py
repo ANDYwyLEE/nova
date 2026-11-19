@@ -259,6 +259,18 @@ def opengl_shortfall(major, minor, es=False):
     return None
 
 
+def opaque_windows(gl=None, environ=None):
+    """Should a camera's window do without an alpha channel?  It asks for one (what the picture does not
+    cover is black at 80 %), and a compositor that draws the screen on the CPU then blends every pixel of
+    the window for every picture.  On a Raspberry Pi 3 B+, whose desktop Raspberry Pi OS starts with
+    WLR_RENDERER=pixman, labwc took 97 % of a core for one 1080p camera at full screen and the pictures
+    came late; a window without alpha goes to the screen as it is, and labwc took under 2 %.  True where
+    the environment names that renderer, and for an OpenGL 2.x context (`gl`: the version it has), the
+    GPUs desktops do not composite with.  A Raspberry Pi 4's compositor uses the GPU: no difference there."""
+    env = os.environ if environ is None else environ
+    return env.get("WLR_RENDERER", "").strip().lower() == "pixman" or (gl is not None and tuple(gl) < (3, 0))
+
+
 def opengl_needs(have):
     """The sentence for `have` (opengl_shortfall), the same in the log and in nova doctor."""
     return (f"--opengl needs OpenGL {OPENGL_NEEDED[0]}.{OPENGL_NEEDED[1]}, and the GPU's driver here offers "

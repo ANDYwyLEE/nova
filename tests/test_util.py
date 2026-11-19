@@ -247,6 +247,16 @@ def test_opengl_shortfall_names_a_context_that_is_too_old():
     assert util.opengl_needs("OpenGL 2.0") == "--opengl needs OpenGL 2.1, and the GPU's driver here offers OpenGL 2.0"
 
 
+def test_windows_are_opaque_where_the_screen_is_composited_on_the_cpu():
+    """A Raspberry Pi 3 B+: Raspberry Pi OS starts its compositor with WLR_RENDERER=pixman, and a window
+    with an alpha channel cost it 97 % of a core for one camera at full screen (under 2 % without)."""
+    assert util.opaque_windows(environ={"WLR_RENDERER": "pixman"}) and util.opaque_windows(environ={"WLR_RENDERER": " Pixman "})
+    assert not util.opaque_windows(environ={}) and not util.opaque_windows(environ={"WLR_RENDERER": "gles2"})
+    assert util.opaque_windows((2, 1), environ={}) and util.opaque_windows((2, 0), environ={})      # OpenGL 2.x GPUs
+    assert not util.opaque_windows((3, 0), environ={}) and not util.opaque_windows((3, 3), environ={})
+    assert util.opaque_windows((4, 6), environ={"WLR_RENDERER": "pixman"})
+
+
 def test_cpu_idle_is_the_idle_time_of_every_core_together(tmp_path, monkeypatch):
     stat = tmp_path / "stat"
     stat.write_text("cpu  5000 10 2000 80000 300 0 40 0 0 0\ncpu0 1200 2 500 20000 80 0 10 0 0 0\n")

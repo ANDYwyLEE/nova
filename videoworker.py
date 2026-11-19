@@ -75,6 +75,12 @@ DEVICE_MEMORY_DECODERS = ("_v4l2m2m",)
 # been decoding the camera is not replaced (it was asked for and it worked): the connection ends, and
 # the next one asks the device again.
 MAY_HANG_DECODERS = ("_v4l2m2m",)
+# FFmpeg gives a V4L2 decoder 20 buffers for its pictures and 16 for the packets, all in the memory a
+# board has for graphics: 86 MB for a 1080p camera, of the 256 MB a Raspberry Pi 3 has for that in all.
+# With a full-screen OpenGL window beside it the GPU found no memory there, and the window lost its
+# display.  Nova holds two or three pictures at a time: a 25 fps stream ran with 10 and 4 without
+# FFmpeg's "All capture buffers returned to userspace" (with 8 it came once).  --ffmpeg names others.
+V4L2_DECODER_BUFFERS = {"num_capture_buffers": "12", "num_output_buffers": "4"}
 HW_ANSWER_S = 5.0            # less than the 10 s without a picture that end a connection
 _LEFT_BEHIND = []           # decoders that never answered: their thread is inside them, they are not freed
 # schemes whose host is probed with a plain TCP connect before av.open(), and their default ports
@@ -272,6 +278,13 @@ def _copy_codec_params(ctx, base):
             if v: setattr(ctx, attr, v)
         except Exception:
             pass
+
+
+def _v4l2_buffers(name, opts):
+    """`opts` for decoder `name`, with V4L2_DECODER_BUFFERS for a V4L2 decoder where the user named none."""
+    if not name.endswith("_v4l2m2m"):
+        return opts
+    return {**V4L2_DECODER_BUFFERS, **opts}
 
 
 def _has_param_sets(data, hevc):
@@ -1207,7 +1220,7 @@ class VideoWorker(QThread):
                 # h264_qsv / _amf / _rkmpp / _v4l2m2m / _mediacodec have no device option
                 self._warn_gpu_ignored(name)
             opts = _dec_opts_for(ctx, self.dec_opts)
-            ctx.options.update(opts)
+            ctx.options.update(_v4l2_buffers(name, opts))
             logging.debug(f"[VideoWorker] trying decoder {name} options={ctx.options}")
             ctx.open()
             _report_unused_dec(ctx, opts)

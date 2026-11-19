@@ -387,6 +387,16 @@ def test_pictures_in_device_memory_are_read_once(qapp):
     assert other.is_hw and not other.copies
 
 
+def test_a_v4l2_decoder_is_given_fewer_buffers_than_ffmpeg_would_take():
+    """20 pictures and 16 packets of a 1080p camera are 86 MB of the memory a board has for graphics (256 MB
+    on a Raspberry Pi 3): with a full-screen OpenGL window beside the decoder the window lost its display."""
+    buffers = videoworker._v4l2_buffers
+    assert buffers("h264_v4l2m2m", {}) == {"num_capture_buffers": "12", "num_output_buffers": "4"}
+    assert buffers("h264_v4l2m2m", {"num_capture_buffers": "20", "threads": "1"}) == {
+        "num_capture_buffers": "20", "num_output_buffers": "4", "threads": "1"}          # the user's number stands
+    assert buffers("h264_cuvid", {"gpu": "0"}) == {"gpu": "0"} and buffers("h264", {}) == {}
+
+
 def test_a_decoder_that_never_answers_is_left_for_the_software_one(qapp, monkeypatch, caplog):
     """A Raspberry Pi 4 decodes two 1080p cameras; the third camera's h264_v4l2m2m took its packets and
     answered nothing, FFmpeg waited for the device without a limit, and the camera's thread with it: a

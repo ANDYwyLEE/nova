@@ -15,7 +15,7 @@ from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QIcon
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
 from util import (parse_time, mask_url, NATIVE_APP_ID, window_platform, no_display, NO_DISPLAY, utf8_stdio, MAC,
-                  driver_own_libgl, opengl_needs)
+                  driver_own_libgl, opengl_needs, opaque_windows)
 from novaargs import build_parser
 
 ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
@@ -144,7 +144,7 @@ if __name__ == "__main__":
             logging.info(note)
 
     fmt = QSurfaceFormat()
-    fmt.setAlphaBufferSize(8)
+    fmt.setAlphaBufferSize(0 if opaque_windows() else 8)      # no alpha where the screen is composited on the CPU
     fmt.setRenderableType(QSurfaceFormat.OpenGL)
     if args.opengl:
         # NovaGL's shaders ask for a 3.3 core context (macOS only offers 2.1 legacy otherwise); 3.1 will do
@@ -189,7 +189,7 @@ if __name__ == "__main__":
                             f"(the CPU converts the pictures)")
             args.opengl = False
             plain = QSurfaceFormat()              # the default format had the 3.3 core profile in it
-            plain.setAlphaBufferSize(8)
+            plain.setAlphaBufferSize(0 if opaque_windows() else 8)
             plain.setRenderableType(QSurfaceFormat.OpenGL)
             QSurfaceFormat.setDefaultFormat(plain)
 
