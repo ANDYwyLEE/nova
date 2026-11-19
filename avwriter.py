@@ -210,6 +210,7 @@ class EncoderManager:
                 cls._instance = super(EncoderManager, cls).__new__(cls)
                 cls._instance._cache = {}        # key -> (encoder, monotonic time it expires or None)
                 cls._instance._failed = {}       # encoder -> monotonic time of its last failed real open
+                cls._instance._why = {}          # encoder -> why it did not open the last time it was tried
                 cls._instance._warned = set()
                 cls._instance._lock_broken = False
                 cls._instance.gpu_idx = None     # the camera's --gpu when one was given: the device of encoders that take one
@@ -247,12 +248,18 @@ class EncoderManager:
         now = time.monotonic()
         return {n: t + FAILED_RETRY_S for n, t in self._failed.items() if now - t < FAILED_RETRY_S}
 
-    def reject(self, encoder_name):
+    def why(self, encoder_name):
+        """Why this encoder did not open the last time it was tried here, or None."""
+        return self._why.get(encoder_name)
+
+    def reject(self, encoder_name, why=None):
         """encoder_name passed the probe (640x360) but did not open for a real stream: NVENC's session
         limit with many cameras, a GPU fault. The next get_encoder() probes past it for FAILED_RETRY_S.
         True the first time this encoder fails in this process (warn once)."""
         with self._lock:
             self._failed[encoder_name] = time.monotonic()
+            if why:
+                self._why[encoder_name] = why
             for k in [k for k, v in self._cache.items() if v[0] == encoder_name]:
                 del self._cache[k]
             first = encoder_name not in self._warned
@@ -310,6 +317,7 @@ class EncoderManager:
                 continue
             err = self._try_open(encoder_name, test_opts, self.gpu_idx)
             if err is None:
+                self._why.pop(encoder_name, None)
                 logging.verbose(f"[EncoderManager] 🚀 using {encoder_name}")
                 if asked is not None:
                     # a silent libx264 in place of the hardware encoder asked for costs ten times the CPU
@@ -323,6 +331,7 @@ class EncoderManager:
                     logging.warning(f"[EncoderManager] ⚠️ {why}; encoding with {encoder_name} on the CPU")
                 return encoder_name
             logging.debug(f"[EncoderManager] ❌ {encoder_name}: {err}")
+            self._why[encoder_name] = " ".join(str(err).split())[:160]
             # without the user's options: is it the encoder that does not open, or what it was given?
             bare = self._try_open(encoder_name, {}, self.gpu_idx) if test_opts else err
             if first_hw is None and encoder_name.endswith(hardware) and encoder_name != user_encoder:
@@ -1142,6 +1151,26 @@ class AVWriter:
             self._v_opts_checked = True
             self._report_unused(self.v_stream.codec_context, "video encoder", self._applied_v)
 
+    def encoder_note(self):
+        """For `nova status`: the encoder in use when it is not the one that was asked for (-e, or the
+        hardware encoder that goes with --accel), and why; None when it is.  As VideoWorker.accel_note:
+        the log's line about it is a warning, which a quiet camera does not write."""
+        accel, asked, source, _, allowed = self._enc_args
+        used, mgr = self.v_encoder, EncoderManager()
+        cpu = " on the CPU" if any(used in names for names in SOFTWARE_ENCODERS.values()) else ""
+        if asked:
+            if used == asked:
+                return None
+            why = mgr.why(asked)
+            return f"{used}{cpu} in place of -e {asked}" + (f" ({why})" if why else "")
+        if not accel or not _ACCEL_ENCODER.get(accel.lower()):
+            return None
+        if used.endswith(tuple("_" + suf for suf in _hw_suffixes(accel))):
+            return None
+        tried = [n for n in mgr._candidates(accel, None, source, allowed) if mgr.why(n)]
+        why = f" ({tried[0]}: {mgr.why(tried[0])})" if tried else ""
+        return f"{used}{cpu}: no hardware encoder is in use for --accel {accel}{why}"
+
     def _owned(self, packets):
         if packets and self.v_encoder.lower().endswith(DEVICE_PACKET_ENCODERS):
             return [_own_packet(p) for p in packets]
@@ -1185,7 +1214,7 @@ class AVWriter:
             return
         self._tried.add(failed)
         mgr = EncoderManager()
-        first = mgr.reject(failed)
+        first = mgr.reject(failed, f"{does_not} at {self.width}x{self.height}: {err}")
         nxt = mgr.get_encoder(*self._enc_args)
         if nxt in self._tried:
             self.open_failed = f"video encoder {failed} {does_not} at {self.width}x{self.height}: {err}"

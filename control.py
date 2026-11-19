@@ -129,11 +129,27 @@ class ControlServer(QObject):
             "stream": _player_state(getattr(core, "streamer", None)),
             "audio": "on" if getattr(core, "audio", None) and core.audio.is_on() else "off",
         }
+        st["notes"] = self._notes()
         if self.view is not None:
             g = self.view.geometry()
             st["geometry"] = f"{g.x()},{g.y()},{g.width()},{g.height()}"
             st["fullscreen"] = bool(self.view.is_fullscreen())
         return st
+
+    def _notes(self):
+        """What runs in place of what was asked for: --accel that is not in use, an encoder that is not the
+        one named.  Each is a line under the camera in `nova status`, whatever the camera's -l is."""
+        core, out = self.core, []
+        for what, obj, name in (("", getattr(core, "vid_worker", None), "accel_note"),
+                                ("recording with ", getattr(core, "recorder", None), "encoder_note"),
+                                ("streaming with ", getattr(core, "streamer", None), "encoder_note")):
+            try:
+                note = getattr(obj, name)() if obj is not None and hasattr(obj, name) else None
+            except Exception:
+                note = None
+            if note:
+                out.append(what + note)
+        return out
 
     def place(self, geometry, zoom):
         if self.view is None:

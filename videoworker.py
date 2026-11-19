@@ -504,6 +504,7 @@ class _VideoDecode:
         self.kf, self.got, self.errors, self.last_err = 0, False, 0, ""
         self.headers = self._headers_for(name) if is_hw else None
         self.copies = is_hw and name.endswith(DEVICE_MEMORY_DECODERS)
+        self.w.decoder, self.w.decoder_hw = name, is_hw
         if self.guard is not None and self.guard.ctx is not ctx:
             self.guard.end()
             self.guard = None
@@ -760,6 +761,7 @@ class VideoWorker(QThread):
         self._url_hint = ""             # appended to a failure overlay when the URL cannot be parsed
         self._fps_warned = False
         self._hw_fail = None            # why the last hardware decoder failed; None: use hardware
+        self.decoder, self.decoder_hw = "", False       # the decoder of the connection, for `nova status`
         self._hw_retry_at = 0.0         # monotonic time after which hardware is tried again
         self._hw_never_codec = None     # the codec --accel was found not to be for (_accel_not_for)
         self._hw_backoff = HW_RETRY_S
@@ -1140,6 +1142,15 @@ class VideoWorker(QThread):
         else:
             logging.debug(msg)
         self._hw_fail = reason
+
+    def accel_note(self):
+        """For `nova status`: a camera that was given --accel and is decoded on the CPU, and why; None when
+        there is nothing of the kind to say.  The line that said so in the log is a warning, which a camera
+        started with -l ERROR or CRITICAL does not write: whoever names a decoder has to be able to see
+        that it is not the one in use."""
+        if not self.accel or self._hw_fail is None or self.decoder_hw:
+            return None
+        return f"--accel {self.accel} is not in use ({_mask(self._hw_fail)}): decoded on the CPU"
 
     def _hw_succeeded(self, name):
         if self._hw_fail is not None:

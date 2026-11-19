@@ -1008,9 +1008,19 @@ def cmd_status(defaults, env, cams, args):
             up = f"up {fmt_uptime(time.time() - e['started'])}" if running and e.get("started") else ""
             gpu = f"gpu {e['gpu']}" if e.get("gpu") is not None else ""
             lay = f"layout {e['layout']}" if e.get("layout") else ""
-            live = live_state(control(e.get("control"), {"cmd": "status"})) if running else ""
+            st = control(e.get("control"), {"cmd": "status"}) if running else None
+            live = live_state(st)
             print(f"{cid:<{w}}  pid {e['pid']:<8} {state}  {up:<14} {e['mode']:<16} {gpu:<6} {lay:<18} logs/{cid}.log"
-                  + (f"\n{'':<{w}}  {live}" if live else ""))
+                  + (f"\n{'':<{w}}  {live}" if live else "")
+                  + "".join(f"\n{'':<{w}}  ! {note}" for note in status_notes(st)))
+
+
+def status_notes(st):
+    """The lines under a camera for what runs in place of what was asked for (--accel that is not in use,
+    another encoder than the one named): the camera says them whatever its -l, where its log would not."""
+    if not st or not st.get("ok"):
+        return []
+    return [" ".join(str(n).split()) for n in st.get("notes") or [] if n]
 
 
 def live_state(st):

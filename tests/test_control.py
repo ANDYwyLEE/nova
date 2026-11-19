@@ -106,6 +106,29 @@ def test_status_line_and_no_server(address):
                             "status": "Unreachable:\n10.0.0.9:554"}) == "no video yet, Unreachable: 10.0.0.9:554"
 
 
+def test_status_carries_what_runs_in_place_of_what_was_asked_for(app, address):
+    """--accel that is not in use and an encoder that is not the one named: under the camera in
+    `nova status`, whatever its -l (the log's lines about them are warnings)."""
+    class Core2(Core):
+        vid_worker = type("W", (), {"last_frame_time": 0.0, "accel_note": lambda self:
+                                    "--accel v4l2m2m is not in use (h264_v4l2m2m has not answered for 5 s): decoded on the CPU"})()
+        recorder = type("R", (Player,), {"encoder_note": lambda self: "libx264 on the CPU in place of -e h264_v4l2m2m"})("on")
+        streamer = type("S", (Player,), {"encoder_note": lambda self: None})("off")
+
+    server = ControlServer(address, "cam1", Core2(), None, lambda: None)
+    try:
+        st = server.status()
+        assert st["notes"] == ["--accel v4l2m2m is not in use (h264_v4l2m2m has not answered for 5 s): decoded on the CPU",
+                               "recording with libx264 on the CPU in place of -e h264_v4l2m2m"]
+        assert cams.status_notes(dict(st, ok=True)) == st["notes"]
+        assert ControlServer.status(type("X", (), {"core": Core(), "view": None, "camera_id": "c", "started": 0.0,
+                                                   "_notes": ControlServer._notes})())["notes"] == []   # nothing to say
+    finally:
+        server.server.close()
+    assert cams.status_notes(None) == [] and cams.status_notes({"ok": True}) == []
+    assert cams.status_notes({"ok": True, "notes": ["a\n  b", ""]}) == ["a b"]
+
+
 def test_second_instance_does_not_steal_the_channel(app, address):
     first = ControlServer(address, "cam1", Core(), None, lambda: None)
     assert first.listen()

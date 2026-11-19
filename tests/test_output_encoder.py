@@ -537,3 +537,40 @@ def test_an_encoder_that_opens_and_takes_no_picture_is_left_for_the_next(caplog)
     with pytest.raises(BlockingIOError):
         w._encode_video(SimpleNamespace(), 0.6)
     assert len(said) == 1
+
+
+def _noted(accel, asked, used, why=None):
+    w = avwriter.AVWriter.__new__(avwriter.AVWriter)
+    w._enc_args, w.v_encoder = (accel, asked, "h264", {}, ("h264", "hevc")), used
+    mgr = avwriter.EncoderManager()
+    mgr._why.clear()
+    for name, text in (why or {}).items():
+        mgr.reject(name, text)
+    return w.encoder_note()
+
+
+def test_an_encoder_that_is_not_the_one_asked_for_says_so_for_nova_status(monkeypatch):
+    """As for decoders: the warning about it is not written by a camera started with -l ERROR."""
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    monkeypatch.setattr(avwriter, "IS_PI", False)
+    monkeypatch.setattr(avwriter, "WINDOWS", False)
+    monkeypatch.setattr(avwriter, "MSYS", False)
+    monkeypatch.setattr(avwriter, "MAC", False)
+    assert _noted(None, None, "libx264") is None                    # nothing asked for
+    assert _noted("cuda", None, "h264_nvenc") is None and _noted(None, "libx265", "libx265") is None
+    assert _noted("cuda", "h264_nvenc", "h264_nvenc") is None
+    assert _noted("vdpau", None, "libx264") is None                 # an --accel that only decodes
+    assert _noted(None, "h264_v4l2m2m", "libx264", {"h264_v4l2m2m": "opens and takes no picture at 1920x1080: EAGAIN"}) == \
+        "libx264 on the CPU in place of -e h264_v4l2m2m (opens and takes no picture at 1920x1080: EAGAIN)"
+    assert _noted(None, "hevc_nvenc", "h264_nvenc") == "h264_nvenc in place of -e hevc_nvenc"
+    assert _noted("cuda", None, "libx264", {"h264_nvenc": "No capable devices found"}) == \
+        "libx264 on the CPU: no hardware encoder is in use for --accel cuda (h264_nvenc: No capable devices found)"
+    assert _noted("cuda", None, "libx264") == "libx264 on the CPU: no hardware encoder is in use for --accel cuda"
+
+
+def test_the_reason_an_encoder_did_not_open_is_kept_until_it_opens(manager):
+    mgr = avwriter.EncoderManager()
+    assert mgr.why("mpeg4") is None
+    assert mgr.reject("mpeg4", "does not open at 320x180: time base") is True and mgr.why("mpeg4").startswith("does not open")
+    mgr.reject("mpeg4")                                             # no new reason: the old one stands
+    assert mgr.why("mpeg4").startswith("does not open")

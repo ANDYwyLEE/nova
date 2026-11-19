@@ -1232,3 +1232,27 @@ def test_a_hardware_decoder_is_announced_when_it_has_decoded(qapp, caplog):
             dec.decode(_pkt(pts, key=(i == 0)))
             pts += 1
     assert not dec.is_hw and not _said(caplog, "🚀") and _said(caplog, "produced no frames after 3 keyframes")
+
+
+# ---------------------------------------------------------------- what `nova status` is told
+def test_a_camera_that_is_not_on_the_decoder_it_was_given_says_so_for_nova_status(qapp):
+    """The line about a decoder that was left for the CPU is a warning, and the quiet presets (-l ERROR,
+    -l CRITICAL) do not write warnings: whoever names a decoder could not see that it is not in use."""
+    plain = _worker()
+    dec, _ = _decode(plain, FakeCtx(), [])
+    dec.open()
+    assert plain.accel_note() is None                               # no --accel: nothing was asked for
+
+    w = _worker(accel="cuda")
+    assert w.accel_note() is None                                   # before the first connection
+    hw = FakeCtx("h264_cuvid", out=lambda p: [_frame(p.pts)])
+    dec, _ = _decode(w, FakeCtx(), [(None, None, "h264_cuvid: no free session for rtsp://admin:pw@10.0.0.9/1"),
+                                    (hw, "h264_cuvid", None)])
+    dec.open()
+    note = w.accel_note()
+    assert note.startswith("--accel cuda is not in use (h264_cuvid: no free session") and note.endswith("): decoded on the CPU")
+    assert "admin:pw" not in note and (w.decoder, w.decoder_hw) == ("h264", False)
+    dec.decode(_real_pkt(IDR, 0, True))
+    w._hw_retry_at = 0
+    dec.decode(_real_pkt(IDR, 9000, True))                          # the retry gives a picture: hardware again
+    assert dec.is_hw and w.accel_note() is None and (w.decoder, w.decoder_hw) == ("h264_cuvid", True)

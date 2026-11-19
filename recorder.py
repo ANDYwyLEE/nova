@@ -195,6 +195,14 @@ class AVRecorder(Player):
         """Switched on, but the recording failed and the next attempt is pending."""
         return self.flag and self._retry_timer.isActive()
 
+    def encoder_note(self):
+        """AVWriter.encoder_note() of the file being written, for `nova status`; None without one."""
+        w = self.writer
+        try:
+            return w.encoder_note() if w is not None else None
+        except Exception:
+            return None
+
     def state(self):
         """'off', 'on', or 'waiting' (switched on, restart pending). Cheap, for the GUI thread."""
         if not self.flag: return "off"
