@@ -130,7 +130,7 @@ opts = --accel drm              ; the cameras that send HEVC
 - The decoder is one device, and the cameras take turns at it. Three at once (the 2160p stream, the 1080p camera at 25 fps and a 1080p stream at 10 fps, beside five H.264 cameras decoded on the CPU: eight windows, 38 % of the board) were all in time, and the 2160p pictures then took 47 ms of the 50 ms between them, nearly all of it waiting for their turn. More than that has not been tried; when a camera's pictures no longer all come out of the decoder, the log says so (`the GPU's decoder does not keep up with this camera … It stays in use`) and names what helps. Nova does not move the camera to the CPU by itself.
 - A camera's H.265+ mode (the same stream with its key pictures 3 to 6 s apart in place of 2) is decoded the same: 420 pictures of one live connection, decoded by the board's decoder and by the software decoder side by side, were equal value for value.
 - This build has H.264 and HEVC encoders (`libx264`, `libx265`), Opus, TLS and SRT, and no AV1 decoder; add what you need to the configure line.
-- A Raspberry Pi 4 has the same kind of HEVC decoder. It has not been tried.
+- A Raspberry Pi 4 has the same kind of HEVC decoder, and the lines above ran on one as they are (4 GB, November 2026): FFmpeg in 30 minutes, `av` in six. A 1080p HEVC camera at 25 fps took 34 % of a core there in a window with `--opengl`, in place of 47 %. For its H.264 cameras this build changes nothing: its `h264_v4l2m2m` hands out the same pictures in the device's memory as the wheel's ([install.md](install.md#linux), arm64).
 
 ## Windows (MSYS2 UCRT64)
 
