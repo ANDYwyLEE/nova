@@ -179,23 +179,27 @@ def test_a_board_without_a_v4l2_decoder_is_told_what_its_codec_list_means(monkey
     assert not [t for t in said() if "V4L2" in t]
 
 
-def test_an_opengl_context_below_3_1_is_named(monkeypatch, tmp_path):
-    """A driver that stops below OpenGL 3.1 (a Raspberry Pi 3: 2.1): the report said `✓ OpenGL comes from a GPU
-    driver`, and an --opengl window did not open.  A Raspberry Pi 5's 3.1 is enough."""
+def test_an_opengl_context_below_2_1_is_named(monkeypatch, tmp_path):
+    """A driver that stops below what an --opengl window draws in: the report said `✓ OpenGL comes from a GPU
+    driver`, and an --opengl window did not open.  A Raspberry Pi 5's 3.1 is enough, and so is a Raspberry
+    Pi 3's 2.1 (since 2026-11-19); OpenGL 2.0 and OpenGL ES are not."""
     pi5 = "xcb: Broadcom / V3D 7.1.10.2 / 3.1 Mesa 26.2.7-1~bpo13+0~rpt1 (context 3.1)"
     pi3 = "xcb: Broadcom / VC4 V3D 2.1 / 2.1 Mesa 25.0.7 (context 2.1)"
-    assert doctor.opengl_too_old(pi5) is None and doctor.opengl_too_old(pi3) == "OpenGL 2.1"
+    old = "xcb: Intel / Mesa DRI Intel(R) 945GM / 2.0 Mesa 21.3.5 (context 2.0)"
+    assert doctor.opengl_too_old(pi5) is None and doctor.opengl_too_old(pi3) is None
+    assert doctor.opengl_too_old(old) == "OpenGL 2.0"
     assert doctor.opengl_too_old("xcb: Broadcom / V3D 7.1.7 / OpenGL ES 3.1 Mesa 25.0.7 (context 3.1 OpenGL ES)") == "OpenGL ES 3.1"
     assert doctor.opengl_too_old("xcb: NVIDIA / ION / 3.3.0 NVIDIA 340.108 (context 3.3)") is None
     assert doctor.opengl_too_old("windows: no OpenGL context at all") is None and doctor.opengl_too_old("") is None
     monkeypatch.setattr(doctor, "windows_service_session", lambda: False)
-    monkeypatch.setattr(doctor, "gl_line", lambda python=None: pi3)
+    monkeypatch.setattr(doctor, "gl_line", lambda python=None: old)
     out = doctor.report(config=str(tmp_path / "none.ini"))
-    assert "--opengl needs OpenGL 3.1, and the GPU's driver here offers OpenGL 2.1" in out
+    assert "--opengl needs OpenGL 2.1, and the GPU's driver here offers OpenGL 2.0" in out
     assert "is drawn without it" in out and "OpenGL comes from a GPU driver" not in out
-    monkeypatch.setattr(doctor, "gl_line", lambda python=None: pi5)
-    out = doctor.report(config=str(tmp_path / "none.ini"))
-    assert "OpenGL comes from a GPU driver" in out and "--opengl needs" not in out
+    for enough in (pi5, pi3):
+        monkeypatch.setattr(doctor, "gl_line", lambda python=None, line=enough: line)
+        out = doctor.report(config=str(tmp_path / "none.ini"))
+        assert "OpenGL comes from a GPU driver" in out and "--opengl needs" not in out
     monkeypatch.setattr(doctor, "gl_line", lambda python=None: "xcb: NVIDIA / ION / 3.3.0 NVIDIA 340.108 (context 3.3)")
     out = doctor.report(config=str(tmp_path / "none.ini"))
     assert "OpenGL comes from a GPU driver" in out and "--opengl needs" not in out

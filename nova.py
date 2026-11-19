@@ -180,7 +180,7 @@ if __name__ == "__main__":
     logging.debug(f"[Nova] {mask_url(args.url)}")
 
     if args.opengl and not args.headless:
-        # a GPU whose driver stops below OpenGL 3.1 (a Raspberry Pi 3: 2.1; Intel graphics of 2010 and before),
+        # a GPU whose driver stops below OpenGL 2.1 (the first with the shader language Nova's shaders can be put in),
         # or offers OpenGL ES only: the window that needs no shader of Nova's draws there, so the camera is
         # shown, and the log says how
         have = opengl_offered()

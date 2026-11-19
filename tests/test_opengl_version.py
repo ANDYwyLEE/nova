@@ -1,8 +1,8 @@
 """An --opengl window where the GPU's driver stops below OpenGL 3.3.  The shaders are '#version 330 core':
 the window closed at start, or the process ended with a segmentation fault at the first OpenGL call, and
 `nova doctor` said the OpenGL was fine.  At OpenGL 3.1 (a Raspberry Pi 4 and 5) the window draws with the
-same shaders in GLSL 1.40; below that (a Raspberry Pi 3, Intel graphics of 2010 and before) the camera is
-shown in the window that needs no shader."""
+same shaders in GLSL 1.40, and from OpenGL 2.1 on (a Raspberry Pi 3, Intel graphics of 2010) in GLSL 1.20
+with luminance textures; below that the camera is shown in the window that needs no shader."""
 import os
 import shutil
 import signal
@@ -42,6 +42,25 @@ def test_the_shaders_in_glsl_1_40_are_the_same_shaders():
     assert all(f"in vec{n} {name};" in vertex for n, name in zip((3, 2), novagl.ATTRIBUTES))    # bound by name
 
 
+def test_the_shaders_in_glsl_1_20_are_the_same_shaders():
+    """OpenGL 2.1 (a Raspberry Pi 3's GPU): no `in`/`out`, no texture(), no output variable, and no
+    two-channel texture, so NV12's chroma is read from luminance and alpha."""
+    import novagl
+    vertex, fragment = novagl.glsl_120(novagl.VERTEX_SHADER), novagl.glsl_120(novagl.FRAGMENT_SHADER)
+    for older in (vertex, fragment):
+        assert older.strip().startswith("#version 120") and "layout" not in older
+        assert not [line for line in older.splitlines() if line.startswith(("in ", "out "))]
+    assert all(f"attribute vec{n} {name};" in vertex for n, name in zip((3, 2), novagl.ATTRIBUTES))
+    assert "varying vec2 TexCoord;" in vertex and "varying vec2 TexCoord;" in fragment
+    assert "texture(" not in fragment and fragment.count("texture2D(") == novagl.FRAGMENT_SHADER.count("texture(")
+    assert "out vec4" not in fragment and fragment.count("gl_FragColor") == 2 and " FragColor" not in fragment
+    assert "texture2D(tex1, TexCoord).ra" in fragment and ".rg" not in fragment
+    same = lambda text: text.split("\n", 2)[2].replace(" ", "")
+    assert same(fragment).replace("gl_FragColor", "FragColor").replace("texture2D(", "texture(").replace(
+        ".ra;", ".rg;").replace("varying", "in") == same(novagl.glsl_140(novagl.FRAGMENT_SHADER)).replace(
+        "outvec4FragColor;\n", "")
+
+
 def _mesa(tmp_path, version, glsl):
     """The environment of an X display whose OpenGL is Mesa's software renderer held at `version`."""
     if not LINUX or not shutil.which("Xvfb"):
@@ -74,6 +93,16 @@ def mesa_3_1(tmp_path):
 @pytest.fixture
 def mesa_3_0(tmp_path):
     yield from _mesa(tmp_path, "3.0", "130")
+
+
+@pytest.fixture
+def mesa_2_1(tmp_path):
+    yield from _mesa(tmp_path, "2.1", "120")
+
+
+@pytest.fixture
+def mesa_2_0(tmp_path):
+    yield from _mesa(tmp_path, "2.0", "110")
 
 
 def _a_window(env, test_clip, tmp_path):
@@ -111,8 +140,50 @@ def test_an_opengl_window_draws_on_opengl_3_1(mesa_3_1, test_clip, tmp_path):
         assert bad not in said, said
 
 
-def test_an_opengl_window_below_opengl_3_1_is_drawn_without_it(mesa_3_0, test_clip, tmp_path):
-    said = _a_window(mesa_3_0, test_clip, tmp_path)
-    assert "--opengl needs OpenGL 3.1, and the GPU's driver here offers OpenGL 3.0: this window is drawn without " \
+def _draws(said, version):
+    assert "OpenGL (GPU) mode" in said and f"initializeGL done. GL {version}" in said and "First frame" in said, said
+    assert "--opengl needs" not in said and "Standard (CPU) mode" not in said, said
+    for bad in ("Shader Error", "initializeGL Error", "OpenGL could not be initialised", "Rendering failed",
+                "Render Error", "[NovaGL] ❌", "Traceback"):
+        assert bad not in said, said
+
+
+def test_an_opengl_window_draws_on_opengl_2_1(mesa_2_1, test_clip, tmp_path):
+    """A Raspberry Pi 3 B+ (VC4, OpenGL 2.1): a 1080p camera at 10 fps took 68 % of a core in the window
+    without --opengl, and --opengl was answered with that window."""
+    _draws(_a_window(mesa_2_1, test_clip, tmp_path), "2.1")
+
+
+def test_an_opengl_window_draws_on_opengl_3_0(mesa_3_0, test_clip, tmp_path):
+    """OpenGL 3.0 has GLSL 1.30, which reads the shaders as GLSL 1.40 does."""
+    _draws(_a_window(mesa_3_0, test_clip, tmp_path), "3.0")
+
+
+def test_an_opengl_window_below_opengl_2_1_is_drawn_without_it(mesa_2_0, test_clip, tmp_path):
+    said = _a_window(mesa_2_0, test_clip, tmp_path)
+    assert "--opengl needs OpenGL 2.1, and the GPU's driver here offers OpenGL 2.0: this window is drawn without " \
            "--opengl" in said, said
     assert "Standard (CPU) mode" in said and "First frame" in said and "OpenGL could not be initialised" not in said
+
+
+def _colours(env, **more):
+    """What tests/gl_pixels.py reads back from a NovaGL window that was given pictures of (200, 60, 30)."""
+    out = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "gl_pixels.py")], env=dict(env, **more), cwd=ROOT,
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stdout + out.stderr
+    lines = dict(line.split(" ", 1) for line in out.stdout.strip().splitlines())
+    for fmt in ("yuv420p", "nv12"):
+        r, g, b = map(int, lines[fmt].split())
+        assert abs(r - 200) <= 3 and abs(g - 60) <= 3 and abs(b - 30) <= 3, out.stdout
+    return lines["GL"]
+
+
+def test_the_colours_are_right_in_glsl_1_40_and_1_30(mesa_3_1, mesa_3_0):
+    assert "legacy=False" in _colours(mesa_3_1) and "legacy=False" in _colours(mesa_3_0)
+
+
+def test_the_colours_are_right_on_opengl_2_1(mesa_2_1):
+    """Luminance textures for the planes, and luminance-alpha for NV12's two chroma bytes: a wrong channel
+    there is a picture in the wrong colours, with nothing in the log."""
+    assert "legacy=True vaos=True" in _colours(mesa_2_1)
+    assert "legacy=True vaos=False" in _colours(mesa_2_1, GL_PIXELS_NO_VAO="1")       # and without vertex array objects

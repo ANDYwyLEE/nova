@@ -242,15 +242,16 @@ DRM_ROOT = "/sys/class/drm"
 
 
 # hardware decoding APIs FFmpeg knows by name, whether the build in use was made with them or not
-# An --opengl window asks for OpenGL 3.3 core ('#version 330 core' shaders) and draws from 3.1 on, with the
-# same shaders in GLSL 1.40 (novagl.glsl_140): a Raspberry Pi 4 and 5 offer 3.1.
-OPENGL_NEEDED = (3, 1)
+# An --opengl window asks for OpenGL 3.3 core ('#version 330 core' shaders) and draws from 2.1 on, with the
+# same shaders in GLSL 1.40 (novagl.glsl_140: a Raspberry Pi 4 and 5 offer OpenGL 3.1) or in GLSL 1.20
+# (novagl.glsl_120: a Raspberry Pi 3 offers 2.1).
+OPENGL_NEEDED = (2, 1)
 
 
 def opengl_shortfall(major, minor, es=False):
     """What an OpenGL context of this version is called when it is not enough for an --opengl window
-    ('OpenGL 2.1', 'OpenGL ES 3.1': a Raspberry Pi 3 and earlier, Intel graphics of 2010 and before, a
-    driver that offers OpenGL ES only), else None."""
+    ('OpenGL 2.0', 'OpenGL ES 3.1': a GPU from before 2006, a driver that offers OpenGL ES only), else
+    None."""
     if es:
         return f"OpenGL ES {major}.{minor}"
     if (major, minor) < OPENGL_NEEDED:

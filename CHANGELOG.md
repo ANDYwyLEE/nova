@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-19 — `--opengl` from OpenGL 2.1 on
+
+The entry below called a Raspberry Pi 3 B+ a board that is not for watching cameras: its GPU offers OpenGL 2.1, an `--opengl` window needed 3.1, and without it one 1080p camera took two thirds of a core. The window draws in OpenGL 2.1 now.
+
+- **`--opengl` draws from OpenGL 2.1 on.** The shaders are written for OpenGL 3.3 and were put into GLSL 1.40 for the 3.1 of a Raspberry Pi 4 and 5. For OpenGL 2.x (a Raspberry Pi 3, Intel graphics of 2010) Nova now puts them into GLSL 1.20 as well, uploads the planes as luminance textures (such a context has no one- and two-channel formats), and binds the quad without vertex array objects where the driver has none; OpenGL 3.0 gets GLSL 1.30. Where 3.3 is refused, 3.1 and then 2.1 are asked for. On the Pi 3 B+ (VC4), 1080p cameras, in percent of one core: a camera at 10 fps 37 % with `--opengl` and 68 % without; two cameras 88 % together where without it the CPU no longer converted the pictures in time (197 %); three 174 %; a camera at 10 fps shown and recorded through the board's encoder 60 % in place of 97 %. Below OpenGL 2.1, and with OpenGL ES, the window is drawn without `--opengl` as before, and the log says `--opengl needs OpenGL 2.1, and the GPU's driver here offers …`.
+- **No mipmaps in OpenGL 2.x.** An `--opengl` window makes them anew for every picture that it shows smaller than it is. On the Pi 3 B+ that kept the window's thread at 97 % of a core for a camera at 10 fps, and at 13 % without them. A picture shown much smaller than it is is a little less smooth there; from OpenGL 3.0 on nothing changes.
+- **A picture larger than the GPU's textures** (2048 pixels on the Pi 3) was a rendering error for sixty pictures, a rebuild of the OpenGL state, and `Rendering failed (OpenGL), see the log`. It is said once now, in the log and in the window (a camera started with `-l CRITICAL` writes no errors): `The picture is 2560x1440, and this GPU's textures end at 2048 pixels`, `start this camera without --opengl`.
+- **Install guide**: what a Raspberry Pi 3 B+ does, with `--opengl`: two or three 1080p cameras at 10 fps, and the board's encoder for recording them.
+- **Tests**: an `--opengl` window on Mesa held at OpenGL 2.1 and at 3.0 has to draw, and one at 2.0 has to be shown without it; at 3.1, 3.0 and 2.1 the colours of a picture given as yuv420p and as NV12 are read back from the window, at 2.1 also without vertex array objects; the shaders in GLSL 1.20; the too-large picture.
+
 ## 2026-11-18 — A Raspberry Pi 4 and a 3 B+
 
 Nova ran on a Raspberry Pi 4 (4 GB) and a Raspberry Pi 3 B+ (1 GB), both on Raspberry Pi OS 13. These are the boards with an H.264 decoder and an H.264 encoder of the kind the wheel's FFmpeg drives (`h264_v4l2m2m`), and that code had never met the hardware. What came of it: the board's encoder is worth having (recording a 1080p camera for a fifth of a core), the board's decoder pays for a heavy stream and not for a light one, and a board that is asked for more than it has room for now says so in one line.

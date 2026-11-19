@@ -648,6 +648,27 @@ def render_logs(caplog, level):
     return [r for r in caplog.records if r.levelno == level and "[NovaGL]" in r.getMessage()]
 
 
+def test_a_picture_larger_than_the_gpus_textures_is_said_once_in_the_window(gl_window, monkeypatch, caplog):
+    """A Raspberry Pi 3's GPU (OpenGL 2.1) has textures of 2048 pixels at most: a 2560x1440 camera is no
+    rendering fault to retry sixty times, and "see the log" tells nothing where the log is at CRITICAL."""
+    import logging
+    import av
+    from dispframe import DisplayFrame
+    w, core = gl_window
+    w.max_texture = 2048
+    w.curr_df = DisplayFrame.from_av_frame(av.VideoFrame(2560, 1440, "yuv420p"))
+    rebuilt = []
+    monkeypatch.setattr(w, "_init_gl", lambda: rebuilt.append(1) or True)
+    with caplog.at_level(logging.INFO):
+        for _ in range(100):
+            w.paintGL()
+    errors = render_logs(caplog, logging.ERROR)
+    assert len(errors) == 1 and "the picture is 2560x1440, and this GPU's textures end at 2048 pixels" in errors[0].getMessage()
+    assert "without --opengl" in errors[0].getMessage() and "Traceback" not in errors[0].getMessage()
+    assert w._gl_dead and not rebuilt and not render_logs(caplog, logging.WARNING)
+    assert w.render_error.startswith("The picture is 2560x1440") and "without --opengl" in w.render_error
+
+
 def test_a_failing_renderer_logs_rarely_rebuilds_once_then_gives_up(gl_window, monkeypatch, caplog):
     import logging
     w, core = gl_window

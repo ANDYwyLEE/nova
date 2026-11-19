@@ -21,9 +21,15 @@ GL_REBUILD_AFTER = 30      # consecutive failed frames (about a second) before t
 GL_GIVE_UP_AFTER = 60      # consecutive failed frames before OpenGL rendering is given up for this window
 GL_LOG_INTERVAL = 60.0     # seconds between render error reports
 RENDER_FAILED = "Rendering failed (OpenGL)\nsee the log"
+
+
+class PictureTooLarge(RuntimeError):
+    """The camera's picture is larger than a texture of this GPU may be (2048 pixels on a Raspberry Pi 3)."""
 GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FF
 
-CONTEXTS = ((3, 3), (3, 1))        # asked for in this order: what the shaders are written for, and what will do
+# asked for in this order: what the shaders are written for, what a Raspberry Pi 4 and 5 give, and what
+# every GPU with shaders gives (a Raspberry Pi 3, Intel graphics of 2010)
+CONTEXTS = ((3, 3), (3, 1), (2, 1))
 
 
 def context_format(version, base=None):
@@ -38,9 +44,10 @@ def context_format(version, base=None):
 
 def opengl_offered():
     """What the GPU's driver offers when that is not a context an --opengl window can draw in
-    ('OpenGL 2.1', 'OpenGL ES 3.1'), or None when it can: OpenGL 3.3 core is asked for, and what a
-    driver gives in its place is enough from 3.1 on (util.OPENGL_NEEDED).  Where 3.3 is refused
-    outright, 3.1 is asked for, and the application's default format is set to that for the window.
+    ('OpenGL 2.0', 'OpenGL ES 3.1'), or None when it can: OpenGL 3.3 core is asked for, and what a
+    driver gives in its place is enough from 2.1 on (util.OPENGL_NEEDED).  Where 3.3 is refused
+    outright, 3.1 and then 2.1 are asked for (CONTEXTS), and the application's default format is set
+    to the one that was given, for the window.
     Asked before the window is made (a QGuiApplication exists): the shaders do not compile in an older
     context, and with some drivers the first call in it ended the process.  None as well when no
     context can be made at all: that is another matter, and the window says it."""
@@ -131,6 +138,35 @@ void main() {
 ATTRIBUTES = ("aPos", "aTexCoord")       # the vertex shader's inputs, at locations 0 and 1 (_set_attribs)
 
 
+def glsl_120(source):
+    """A shader of above in GLSL 1.20, the language of an OpenGL 2.1 context (the GPU of a Raspberry Pi 3,
+    Intel graphics of 2010): `attribute` and `varying` for `in` and `out`, texture2D(), gl_FragColor, and
+    the two bytes of an NV12 chroma texel in luminance and alpha (such a context has no two-channel
+    texture format: Renderer._upload_planes).  ATTRIBUTES are bound by name, as for GLSL 1.40."""
+    vertex = "gl_Position" in source
+    s = glsl_140(source).replace("#version 140", "#version 120")
+    s = re.sub(r"^out vec4 FragColor;\n", "", s, flags=re.M)
+    s = re.sub(r"^in ", "attribute " if vertex else "varying ", s, flags=re.M)
+    s = re.sub(r"^out ", "varying ", s, flags=re.M)
+    s = s.replace("FragColor", "gl_FragColor").replace("texture(", "texture2D(")
+    return s.replace("texture2D(tex1, TexCoord).rg", "texture2D(tex1, TexCoord).ra")
+
+
+def glsl_130(source):
+    """A shader of above in GLSL 1.30, the language of an OpenGL 3.0 context: as in GLSL 1.40."""
+    return glsl_140(source).replace("#version 140", "#version 130")
+
+
+def gl_version():
+    """(major, minor) of the current context.  GL_MAJOR_VERSION is OpenGL 3.0's: an older context answers
+    it with an error, and says its version in a string that begins with it."""
+    try:
+        return int(glGetIntegerv(GL_MAJOR_VERSION)), int(glGetIntegerv(GL_MINOR_VERSION))
+    except Exception:
+        m = re.match(rb"\s*(\d+)\.(\d+)", glGetString(GL_VERSION) or b"")
+        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
 def glsl_140(source):
     """A shader of above in GLSL 1.40, the language of an OpenGL 3.1 or 3.2 context (the GPU of a
     Raspberry Pi 4 and 5): the same text without `layout (location = N)`, which GLSL has from 3.30
@@ -164,6 +200,9 @@ class NovaGL(Nova):
         self.texture_cache = {}
         self.loc = {}
         self.max_anisotropy = 0.0
+        # what the context turned out to be (_init_gl): OpenGL 2.x, with vertex array objects, with
+        # glGenerateMipmap, and how large a texture may be
+        self.legacy, self.vaos, self.mipmaps, self.max_texture = False, True, True, 16384
         self._gl_failures = 0          # consecutive frames that failed to render
         self._gl_unreported = 0        # failures since the last error report
         self._gl_reported_at = None    # time.monotonic() of the last error report
@@ -207,18 +246,35 @@ class NovaGL(Nova):
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             glClearColor(0.0, 0.0, 0.0, 0.8)
 
-            # the context the driver gave: 3.3 was asked for, a Raspberry Pi's GPU gives 3.1
-            older = (int(glGetIntegerv(GL_MAJOR_VERSION)), int(glGetIntegerv(GL_MINOR_VERSION))) < (3, 3)
+            # the context the driver gave: 3.3 was asked for, a Raspberry Pi 4's GPU gives 3.1, a Pi 3's 2.1
+            version = gl_version()
+            older = version < (3, 3)
+            self.legacy = version < (3, 0)          # OpenGL 2.x: GLSL 1.20, luminance textures
+            shader = (lambda s: s) if not older else glsl_120 if self.legacy else \
+                glsl_130 if version < (3, 1) else glsl_140
+            try:
+                exts = set((glGetString(GL_EXTENSIONS) or b"").decode().split()) if self.legacy else \
+                    {glGetStringi(GL_EXTENSIONS, i).decode() for i in range(glGetIntegerv(GL_NUM_EXTENSIONS))}
+            except Exception:
+                exts = set()
+            # vertex array objects are OpenGL 3.0's, and an extension before it
+            self.vaos = not self.legacy or "GL_ARB_vertex_array_object" in exts
+            # No mipmaps in OpenGL 2.x.  They are made anew for every picture that is shown smaller than
+            # it is, and the GPUs that stop at 2.1 are not the ones for that: on a Raspberry Pi 3 B+ (VC4)
+            # a 1080p camera at 10 fps kept the window's thread at 97 % of a core with them and at 13 %
+            # without.  A picture shown much smaller than it is is then less smooth.
+            self.mipmaps = not self.legacy
+            self.max_texture = int(glGetIntegerv(GL_MAX_TEXTURE_SIZE))
             vs = glCreateShader(GL_VERTEX_SHADER)
-            glShaderSource(vs, glsl_140(VERTEX_SHADER) if older else VERTEX_SHADER)
+            glShaderSource(vs, shader(VERTEX_SHADER))
             glCompileShader(vs)
             ok = check_compile_status(vs, "VS")
             fs = glCreateShader(GL_FRAGMENT_SHADER)
-            glShaderSource(fs, glsl_140(FRAGMENT_SHADER) if older else FRAGMENT_SHADER)
+            glShaderSource(fs, shader(FRAGMENT_SHADER))
             glCompileShader(fs)
             ok = check_compile_status(fs, "FS") and ok
             if not ok:
-                raise RuntimeError("shader compilation failed (OpenGL 3.1 or newer is required)")
+                raise RuntimeError("shader compilation failed (OpenGL 2.1 or newer is required)")
             prog = glCreateProgram()
             glAttachShader(prog, vs)
             glAttachShader(prog, fs)
@@ -248,27 +304,27 @@ class NovaGL(Nova):
             ], dtype=np.float32)
             indices = np.array([0, 1, 3, 1, 2, 3], dtype=np.uint32)
 
-            # Setup Main VAO
-            self.VAO = glGenVertexArrays(1)
+            # Setup Main VAO (without vertex array objects, _bind_quad sets what one would hold at each draw)
+            self.VAO = glGenVertexArrays(1) if self.vaos else None
             self.VBO = glGenBuffers(1)
             self.EBO = glGenBuffers(1)
-            glBindVertexArray(self.VAO)
+            if self.vaos: glBindVertexArray(self.VAO)
             glBindBuffer(GL_ARRAY_BUFFER, self.VBO)
             glBufferData(GL_ARRAY_BUFFER, v_dyn.nbytes, v_dyn, GL_DYNAMIC_DRAW)
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
             self._set_attribs()
-            glBindVertexArray(0)
+            if self.vaos: glBindVertexArray(0)
 
             # Setup Static VAO for OSD
-            self.VAO_static = glGenVertexArrays(1)
+            self.VAO_static = glGenVertexArrays(1) if self.vaos else None
             self.VBO_static = vbo_s = glGenBuffers(1)
-            glBindVertexArray(self.VAO_static)
+            if self.vaos: glBindVertexArray(self.VAO_static)
             glBindBuffer(GL_ARRAY_BUFFER, vbo_s)
             glBufferData(GL_ARRAY_BUFFER, v_dyn.nbytes, v_dyn, GL_STATIC_DRAW)
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
             self._set_attribs()
-            glBindVertexArray(0)
+            if self.vaos: glBindVertexArray(0)
 
             self.video_texture = int(glGenTextures(1))
             self.plane_tex = [int(t) for t in glGenTextures(3)]
@@ -276,7 +332,6 @@ class NovaGL(Nova):
 
             self.max_anisotropy = 0.0
             try:
-                exts = [glGetStringi(GL_EXTENSIONS, i).decode() for i in range(glGetIntegerv(GL_NUM_EXTENSIONS))]
                 if "GL_EXT_texture_filter_anisotropic" in exts:
                     self.max_anisotropy = float(glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT))
                     logging.debug(f"[NovaGL] Anisotropic Filtering Supported: {self.max_anisotropy}")
@@ -298,6 +353,19 @@ class NovaGL(Nova):
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 20, ctypes.c_void_p(12))
         glEnableVertexAttribArray(1)
 
+    def _bind_quad(self, vao, vbo):
+        """The quad of a vertex array object, or, in a context without them, the state it would hold."""
+        if self.vaos:
+            glBindVertexArray(vao)
+        else:
+            glBindBuffer(GL_ARRAY_BUFFER, vbo)
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
+            self._set_attribs()
+
+    def _unbind_quad(self):
+        if self.vaos:
+            glBindVertexArray(0)
+
     def paintGL(self):
         if not self.is_running: return
         if self._gl_dead:
@@ -306,6 +374,9 @@ class NovaGL(Nova):
         if not self.shader_program: return
         try:
             self._paint_frame()
+        except PictureTooLarge as e:
+            self._too_large(e)
+            return
         except Exception as e:
             self._frame_failed(e)
             return
@@ -341,7 +412,7 @@ class NovaGL(Nova):
                 tid = self.osd_texture_ids[k]
                 self._upload_osd(tid, qimg, nearest=(k == 'bg'))
                 self._draw_quad_fill(tid)
-        glBindVertexArray(0)
+        self._unbind_quad()
         glUseProgram(0)
 
     def _frame_failed(self, e):
@@ -356,7 +427,7 @@ class NovaGL(Nova):
             self._gl_reported_at = now
             self._gl_unreported = 0
         try:                                     # leave a clean state for the next attempt
-            glBindVertexArray(0)
+            self._unbind_quad()
             glUseProgram(0)
         except Exception:
             pass
@@ -368,6 +439,14 @@ class NovaGL(Nova):
                 self._give_up(e)
         elif n >= GL_GIVE_UP_AFTER:
             self._give_up(e)
+
+    def _too_large(self, e):
+        """Not a failure that a second try or new GL objects change: said once, in the log and, since a
+        camera started with -l CRITICAL writes no errors, in the window."""
+        self._gl_dead = True
+        logging.error(f"[NovaGL] {e}: this camera cannot be drawn with --opengl here. Start it without --opengl "
+                      f"(the CPU then converts the pictures), or with the camera's second, smaller stream.")
+        self.show_render_error(f"{str(e)[0].upper()}{str(e)[1:]}\nstart this camera without --opengl")
 
     def _rebuild_gl(self):
         self._delete_gl_objects()
@@ -388,7 +467,7 @@ class NovaGL(Nova):
         """After giving up: no video, only the OSD (with the error message) through QPainter, if the context
         can still draw at all. Errors here are not reported again."""
         try:
-            glBindVertexArray(0)
+            self._unbind_quad()
             glUseProgram(0)
         except Exception:
             pass
@@ -432,6 +511,8 @@ class NovaGL(Nova):
         if qimg.format() != QImage.Format_RGBA8888:
             qimg = qimg.convertToFormat(QImage.Format_RGBA8888)
         w, h, ptr = qimg.width(), qimg.height(), qimg.constBits()
+        if max(w, h) > self.max_texture:
+            raise PictureTooLarge(f"the picture is {w}x{h}, and this GPU's textures end at {self.max_texture} pixels")
         glBindTexture(GL_TEXTURE_2D, tid)
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
         glPixelStorei(GL_UNPACK_ROW_LENGTH, qimg.bytesPerLine() // 4)
@@ -448,6 +529,7 @@ class NovaGL(Nova):
     def _video_filters(self, downscaled):
         if self.max_anisotropy > 0:
             glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, self.max_anisotropy)
+        downscaled = downscaled and self.mipmaps
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR if downscaled else GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         if downscaled:
@@ -460,13 +542,19 @@ class NovaGL(Nova):
         w, h = f.width, f.height
         cw, ch = (w + 1) // 2, (h + 1) // 2
         planes = f.planes
+        if max(w, h) > self.max_texture:
+            raise PictureTooLarge(f"the picture is {w}x{h}, and this GPU's textures end at {self.max_texture} pixels")
+        # one byte and two bytes a texel: red and red-green from OpenGL 3.0 on, luminance and
+        # luminance-alpha before it (the fragment shader in GLSL 1.20 reads .r and .ra)
+        one, two = ((GL_LUMINANCE, GL_LUMINANCE), (GL_LUMINANCE_ALPHA, GL_LUMINANCE_ALPHA)) if self.legacy else \
+            ((GL_RED, GL_R8), (GL_RG, GL_RG8))
         if f.format.name == "nv12":
-            specs = [(self.plane_tex[0], planes[0], w, h, GL_RED, GL_R8, 1),
-                     (self.plane_tex[1], planes[1], cw, ch, GL_RG, GL_RG8, 2)]
+            specs = [(self.plane_tex[0], planes[0], w, h, *one, 1),
+                     (self.plane_tex[1], planes[1], cw, ch, *two, 2)]
         else:  # yuv420p / yuvj420p
-            specs = [(self.plane_tex[0], planes[0], w, h, GL_RED, GL_R8, 1),
-                     (self.plane_tex[1], planes[1], cw, ch, GL_RED, GL_R8, 1),
-                     (self.plane_tex[2], planes[2], cw, ch, GL_RED, GL_R8, 1)]
+            specs = [(self.plane_tex[0], planes[0], w, h, *one, 1),
+                     (self.plane_tex[1], planes[1], cw, ch, *one, 1),
+                     (self.plane_tex[2], planes[2], cw, ch, *one, 1)]
         downscaled = self.zoomer.scale() < 1
         for tid, plane, pw, ph, fmt, internal, bpp in specs:
             data = np.frombuffer(plane, dtype=np.uint8)
@@ -506,13 +594,13 @@ class NovaGL(Nova):
         return model
 
     def _draw_quad_fill(self, tid):
-        glBindVertexArray(self.VAO_static)
+        self._bind_quad(self.VAO_static, self.VBO_static)
         glUniformMatrix4fv(self.loc["model"], 1, GL_TRUE, np.identity(4, dtype=np.float32))
         glBindTexture(GL_TEXTURE_2D, tid)
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
 
     def _draw_video(self, mode, df):
-        glBindVertexArray(self.VAO)
+        self._bind_quad(self.VAO, self.VBO)
         self._update_vbo(df)
         glUniformMatrix4fv(self.loc["model"], 1, GL_TRUE, self._get_fit_model())
         glUniform1i(self.loc["mode"], mode)
