@@ -413,7 +413,7 @@ def test_a_decoder_that_never_answers_is_left_for_the_software_one(qapp, monkeyp
     with caplog.at_level(logging.WARNING):
         t0 = time.monotonic()
         frames = dec.decode(_real_pkt(SPS_PPS + IDR, 0, True))
-    assert 0.2 <= time.monotonic() - t0 < 5
+    assert 0.15 <= time.monotonic() - t0 < 5         # (0.2 s on a clock that ticks every 16 ms: 0.199 on Windows)
     assert [f.pts for f in frames] == [0] and not dec.is_hw and dec.guard is None       # this very picture, in software
     assert "--accel=v4l2m2m cannot work here: h264_v4l2m2m has not answered for 0.2 s" in caplog.text
     assert "Decoding in software (h264)" in caplog.text

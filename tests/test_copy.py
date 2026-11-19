@@ -617,7 +617,9 @@ def test_nova_records_a_camera_as_it_sends(tmp_path):
            "--recording-dir", str(outdir), "-e", "copy", "--ffmpeg", "-b:v 4M", "-l", "INFO"]
     kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {}
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONPATH=ROOT)
-    p = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
+    # (the log is UTF-8, its warning sign included: Windows would read it as cp1252 and stop at that)
+    p = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         encoding="utf-8", errors="replace", **kw)
     try:
         time.sleep(7)
         assert p.poll() is None, "nova.py exited early:\n" + p.stdout.read()
