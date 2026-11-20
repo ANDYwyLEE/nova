@@ -6,7 +6,7 @@ import logging
 import time
 
 from PySide6.QtCore import Qt, QTimer, Slot, QEvent, QSize, QRect
-from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont, QWindow
+from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor, QPen, QFont, QWindow, QSurfaceFormat
 
 try: from PySide6.QtOpenGL import QOpenGLWindow
 except ImportError:
@@ -17,7 +17,8 @@ from mousehandler import MouseHdlr
 from keyhandler import KeyHdlr
 from helper import Helper
 from fonts import MONO
-from util import WSL, MAC, WINDOWS, mask_url, window_title, parse_geom, parse_zoom, parse_tile, tile_rect, WindowStore
+from util import (WSL, MAC, WINDOWS, SWAP_INTERVAL, mask_url, window_title, parse_geom, parse_zoom, parse_tile, tile_rect,
+                  WindowStore)
 from wmipc import Placer, FIND_TIMEOUT_S
 
 GS = 20 # default grid size
@@ -249,8 +250,11 @@ class Nova(QOpenGLWindow):
 
 
     def _surface_format(self):
-        """Subclasses return a QSurfaceFormat to apply before show(); None keeps the app default."""
-        return None
+        """The QSurfaceFormat to apply before show(): the application's default, without the wait for the
+        screen's vertical sync (util.SWAP_INTERVAL).  Subclasses return their own."""
+        fmt = QSurfaceFormat(QSurfaceFormat.defaultFormat())
+        fmt.setSwapInterval(SWAP_INTERVAL)
+        return fmt
 
     def initializeGL(self): pass
     def resizeGL(self, w: int, h: int): pass

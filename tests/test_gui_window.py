@@ -256,6 +256,23 @@ def test_a_window_without_a_place_opens_in_its_tile(make, app):
     assert (w4.width(), w4.height()) == (320, 180)
 
 
+def test_no_window_waits_for_the_screen_s_vertical_sync(make, monkeypatch):
+    """Qt waits for it inside the buffer swap with Python's interpreter lock held, and the decoder's thread
+    waits with it (util.SWAP_INTERVAL): the window without --opengl is drawn through OpenGL as well."""
+    import novagl
+    from PySide6.QtGui import QSurfaceFormat
+    assert QSurfaceFormat.defaultFormat().swapInterval() == 1          # what Qt would do
+    w, _ = make()
+    fmt = w.requestedFormat()
+    assert fmt.swapInterval() == 0
+    assert fmt.alphaBufferSize() == QSurfaceFormat.defaultFormat().alphaBufferSize()   # the default, otherwise
+    for name in dir(novagl):
+        if name.startswith("gl"):
+            monkeypatch.setattr(novagl, name, lambda *a, **k: None)
+    g, _ = make(cls=novagl.NovaGL, key="t_swap_gl", grid=20, border=True, geometry=None, zoom=None)
+    assert g.requestedFormat().swapInterval() == 0
+
+
 def test_the_opengl_window_takes_what_nova_py_passes(make, monkeypatch):
     """nova.py builds either view with the same keywords. NovaGL listed its own and did not know `tile`:
     every --opengl window died at start with a TypeError (and, at -l CRITICAL, without a line in its log)."""

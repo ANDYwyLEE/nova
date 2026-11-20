@@ -245,6 +245,15 @@ DRM_ROOT = "/sys/class/drm"
 # An --opengl window asks for OpenGL 3.3 core ('#version 330 core' shaders) and draws from 2.1 on, with the
 # same shaders in GLSL 1.40 (novagl.glsl_140: a Raspberry Pi 4 and 5 offer OpenGL 3.1) or in GLSL 1.20
 # (novagl.glsl_120: a Raspberry Pi 3 offers 2.1).
+# A window hands its picture over without waiting for the screen's vertical sync.  Qt waits for it inside the
+# buffer swap, on the window's thread, and that swap is reached through Nova's own event handler: Python's
+# interpreter lock is held for as long as it waits, and the decoder's thread, which needs the lock after
+# every picture, waits with it.  On a Raspberry Pi 3 B+ a picture of a 10 fps camera took 60 ms that way
+# and 24 without the wait, and with a recorder's sound encoder beside it the decoder fell behind for good
+# (a reconnection, 10 to 15 s missing in the file).  A desktop's compositor shows whole pictures either
+# way; an X server without one may show a picture's upper and lower part a refresh apart.
+SWAP_INTERVAL = 0
+
 OPENGL_NEEDED = (2, 1)
 
 

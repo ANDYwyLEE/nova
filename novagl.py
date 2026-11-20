@@ -2,7 +2,7 @@
 RGB in a shader, the overlay as an RGBA texture, fit and zoom as a model matrix."""
 import traceback, logging, sys, ctypes, time, re
 import numpy as np
-from util import WINDOWS, opengl_shortfall, opaque_windows
+from util import SWAP_INTERVAL, opengl_shortfall, opaque_windows
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage, QSurfaceFormat, QOpenGLContext, QOffscreenSurface, QPainter, QColor
 
@@ -226,7 +226,7 @@ class NovaGL(Nova):
         fmt.setAlphaBufferSize(0 if OPAQUE[0] or opaque_windows() else 8)
         fmt.setDepthBufferSize(24)
         fmt.setStencilBufferSize(8)
-        if WINDOWS: fmt.setSwapInterval(0)
+        fmt.setSwapInterval(SWAP_INTERVAL)
         return fmt
 
     def initializeGL(self):

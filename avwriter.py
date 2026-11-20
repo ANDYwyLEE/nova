@@ -94,6 +94,12 @@ def _own_packet(packet):
 
 
 LIVE_FORMATS = ("flv", "mpegts", "hls", "rtsp", "rtp_mpegts")
+# The coder of FFmpeg's AAC encoder, unless --ffmpeg names one (-aac_coder twoloop is FFmpeg's default).
+# Twoloop took 6 % of a Raspberry Pi 4's core and 11 % of a Pi 3's for one camera's 8 kHz sound, the fast
+# coder a third of that; of everything tried (two cameras' sound at four loudnesses, noise, alarm tones, a
+# hum, 8 to 48 kHz) none cost it more.  It was as close to the cameras' sound (38.6 and 42.1 dB above the
+# difference, twoloop 38.7 and 43.0) and writes more bits for it: 43 kbit/s where twoloop writes 28.
+AAC_CODER = "fast"
 LIVE_MAX_LEAD = 1.0 # s a live stream may run ahead of the clock (YouTube: ~1 s of video per second)
 AUDIO_WAIT = 2.0    # s of video a writer waits for the camera's first audio frame before deciding the track
 
@@ -1066,6 +1072,7 @@ class AVWriter:
             logging.debug(f"[AVWriter] {self.a_codec}: --ffmpeg options of other encoders left out: {skipped}")
         a_ctx.options.update(self._applied_a)
         if self.a_codec == "aac":
+            a_ctx.options.setdefault("aac_coder", AAC_CODER)
             self._cap_aac_bitrate(a_ctx, layout, quiet)
         return stream
 

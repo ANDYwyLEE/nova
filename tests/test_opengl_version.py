@@ -182,7 +182,9 @@ def _colours(env, **more):
 
 def test_the_colours_are_right_in_glsl_1_40_and_1_30(mesa_3_1, mesa_3_0):
     assert "legacy=False" in _colours(mesa_3_1) and "legacy=False" in _colours(mesa_3_0)
-    assert "alpha=8" in _colours(mesa_3_1)                     # the window as it has always been
+    said = _colours(mesa_3_1)
+    assert "alpha=8" in said                                   # the window as it has always been
+    assert "swap=0" in said                                    # ... but it does not wait for the screen (util.SWAP_INTERVAL)
     assert "alpha=0" in _colours(mesa_3_1, WLR_RENDERER="pixman")     # ... unless the screen is composited on the CPU
 
 
@@ -192,5 +194,5 @@ def test_the_colours_are_right_on_opengl_2_1(mesa_2_1):
     said = _colours(mesa_2_1)
     assert "legacy=True vaos=True" in said
     # a GPU that stops at OpenGL 2.x: the window asks for no alpha channel (util.opaque_windows)
-    assert "alpha=0" in said
+    assert "alpha=0" in said and "swap=0" in said
     assert "legacy=True vaos=False" in _colours(mesa_2_1, GL_PIXELS_NO_VAO="1")       # and without vertex array objects

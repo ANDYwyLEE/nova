@@ -47,6 +47,33 @@ def decoded_audio(path):
         return np.concatenate([f.to_ndarray().reshape(-1) for f in c.decode(audio=0)])
 
 
+def test_the_sound_is_encoded_by_the_fast_aac_coder_unless_another_is_named(tmp_path, caplog):
+    """FFmpeg's default coder took 6 % of a Raspberry Pi 4's core for one camera's sound (avwriter.AAC_CODER)."""
+    import io
+    import logging
+
+    def coder(**kw):
+        w = writer(tmp_path / "rec.mp4", sample_rate=8000, channels=1, **kw)
+        try:
+            scratch = av.open(io.BytesIO(), "w", format="mp4")
+            return w._audio_stream(scratch, quiet=True).codec_context.options.get("aac_coder")
+        finally:
+            w.close()
+
+    assert coder() == "fast" == avwriter.AAC_CODER
+    assert coder(enc_a_opts={"aac_coder": "twoloop"}) == "twoloop"
+    # the encoder knows the option: nothing is left over for the "ignored unknown options" warning
+    out = tmp_path / "sound.mp4"
+    with caplog.at_level(logging.WARNING):
+        w = writer(out, sample_rate=8000, channels=1, audio_wait=0)
+        for i in range(25):
+            w.write_video(video(i))
+            w.write_audio(audio(i, rate=8000, layout="mono", fmt="s16", samples=320))
+        w.close()
+    assert "ignored unknown" not in caplog.text
+    assert decoded_audio(out) is not None
+
+
 def test_audio_that_starts_after_the_first_video_frame_gets_a_track(tmp_path):
     out = tmp_path / "rec.mp4"
     w = writer(out)                                   # sample_rate 0: the decoder has seen no audio yet

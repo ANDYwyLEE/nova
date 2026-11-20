@@ -137,7 +137,7 @@ Limits: frame-rate-changing filters (`fps`, `minterpolate`) are not supported �
 | `-ar 16000` | sample rate — the camera audio is resampled |
 | `-ac 1` | channels — downmix/upmix |
 | `-cutoff 8000` | low-pass before encoding (aac, libopus) |
-| `-aac_coder fast -aac_pns 0 -profile:a aac_low` | aac private options |
+| `-aac_coder twoloop -aac_pns 0 -profile:a aac_low` | aac private options. The coder is `fast` unless one is named (FFmpeg's own default is `twoloop`: [what each costs](recording.md#recording-without-an-encoder)) |
 | `-application lowdelay -vbr off -frame_duration 20 -packet_loss 10 -fec 1` | libopus private options |
 | `-an` | no audio track; also disables the silent track Nova adds to live streams |
 
