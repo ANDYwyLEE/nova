@@ -364,6 +364,37 @@ def test_qt_modules_that_do_not_load_are_named():
     assert doctor.qt_modules_check([]) == []
 
 
+def test_modules_refused_by_windows_application_control_get_one_line(monkeypatch, tmp_path):
+    """Smart App Control went from evaluation to on, and the report of the MSYS2 install had five lines:
+    numpy with half a sentence, PyAV `build it again`, three Qt modules `a system library Qt needs is
+    missing` (they fail for want of QtCore, which Windows had refused)."""
+    policy = "DLL load failed while importing {}: An Application Control policy has blocked this file."
+    monkeypatch.setattr(doctor, "numpy_check", lambda python=None: [
+        ("⚠", "numpy does not import in py, and no camera starts without it: Original error was: " + policy.format("_multiarray_umath"))])
+    monkeypatch.setattr(doctor, "qt_module_errors", lambda modules=(): [
+        ("QtCore", policy.format("QtCore")), ("QtGui", "libshiboken: could not import module 'PySide6.QtCore'"),
+        ("QtNetwork", "libshiboken: could not import module 'PySide6.QtCore'")])
+    monkeypatch.setitem(sys.modules, "av", None)                    # `import av` raises ImportError, not the policy's
+    out = doctor.checks("n/a", "", "", None, None, str(tmp_path / "none.ini"))
+    line, = [t for m, t in out if "Smart App Control" in t]
+    assert line.startswith("numpy, PySide6: Windows refused the file") and "Option A" in line and "no camera starts" in line
+    assert not any("system library Qt needs" in t or "numpy does not import" in t for _, t in out), out
+    assert any("av (PyAV)" in t for _, t in out)                    # what failed for another reason keeps its own line
+    # nothing refused: Qt modules that lack a library are named as before, and QtCore is the Qt line's
+    monkeypatch.setattr(doctor, "numpy_check", lambda python=None: [])
+    monkeypatch.setattr(doctor, "qt_module_errors", lambda modules=(): [
+        ("QtCore", "libEGL.so.1: cannot open shared object file"), ("QtNetwork", "libgssapi_krb5.so.2: cannot open shared object file")])
+    out = [t for _, t in doctor.checks("n/a", "", "", None, None, str(tmp_path / "none.ini"))]
+    assert any("PySide6.QtNetwork does not load" in t for t in out) and not any("PySide6.QtCore does not load" in t for t in out)
+    assert not any("Smart App Control" in t for t in out)
+    # MSYS2 while Windows is still making up its mind
+    assert doctor.policy_check([], state="on", msys=True) == [] and doctor.policy_check([], state="evaluation", msys=False) == []
+    (mark, text), = doctor.policy_check([], state="evaluation", msys=True)
+    assert mark == "ℹ" and "evaluation mode" in text and "MSYS2" in text
+    (mark, text), = doctor.policy_check(["PySide6", "av (PyAV)"], state="evaluation", msys=True)
+    assert mark == "⚠" and text.startswith("PySide6, av (PyAV): Windows refused the file")
+
+
 # ---------------------------------------------------------------- an old CPU
 ATOM = ("processor\t: 0\nmodel name\t: Intel(R) Atom(TM) CPU D525   @ 1.80GHz\n"
         "flags\t\t: fpu sse sse2 ht pni ssse3 cx16 movbe lahf_lm\n")

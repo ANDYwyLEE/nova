@@ -236,6 +236,52 @@ def test_an_av_that_is_installed_and_does_not_load_is_not_told_to_pip_install():
     assert "is installed but does not load (DLL load failed while importing _core" in util.av_import_help(dll)
 
 
+POLICY = "DLL load failed while importing QtCore: An Application Control policy has blocked this file."
+
+
+def test_a_module_that_windows_application_control_refused_is_called_that():
+    """A fresh Windows 11 switched Smart App Control from evaluation to on nine days after its install: the
+    MSYS2 install ended at its first import, and the advice was to build PyAV again."""
+    assert util.policy_block(ImportError(POLICY)) and util.policy_block(POLICY)
+    assert not util.policy_block(ImportError("DLL load failed while importing _core: The specified module could not be found."))
+    assert not util.policy_block(ModuleNotFoundError("No module named 'av'", name="av"), local="")
+    # a Windows in another language words error 4551 its own way
+    assert util.policy_block("DLL load failed while importing QtCore: Eine Richtlinie hat diese Datei blockiert.",
+                             local="Eine Richtlinie hat diese Datei blockiert.\r\n")
+    said = util.av_import_help(ImportError(POLICY.replace("QtCore", "_core")))
+    assert "is installed but does not load (DLL load failed while importing _core" in said
+    assert "Smart App Control" in said and "Option A" in said and "build it again" not in said
+
+
+def test_smart_app_control_is_read_from_the_registry():
+    assert [util.smart_app_control(lambda v=v: v) for v in (0, 1, 2, 7)] == ["off", "on", "evaluation", None]
+
+    def absent():
+        raise FileNotFoundError("no such value")
+    assert util.smart_app_control(absent) is None                  # Windows 10, a server
+    if not util.WINDOWS:
+        assert util.smart_app_control() is None
+
+
+def test_a_camera_whose_qt_windows_refused_says_so_in_one_line(tmp_path):
+    """`nova start` showed the last lines of the camera's log: a traceback ending in the policy sentence."""
+    import subprocess
+    import sys
+    fake = tmp_path / "PySide6"
+    fake.mkdir()
+    (fake / "__init__.py").write_text("")
+    (fake / "QtCore.py").write_text(f"raise ImportError({POLICY!r})\n")
+    nova = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "nova.py")
+    r = subprocess.run([sys.executable, nova, "-i", "rtsp://192.0.2.1/x"], capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, PYTHONPATH=str(tmp_path)))
+    assert r.returncode == 1 and "Traceback" not in r.stderr, r.stderr
+    assert r.stderr.startswith("nova: DLL load failed while importing QtCore") and "docs/install.md, Option A" in r.stderr
+    (fake / "QtCore.py").write_text("raise ImportError('libEGL.so.1: cannot open shared object file')\n")
+    r = subprocess.run([sys.executable, nova, "-i", "rtsp://192.0.2.1/x"], capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, PYTHONPATH=str(tmp_path)))
+    assert r.returncode == 1 and "Traceback" in r.stderr and "libEGL.so.1" in r.stderr      # anything else: as it was
+
+
 def test_opengl_shortfall_names_a_context_that_is_too_old():
     """An --opengl window draws from OpenGL 2.1 on: a Raspberry Pi 4 and 5 offer 3.1 and get the shaders in
     GLSL 1.40, a Raspberry Pi 3 and Intel graphics of 2010 offer 2.1 and get them in GLSL 1.20."""

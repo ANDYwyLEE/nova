@@ -26,7 +26,7 @@ from collections import Counter
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from util import (opengl_shortfall, opengl_needs, mask_url, find_secrets, vaapi_node, drm_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
-                  wheels_too_new_for_cpu, cpu_message, av_import_help, v4l2_decoders, v4l2_obstacle, board_model,
+                  wheels_too_new_for_cpu, cpu_message, av_import_help, policy_block, POLICY_HELP, smart_app_control, v4l2_decoders, v4l2_obstacle, board_model,
                   LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI)
 
 NVIDIA_MIN_DRIVER = 570          # the PyPI wheel's NVENC needs this (string in its libavcodec)
@@ -107,7 +107,9 @@ def os_line():
     if MAC:
         return f"macOS {platform.mac_ver()[0]}, {platform.machine()}"
     if WINDOWS:
-        return f"Windows {platform.version()}, {platform.machine()}" + (" [MSYS2]" if MSYS else "")
+        sac = smart_app_control()
+        return (f"Windows {platform.version()}, {platform.machine()}" + (" [MSYS2]" if MSYS else "")
+                + (f", Smart App Control {sac}" if sac in ("on", "evaluation") else ""))
     return platform.platform()
 
 
@@ -701,14 +703,32 @@ def numpy_check(python=None, run=subprocess.run):
     return [("⚠", f"numpy does not import in {py}, and no camera starts without it: {last[0]}")]
 
 
+def policy_check(refused, state=None, msys=MSYS):
+    """One line for the modules Windows' application control refused, instead of one each with advice that
+    does not fit (a missing system library, building PyAV again); and a word in time on MSYS2 while
+    Smart App Control is still in evaluation mode."""
+    if refused:
+        return [("⚠", f"{', '.join(refused)}: {POLICY_HELP}; no camera starts until then")]
+    if msys and (state or smart_app_control()) == "evaluation":
+        return [("ℹ", "Smart App Control is in evaluation mode: Windows may switch it on by itself, and from then on "
+                      "it refuses the modules and programs of MSYS2, which are not signed (seen nine days after a "
+                      "fresh install of Windows 11); Option A of docs/install.md runs with it on")]
+    return []
+
+
 def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
     """[(mark, text)]: ✓ fine, ⚠ worth fixing, ℹ good to know."""
     wheels = blocked_wheels()
     blocked = {n for n, _, _ in wheels}
     out = [("⚠", cpu_message(wheels) + ": no camera starts until then")] if wheels else []
+    refused = []                                 # what Windows' application control did not let load
     if "numpy" not in blocked:
-        out.extend(numpy_check(python))
-    no_numpy = bool(out)
+        said = numpy_check(python)
+        if said and policy_block(said[0][1]):
+            refused.append("numpy")
+        else:
+            out.extend(said)
+    no_numpy = bool(out or refused)
     # PyAV against the oldest release requirements.txt accepts (newer ones are welcome)
     try:
         import av
@@ -719,7 +739,10 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         elif need:
             out.append(("✓", f"PyAV {av.__version__} ({need} or newer is needed)"))
     except ImportError as e:
-        out.append(("⚠", av_import_help(e) + ": no camera starts until then"))
+        if policy_block(e):
+            refused.append("av (PyAV)")
+        else:
+            out.append(("⚠", av_import_help(e) + ": no camera starts until then"))
     except Exception:
         pass
     # NVIDIA driver for the wheel's NVENC
@@ -737,7 +760,12 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
             out.append(("ℹ", f"NVIDIA driver {d} is a legacy one, from before NVDEC and NVENC as FFmpeg uses them: "
                              f"it decodes through --accel vdpau (docs/install.md, An old NVIDIA card)"))
     if "PySide6" not in blocked:
-        out.extend(qt_modules_check(qt_module_errors()))
+        qt = qt_module_errors(("QtCore",) + QT_MODULES)
+        if any(policy_block(why) for _, why in qt):
+            refused.append("PySide6")            # the other modules fail for want of the refused one
+        else:
+            out.extend(qt_modules_check([e for e in qt if e[0] != "QtCore"]))
+    out.extend(policy_check(refused))
     # OpenGL
     if windows_service_session() and ("PyOpenGL cannot use it" in gl or re.search(r"llvmpipe|softpipe", gl, re.I)):
         out.append(("ℹ", "this runs in Windows session 0 (ssh or a service), which has no GPU: the OpenGL above is not "
@@ -760,6 +788,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
             out.append(("⚠", "OpenGL is rendered in software (no GPU driver in use): --opengl will cost CPU; check the driver"))
     elif gl.startswith("skipped"):
         pass                                            # not probed: nothing to say about it
+    elif "PySide6" in refused:
+        pass                                            # no Qt, so no probe: the line above says why
     elif gl.startswith("n/a") or "no OpenGL" in gl:
         # both renderers draw into a QOpenGLWindow (QPainter on OpenGL without --opengl)
         out.append(("ℹ", "no OpenGL context here: Nova windows need one with or without --opengl; "

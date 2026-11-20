@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-20 — Windows' Smart App Control and the MSYS2 install
+
+The Windows test PC, installed fresh on 2026-11-11, was switched on again after a week. Four minutes into that boot Smart App Control went from evaluation mode to on (Windows decides that by itself when the evaluation ends). The MSYS2 install (Option B), which had passed its whole round on that PC, has not started a camera since.
+
+- **What Windows does then.** It loads only program files that are signed or widely known. MSYS2's packages and what a compiler on the PC made are neither: PySide6's `QtCore`, numpy and the compiled `av` were refused one by one (`DLL load failed while importing QtCore: An Application Control policy has blocked this file`), and MSYS2's own `sleep` ended with `Permission denied`. Option A (python.org's Python, wheels from PyPI) ran on the same PC with it on: the test suite, `nova doctor`, windows with `d3d11va`.
+- **A camera says it in one line** in place of a traceback: `nova: DLL load failed while importing QtCore: … Windows refused the file: Smart App Control (Windows Security, App & browser control) or a policy of an administrator loads only program files that are signed or widely known … Option A … runs with Smart App Control on`. `nova start` shows that line as the end of the camera's log.
+- **`nova doctor` names it once.** Its report had five lines for it, none of them right: numpy with half a sentence, PyAV `build it again`, three Qt modules `a system library Qt needs is missing`, and `nova record (no window) still works`. Now one line names what was refused and why. The OS line shows `Smart App Control on` or `evaluation`, and on MSYS2 in evaluation mode a line says what happens when Windows switches it on.
+- **Docs**: install.md (Option B), troubleshooting.md (one row).
+- **Tests**: the policy sentence in English and as another Windows words it, the registry value, a camera whose Qt was refused (one line, exit code 1; any other import error as before), the report's single line.
+- **Measured on that PC the same day** (AMD Radeon of a Ryzen 9 5900HX, Option A, percent of one core, 1080p): with no window waiting for vertical sync any more (the entry below; not seen on a Windows screen until now) a camera at 10 fps takes 8.4 % with `--opengl --accel d3d11va` (9 before), 8.3 % decoded in software (9), 17.3 % and 12.7 % without `--opengl` (20 and 24); an HEVC camera at 25 fps 20.4 %, 21.5 %, 50.7 % and 30.0 %.
+
 ## 2026-11-20 — `-e copy`: recording and streaming without an encoder
 
 Every recording was decoded and encoded again, whatever the camera sent: `libx264` took 235 % of a Raspberry Pi 4's core for one 1080p camera at 10 fps, the board's own encoder 22 %, and that encoder has room for two cameras.

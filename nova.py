@@ -10,8 +10,14 @@ from util import cpu_message      # util imports nothing compiled
 if cpu_message():                 # PySide6 or numpy built for a newer CPU: importing them would end this
     sys.exit("nova: " + cpu_message())
 
-from PySide6.QtCore import Qt, QMetaObject, QTimer, QSize
-from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QIcon
+try:
+    from PySide6.QtCore import Qt, QMetaObject, QTimer, QSize
+    from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QIcon
+except ImportError as e:          # Windows' Smart App Control refusing a module nobody signed (MSYS2's)
+    from util import policy_block, POLICY_HELP
+    if not policy_block(e):
+        raise
+    sys.exit(f"nova: {e} {POLICY_HELP}")
 
 import logsync   # installs logging.verbose / logging.trace before any module logs
 from util import (parse_time, mask_url, NATIVE_APP_ID, window_platform, no_display, NO_DISPLAY, utf8_stdio, MAC,

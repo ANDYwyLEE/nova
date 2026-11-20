@@ -229,6 +229,8 @@ sed -i "s/sys.platform == 'win32':/sys.platform == 'win32' and 'MSC' in sys.vers
 pip install --no-build-isolation . && cd ..
 ```
 
+**Smart App Control stops this option.** A fresh Windows 11 has Smart App Control in evaluation mode and may switch it on by itself; from then on Windows loads only program files that are signed or widely known, and MSYS2's are not signed. On the test PC that happened nine days after the install: every camera ended with `ImportError: DLL load failed while importing QtCore: An Application Control policy has blocked this file` (PySide6, numpy and the compiled `av` alike), and MSYS2's own `sleep` with `Permission denied`. Option A ran on with it on. `nova doctor` shows the state in its OS line (`Smart App Control evaluation`, `on`) and says on MSYS2 what is coming. It is switched off in Windows Security, under App & browser control.
+
 ## macOS
 
 Minimum versions follow the `av` wheel: **Intel Macs need macOS 11 Big Sur or later** (`macosx_11_0_x86_64`), **Apple Silicon Macs need macOS 14 Sonoma or later** (`macosx_14_0_arm64`; every M-series Mac can run it). Python 3.12 or newer; the tests run with 3.15 on GitHub's Apple Silicon runner (`pip` compiles PyOpenGL-accelerate for it, with Xcode's tools). Older PyAV releases had no macOS wheels at all (before 12.0, March 2024) or shipped FFmpeg without VideoToolbox (12.0 to 12.2); since 12.3 the wheel has VideoToolbox, so a custom FFmpeg build is only needed for SRT.

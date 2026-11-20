@@ -459,6 +459,53 @@ def hw_err(e) -> str:
     return f"{head}: {last}"
 
 
+# Windows' error 4551, as an ImportError carries it: "DLL load failed while importing QtCore: An Application
+# Control policy has blocked this file."  Smart App Control of Windows 11, or a policy an administrator set,
+# loads only program files that are signed or that Microsoft's service knows, and what MSYS2 packages or a
+# compiler on the PC made is neither.  Seen 2026-11-20: a fresh Windows 11 had it in evaluation mode and
+# switched it on by itself nine days later; from then on Option B ended at its first import, and MSYS2's own
+# `sleep` with "Permission denied".  Option A (python.org's Python, wheels from PyPI) ran on as before.
+_POLICY_BLOCK = "Application Control policy has blocked"
+POLICY_HELP = ("Windows refused the file: Smart App Control (Windows Security, App & browser control) or a policy "
+               "of an administrator loads only program files that are signed or widely known, and what MSYS2 "
+               "packages or a compiler on this PC made is neither. Nova on python.org's Python with the wheels "
+               "from PyPI (docs/install.md, Option A) runs with Smart App Control on")
+
+
+def policy_block(e, local=None):
+    """True when `e` (an exception or its text) says that Windows' application control refused a file.
+    A Windows in another language words error 4551 its own way: `local` is that sentence."""
+    text = str(e)
+    if _POLICY_BLOCK in text:
+        return True
+    if local is None and WINDOWS:
+        try:
+            import ctypes
+            local = ctypes.FormatError(4551)
+        except (OSError, AttributeError, ValueError):
+            local = ""
+    local = (local or "").strip().rstrip(".")
+    return bool(local) and local in text
+
+
+def smart_app_control(read=None):
+    """"on", "evaluation" or "off" for Windows 11's Smart App Control; None on another system, on a Windows
+    without it, and where the registry does not say.  In evaluation mode Windows decides by itself, some
+    days after the install, whether it switches it on."""
+    if read is None:
+        if not WINDOWS:
+            return None
+
+        def read():
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\CI\Policy") as key:
+                return winreg.QueryValueEx(key, "VerifiedAndReputablePolicyState")[0]
+    try:
+        return {0: "off", 1: "on", 2: "evaluation"}.get(read())
+    except (OSError, ImportError):
+        return None
+
+
 def av_import_help(e):
     """What to tell a user whose `import av` raised `e`.  PyAV that is not installed is one thing; one
     that is installed and cannot load is a build of one's own whose FFmpeg has lost a system library
@@ -467,6 +514,8 @@ def av_import_help(e):
     text = " ".join(str(e).split())
     if isinstance(e, ModuleNotFoundError) and getattr(e, "name", "") in ("av", None, ""):
         return "av (PyAV) is required. Run 'pip install -r requirements.txt'"
+    if policy_block(e):
+        return f"av (PyAV) is installed but does not load ({text[:200]}). {POLICY_HELP}"
     lib = re.search(r"(lib[\w.+-]+\.so[\w.]*): cannot open shared object file", text)
     what = (f"cannot load {lib.group(1)}: the FFmpeg it was built against has lost a system library "
             f"(a distribution upgrade replaces libx264, libx265 and others), or LD_LIBRARY_PATH in [env] of "
