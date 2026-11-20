@@ -248,10 +248,14 @@ DRM_ROOT = "/sys/class/drm"
 # A window hands its picture over without waiting for the screen's vertical sync.  Qt waits for it inside the
 # buffer swap, on the window's thread, and that swap is reached through Nova's own event handler: Python's
 # interpreter lock is held for as long as it waits, and the decoder's thread, which needs the lock after
-# every picture, waits with it.  On a Raspberry Pi 3 B+ a picture of a 10 fps camera took 60 ms that way
-# and 24 without the wait, and with a recorder's sound encoder beside it the decoder fell behind for good
-# (a reconnection, 10 to 15 s missing in the file).  A desktop's compositor shows whole pictures either
-# way; an X server without one may show a picture's upper and lower part a refresh apart.
+# every picture, waits with it.  Measured inside a camera on a Raspberry Pi 3 B+ (its desktop puts the
+# screen together on the CPU, and a window that fills it waited 140 ms a picture): the window's thread
+# stood in its event handler for 97 % of the time, a decode call took 85 ms by the clock for 25 ms of work,
+# and with a recorder beside it the decoder fell behind for good (a reconnection, 6 to 15 s missing in the
+# file, six runs of six).  Without the wait: 24 ms a decode call, every picture, five runs of five.  On a
+# Raspberry Pi 4, an NVIDIA desktop and an iMac the swap did not wait, and nothing changed.  A desktop's
+# compositor shows whole pictures either way; an X server without one may show a picture's upper and lower
+# part a refresh apart.
 SWAP_INTERVAL = 0
 
 OPENGL_NEEDED = (2, 1)
