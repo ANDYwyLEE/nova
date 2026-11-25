@@ -45,7 +45,7 @@ Every combination below was run with real cameras, most of them recording severa
 | Ubuntu 26.04 | AMD Radeon (Ryzen 9 9955HX, Mesa 26) | [custom FFmpeg](custom-ffmpeg.md) | `vaapi` | `h264_vaapi`, `hevc_vaapi` |
 | Windows 11 | Intel UHD 620 (8th generation; drivers of 2020 and 2022) | Option A and Option B | `qsv`, `d3d11va`, `dxva2`, `d3d12va` | `h264_qsv`, `hevc_qsv` |
 | Windows 11 | AMD Radeon (Ryzen 9 5900HX) | Option A and Option B | `d3d11va`, `dxva2`, `amf` | `h264_amf`, `h264_mf` |
-| Windows 11 | NVIDIA RTX 4090 (driver 621.24) in the same PC, both monitors on it, the Radeon beside it | Option A | `cuda`, `dxva2`, `d3d12va`, `d3d11va` (which costs more CPU on this card: [Windows](#windows)); on the Radeon `amf` and `d3d11va --gpu 1` | `h264_nvenc`, `hevc_nvenc`, `av1_nvenc`, `h264_mf`; `h264_amf` on the Radeon |
+| Windows 11 | NVIDIA RTX 4090 (driver 621.24) in the same PC, both monitors on it, the Radeon beside it | Option A and Option B | `cuda`, `dxva2`, `d3d12va`, `d3d11va` (which costs more CPU on this card: [Windows](#windows)); on the Radeon `amf` and `d3d11va --gpu 1` | `h264_nvenc`, `hevc_nvenc`, `av1_nvenc`, `h264_mf`; `h264_amf` on the Radeon |
 | macOS 15 | Intel iMac 2019 (Radeon Pro 555X) | MacPorts | `videotoolbox` | `h264_videotoolbox` |
 | any of them | none | wheel | software | `libx264` |
 | Debian 11 | NVIDIA ION (2010, `nouveau`) on an Atom D525 | wheel, PySide6 6.9.3 and numpy 2.3.5 ([older systems](#linux)) | software, on up to four threads | `libx264` with `-preset ultrafast` |
@@ -56,7 +56,7 @@ Every combination below was run with real cameras, most of them recording severa
 | Raspberry Pi OS 13 | Raspberry Pi 4 B (4 GB; V3D, OpenGL 3.1) | wheel ([arm64](#linux)) | software; `v4l2m2m` (the board's H.264 decoder) where the stream is heavy: [arm64](#linux) | `h264_v4l2m2m`, the board's encoder (with `gpu_mem=256`: [arm64](#linux)); `libx264` |
 | Raspberry Pi OS 13 | Raspberry Pi 3 B+ (1 GB; VC4, OpenGL 2.1) | wheel ([arm64](#linux)) | software; `v4l2m2m` for a stream at 25 fps: [arm64](#linux) | `h264_v4l2m2m`, the board's encoder, for two cameras |
 
-Not run on hardware: an NVIDIA card with Option B (MSYS2), Apple Silicon outside CI, an ARM board other than the Raspberry Pi 3 B+, 4 and 5 (the arm64 install runs on GitHub's ARM runners, without a camera), AV1 encoding on an Intel or AMD GPU (the ones above have no AV1 encoder).
+Not run on hardware: Apple Silicon outside CI, an ARM board other than the Raspberry Pi 3 B+, 4 and 5 (the arm64 install runs on GitHub's ARM runners, without a camera), AV1 encoding on an Intel or AMD GPU (the ones above have no AV1 encoder).
 
 The Linux commands of the next section are also run as written, by an ordinary user, in a fresh image of every distribution named there (Python 3.12 to 3.14; Ubuntu and Debian on arm64 as well; Debian 12 and Ubuntu 22.04 with a Python from uv, Debian 12 on arm64 with PySide6 6.8.0.2 besides) and with Python 3.15 on Debian 13, each week: install, `nova doctor`, a recording through the launcher, a window on a virtual screen and the tests.
 
