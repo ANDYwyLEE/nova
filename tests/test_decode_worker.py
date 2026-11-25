@@ -212,6 +212,33 @@ def test_an_nvidia_index_that_does_not_open_is_answered_with_gpu_0(qapp, caplog)
     assert calls == [1]
 
 
+def test_an_nvidia_card_without_its_kernel_driver_is_the_reason(qapp, monkeypatch):
+    """A new mainboard did not hold the key NVIDIA's module is signed with, and Secure Boot refused the
+    module: every camera said `No working HW decoder for --accel=cuda (h264_cuvid: Generic error in an external
+    library; h264 + cuda: Generic error in an external library)`, and `nova status` the same."""
+    import util
+    monkeypatch.setattr(util, "LINUX", True)
+    monkeypatch.setattr(util, "WSL", False)
+    monkeypatch.setattr(util, "pci_gpus", lambda root=None: [("Intel", "8086:a780", "i915"), ("NVIDIA", "10de:2684", "no driver")])
+    w = _worker(accel="cuda", gpu="1")
+    tried = []
+    w._open_hw_decoder_on = lambda base, codec_name: tried.append(w.gpu_idx) or (None, None, "h264_cuvid: Generic error")
+    ctx, label, reason = w._open_hw_decoder(None, "h264")
+    assert ctx is None and reason.startswith("the NVIDIA card has no kernel driver: NVIDIA's driver is not installed")
+    # tried all the same (the try is what loads the module on a machine where nothing has needed it yet),
+    # and not a second time on GPU 0
+    assert tried == [1] and w.get_gpu_idx() == 1
+    w._open_hw_decoder_on = lambda base, codec_name: ("CTX", "h264_cuvid", None)
+    assert w._open_hw_decoder(None, "h264") == ("CTX", "h264_cuvid", None)       # a decoder that opens is one
+    dec, _ = _decode(w, FakeCtx(), [(None, None, reason)])
+    dec.open()
+    assert w.accel_note() == f"--accel cuda is not in use ({reason}): decoded on the CPU"
+    assert w._hw_retry_at != float("inf")                               # asked again: a module can be loaded
+    w = _worker(accel="vaapi")                                          # another GPU's decoder: its own reason
+    w._open_hw_decoder_on = lambda base, codec_name: (None, None, "h264 + vaapi: no")
+    assert w._open_hw_decoder(None, "h264") == (None, None, "h264 + vaapi: no")
+
+
 def test_vaapi_looks_for_its_node_unless_gpu_names_one(qapp, monkeypatch, tmp_path):
     import util
     for node, vendor in (("renderD128", "0x10de"), ("renderD129", "0x1002")):

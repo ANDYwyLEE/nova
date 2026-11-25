@@ -25,7 +25,8 @@ from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from util import (opengl_shortfall, opengl_needs, mask_url, find_secrets, vaapi_node, drm_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
+from util import (opengl_shortfall, opengl_needs, mask_url, find_secrets, vaapi_node, drm_gpus, pci_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
+                  NVIDIA_ACCELS, nvidia_driver_missing,
                   wheels_too_new_for_cpu, cpu_message, av_import_help, policy_block, POLICY_HELP, smart_app_control, v4l2_decoders, v4l2_obstacle, board_model,
                   LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI)
 
@@ -48,6 +49,15 @@ def _run(cmd, timeout=10):
     except (OSError, subprocess.SubprocessError):
         return ""
     return (p.stdout or "").strip() if p.returncode == 0 else ""
+
+
+def _said(cmd, timeout=10):
+    """What a command that failed had to say (stdout, else stderr); '' when it ran or could not be run."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return "" if p.returncode == 0 else (p.stdout or p.stderr or "").strip()
 
 
 def _gb(n):
@@ -411,6 +421,74 @@ def nouveau_check(gpus, firmware="/lib/firmware/nouveau"):
                   + "; docs/install.md, An old NVIDIA card")]
 
 
+_NVIDIA_MODULE = re.compile(r"nvidia(-current|-legacy-\w+|-tesla(-\w+)?)?\.ko")      # Debian's names beside nvidia.ko
+
+
+def nvidia_module(release=None, root="/lib/modules"):
+    """Has NVIDIA's driver a module for the running kernel?  True or False from the kernel's own index of
+    its modules (modules.dep), None where there is none to read."""
+    try:
+        with open(os.path.join(root, release or platform.release(), "modules.dep"), encoding="utf-8", errors="replace") as f:
+            return any(_NVIDIA_MODULE.match(os.path.basename(line.split(":", 1)[0])) for line in f)
+    except OSError:
+        return None
+
+
+def secure_boot(pattern="/sys/firmware/efi/efivars/SecureBoot-*"):
+    """True or False: the firmware's Secure Boot is on.  None where it does not say (no UEFI, a container)."""
+    for path in glob.glob(pattern):
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+        return bool(data) and data[-1] == 1         # four bytes of attributes, then the value
+    return None
+
+
+def cuda_error():
+    """None when FFmpeg makes a CUDA device on this machine, else why not ("" when this build has no cuda).
+    Trying is what loads NVIDIA's module where nothing has needed the card yet."""
+    try:
+        import av
+        from av.codec.hwaccel import HWAccel, hwdevices_available
+        if "cuda" not in [str(d) for d in hwdevices_available()]:
+            return ""
+        import logsync
+        with logsync.av_quiet():
+            av.CodecContext.create("h264", "r", hwaccel=HWAccel(device_type="cuda", allow_software_fallback=False))
+        return None
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def nvidia_driver_check(accels, missing, asked, module, secure, release):
+    """A check line for NVIDIA cards that sit on the bus with no kernel driver (`missing`:
+    util.nvidia_driver_missing()), with what the machine shows of the reason: no module for the running
+    kernel (`module`: nvidia_module()), or one that is on the disk and not loaded, which is what Secure Boot
+    (`secure`) does to a module whose key the firmware does not hold.  nvidia-smi only says that it could
+    not talk to the driver, and FFmpeg "Generic error in an external library".  `asked`: nvidia-smi ran
+    and failed, or FFmpeg did (cuda_error).  Where nothing asked for the driver, a module that is not
+    loaded is no finding: the first program that needs the card loads it."""
+    if not missing:
+        return []
+    if module is False:
+        why = f"NVIDIA's driver has no module for this kernel ({release}): it is not installed, or was not built for it"
+    elif not asked:
+        return []
+    elif module:
+        why = (f"NVIDIA's module for this kernel ({release}) is on the disk and is not loaded"
+               + ("; Secure Boot is on, and the kernel then loads only modules signed with a key the firmware holds "
+                  "(its log names a module it refused)" if secure else " (the kernel's log says why)"))
+    else:
+        why = "NVIDIA's driver is not installed, or its module is not loaded"
+    named = sorted(accels & set(NVIDIA_ACCELS))
+    if named:
+        return [("⚠", f"--accel {named[0]} is in cameras.ini but the NVIDIA card has no kernel driver: {why}. Until the "
+                      f"driver is there cameras decode in software and record without NVENC")]
+    return [("ℹ", f"the NVIDIA card has no kernel driver: {why}. --accel cuda and the NVENC encoders need it")]
+
+
 def nvidia_index_check(indexes, count, accels):
     """A check line when --gpu / NOVA_GPU_DEVICES name an NVIDIA card this machine does not have (a
     cameras.ini carried over from a machine with more cards): those cameras are moved to GPU 0."""
@@ -520,20 +598,36 @@ def vaapi_check(indexes, gpus, probe, auto=None):
     return out
 
 
+NVIDIA_SMI_FAILED = re.compile(r"(?<!no )nvidia-smi(: | present but gave no answer)")     # nvidia_smi_failure's lines
+
+
+def nvidia_smi_failure(said):
+    """The GPU line for an nvidia-smi that did not list the cards: its own first sentence ("NVIDIA-SMI has
+    failed because it couldn't communicate with the NVIDIA driver"), which names the trouble."""
+    first = re.split(r"(?<=[a-z])\.\s", " ".join((said or "").split()), maxsplit=1)[0].rstrip(".")
+    return f"nvidia-smi: {first[:160]}" if first else "nvidia-smi present but gave no answer"
+
+
 def gpu_lines():
     lines = []
+    answered = False                                      # nvidia-smi listed the NVIDIA cards
     if shutil.which("nvidia-smi"):
-        out = _run(["nvidia-smi", "--query-gpu=index,name,driver_version,memory.total,memory.used", "--format=csv,noheader"])
+        query = ["nvidia-smi", "--query-gpu=index,name,driver_version,memory.total,memory.used", "--format=csv,noheader"]
+        out = _run(query)
         if out:
+            answered = True
             gpus = [[c.strip() for c in row.split(",")] for row in out.splitlines()]
             drv = gpus[0][2] if gpus and len(gpus[0]) > 2 else "?"
             lines.append(("GPU", f"NVIDIA driver {drv}: " + "; ".join(f"{g[0]} {g[1]}, {g[3]} ({g[4]} used)" for g in gpus if len(g) >= 5)))
         else:
-            lines.append(("GPU", "nvidia-smi present but gave no answer"))
+            lines.append(("GPU", nvidia_smi_failure(_said(query))))
     if LINUX:
         for vendor, ids, driver, node in drm_gpus():
-            if vendor != "NVIDIA" or not lines:           # the NVIDIA cards are listed above, with their memory
+            if vendor != "NVIDIA" or not answered:        # else the NVIDIA cards are listed above, with their memory
                 lines.append(("GPU", f"{vendor} {ids} ({driver}), {node}"))
+        for vendor, ids, driver in pci_gpus():
+            if driver == "no driver":                     # on the bus, and nothing in the kernel has taken it
+                lines.append(("GPU", f"{vendor} {ids} (no kernel driver)"))
         nodes = sorted(os.path.basename(p) for p in glob.glob("/dev/dri/renderD*"))
         lines.append(("DRM nodes", " ".join(nodes) if nodes else "none (/dev/dri: no render node, VAAPI impossible)"))
     if not lines:
@@ -822,6 +916,18 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
     gpus = drm_gpus() if LINUX else []
     blocked = node_access(gpus) if LINUX else []
     closed = {b[2] for b in blocked}
+    # an NVIDIA card no kernel driver has, and what is to be said of it (nothing where the module is there
+    # and nvidia-smi was not there to ask for it)
+    missing = nvidia_driver_missing() if LINUX else None
+    nv = None
+    if missing:
+        module = nvidia_module()
+        asked = bool(NVIDIA_SMI_FAILED.search(gpu))
+        if module and not asked:                 # no nvidia-smi on this machine: FFmpeg asks, as a camera would
+            asked = bool(cuda_error())
+            missing = nvidia_driver_missing()
+        nv = (missing, asked, module, secure_boot(), platform.release())
+    no_nvidia_driver = bool(nv and nvidia_driver_check(set(), *nv))
     accels = set()
     # cameras.ini
     if cfg is not None:
@@ -852,6 +958,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                                          f"a camera that sends another codec is decoded in software"))
                     elif obstacle:
                         out.append(("⚠", f"--accel {a} is in cameras.ini but {obstacle}: software decoding"))
+                    elif a in NVIDIA_ACCELS and no_nvidia_driver:
+                        pass                                # nvidia_driver_check, below, has more to say
                     else:
                         out.append(("✓", f"--accel {a} has a decoder in this FFmpeg build"))
             except Exception as e:
@@ -873,6 +981,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                 out.append(("⚠", f"{len(xm)} xmeye:// camera(s) but python-dvr is not installed: "
                                  f"{python or sys.executable} -m pip install python-dvr"))
     out.extend(nouveau_check(gpus))
+    if no_nvidia_driver:
+        out.extend(nvidia_driver_check(accels, *nv))
     out.extend(node_access_check(blocked, accels))
     # disk
     if free is not None:

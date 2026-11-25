@@ -24,6 +24,17 @@ except ImportError:                                       # pragma: no cover
     pass
 
 
+@pytest.fixture(autouse=True)
+def _no_gpus_of_this_machine(monkeypatch):
+    """What sits on the PCI bus of the machine the tests run on is not theirs to go by: on a PC whose
+    NVIDIA card had no kernel driver (a new mainboard that did not hold the module's key), every test
+    that lets a stand-in cuda decoder fail was answered with that machine's trouble.  util.pci_gpus()
+    finds nothing here, unless a test gives it a tree of its own or puts cards there itself."""
+    import util
+    real = util.pci_gpus
+    monkeypatch.setattr(util, "pci_gpus", lambda root=None: real(root) if root else [])
+
+
 @pytest.fixture(scope="session")
 def test_clip(tmp_path_factory):
     """A 3 s, 320x180, 25 fps H.264 clip written with PyAV, so no ffmpeg binary is needed."""

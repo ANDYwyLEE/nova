@@ -154,6 +154,28 @@ def test_what_stands_between_an_accel_and_the_machine():
     assert util.accel_obstacle("cuda", []) is None and util.accel_obstacle("", amd) is None    # nothing to go by
 
 
+def test_an_nvidia_card_no_kernel_driver_has(monkeypatch):
+    """A PC on a new mainboard, whose firmware did not hold the key NVIDIA's module is signed with: Secure
+    Boot refused the module, and the cameras said `No working HW decoder for --accel=cuda (h264_cuvid: Generic
+    error in an external library; …)` and `-e h264_nvenc does not open here (Unknown error occurred)`."""
+    bare = [("Intel", "8086:a780", "i915"), ("NVIDIA", "10de:2684", "no driver")]
+    said = util.nvidia_driver_missing(bare)
+    assert said.startswith("the NVIDIA card has no kernel driver: NVIDIA's driver is not installed, or its module is not loaded")
+    assert "nova doctor" in said and len(said) <= 140           # the lines that carry it cut there
+    assert util.nvidia_driver_missing([("NVIDIA", "10de:2684", "nvidia")]) is None
+    assert util.nvidia_driver_missing(bare + [("NVIDIA", "10de:2684", "nvidia")]) is None       # one card has it
+    assert util.nvidia_driver_missing([("NVIDIA", "10de:0a64", "nouveau")]) is None             # accel_obstacle's
+    assert util.nvidia_driver_missing([("Intel", "8086:a780", "i915")]) is None and util.nvidia_driver_missing([]) is None
+    monkeypatch.setattr(util, "pci_gpus", lambda root=None: bare)
+    monkeypatch.setattr(util, "LINUX", False)
+    assert util.nvidia_driver_missing() is None                 # the bus is Linux's to show
+    monkeypatch.setattr(util, "LINUX", True)
+    monkeypatch.setattr(util, "WSL", True)
+    assert util.nvidia_driver_missing() is None                 # WSL reaches the card another way
+    monkeypatch.setattr(util, "WSL", False)
+    assert util.nvidia_driver_missing() == said
+
+
 def test_a_hardware_error_keeps_ffmpeg_s_own_last_line():
     cuvid = Exception("[Errno 1] Operation not permitted: 'avcodec_open2(\"h264_cuvid\", {})'; last error log: [h264_cuvid] Failed loading nvcuvid.")
     assert util.hw_err(cuvid) == ("Operation not permitted: Failed loading nvcuvid "

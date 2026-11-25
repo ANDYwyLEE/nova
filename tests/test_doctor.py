@@ -352,6 +352,80 @@ def test_an_nvidia_index_beyond_the_cards_is_said():
     assert check({1}, 1, {"vaapi"}) == [] and check({1}, 0, {"cuda"}) == []    # render nodes; no NVIDIA card at all
 
 
+def test_an_nvidia_card_without_its_kernel_driver_is_explained(tmp_path):
+    """A PC on a new mainboard: Secure Boot refused NVIDIA's module, whose key the firmware did not hold.
+    The report said `nvidia-smi present but gave no answer`, did not list the card, and had
+    `✓ --accel cuda has a decoder in this FFmpeg build` under Checks."""
+    check, missing, kernel = doctor.nvidia_driver_check, "the NVIDIA card has no kernel driver: …", "7.0.0-43-generic"
+    (mark, text), = check({"cuda"}, missing, True, True, True, kernel)
+    assert mark == "⚠" and text.startswith("--accel cuda is in cameras.ini but the NVIDIA card has no kernel driver: ")
+    assert "NVIDIA's module for this kernel (7.0.0-43-generic) is on the disk and is not loaded; Secure Boot is on" in text
+    assert "cameras decode in software and record without NVENC" in text
+    (mark, text), = check({"vaapi"}, missing, True, True, False, kernel)
+    assert mark == "ℹ" and "Secure Boot" not in text and "is not loaded (the kernel's log says why)" in text
+    assert "--accel cuda and the NVENC encoders need it" in text
+    (mark, text), = check(set(), missing, False, False, None, kernel)       # no module: said without nvidia-smi too
+    assert mark == "ℹ" and "has no module for this kernel (7.0.0-43-generic): it is not installed, or was not built for it" in text
+    assert "NVIDIA's driver is not installed, or its module is not loaded" in check({"nvdec"}, missing, True, None, None, kernel)[0][1]
+    # a module that is there and that nothing has asked for: the first program that needs the card loads it
+    assert check({"cuda"}, missing, False, True, True, kernel) == []
+    assert check({"cuda"}, None, True, True, True, kernel) == []            # the card has its driver
+
+    dep = tmp_path / kernel / "modules.dep"
+    dep.parent.mkdir()
+    dep.write_text("kernel/drivers/video/fbdev/nvidia/nvidiafb.ko.zst: kernel/drivers/video/fbdev/core/fb.ko.zst\n"
+                   "kernel/drivers/platform/x86/nvidia-wmi-ec-backlight.ko.zst:\nkernel/drivers/i2c/busses/i2c-nvidia-gpu.ko.zst:\n")
+    assert doctor.nvidia_module(kernel, str(tmp_path)) is False             # the kernel's own modules of that name
+    for name in ("updates/dkms/nvidia.ko.zst", "kernel/nvidia-615/nvidia.ko", "updates/dkms/nvidia-current.ko",
+                 "extra/nvidia-legacy-340xx.ko.xz", "updates/dkms/nvidia-tesla-470.ko"):
+        dep.write_text(f"updates/dkms/nvidia-modeset.ko.zst: {name}\n{name}:\n")
+        assert doctor.nvidia_module(kernel, str(tmp_path)) is True, name
+    assert doctor.nvidia_module("6.1.0-none", str(tmp_path)) is None
+
+    var = tmp_path / "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+    var.write_bytes(bytes([6, 0, 0, 0, 1]))
+    assert doctor.secure_boot(str(tmp_path / "SecureBoot-*")) is True
+    var.write_bytes(bytes([6, 0, 0, 0, 0]))
+    assert doctor.secure_boot(str(tmp_path / "SecureBoot-*")) is False
+    assert doctor.secure_boot(str(tmp_path / "nothing-*")) is None
+
+    failed = doctor.nvidia_smi_failure("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. "
+                                       "Make sure that the latest NVIDIA driver is installed and running.\n\n")
+    assert failed == "nvidia-smi: NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver"
+    assert doctor.nvidia_smi_failure("") == "nvidia-smi present but gave no answer"
+    asked = doctor.NVIDIA_SMI_FAILED.search
+    assert asked(failed) and asked("nvidia-smi present but gave no answer")
+    assert not asked("no nvidia-smi; the platform decoder (VideoToolbox, D3D11VA, QSV) uses the system GPU")
+    assert not asked("NVIDIA driver 615.71.09: 0 NVIDIA GeForce RTX 4090, 24564 MiB (711 MiB used)")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the PCI bus and the module index are Linux's")
+def test_the_report_of_a_machine_whose_nvidia_card_has_no_driver(tmp_path, monkeypatch):
+    ini = tmp_path / "cameras.ini"
+    ini.write_text("[defaults]\nopts = --accel cuda\n[cam]\nurl = rtsp://user:secret@192.0.2.1/x\n")
+    os.chmod(ini, 0o600)
+    monkeypatch.setattr(doctor, "nvidia_driver_missing", lambda: "the NVIDIA card has no kernel driver: …")
+    monkeypatch.setattr(doctor, "nvidia_module", lambda: True)
+    monkeypatch.setattr(doctor, "secure_boot", lambda: True)
+    monkeypatch.setattr(doctor, "gpu_lines", lambda: [("GPU", doctor.nvidia_smi_failure("NVIDIA-SMI has failed because …")),
+                                                      ("GPU", "NVIDIA 10de:2684 (no kernel driver)")])
+    out = doctor.report(config=str(ini), gl=False)
+    assert "⚠ --accel cuda is in cameras.ini but the NVIDIA card has no kernel driver: NVIDIA's module for this kernel" in out
+    assert "Secure Boot is on" in out and "--accel cuda has a decoder in this FFmpeg build" not in out
+    # a machine without nvidia-smi: FFmpeg asks for the card, as a camera would, and that loads a module
+    # nothing had needed yet
+    monkeypatch.setattr(doctor, "gpu_lines", lambda: [("GPU", "NVIDIA 10de:2684 (no kernel driver)")])
+    monkeypatch.setattr(doctor, "cuda_error", lambda: "ExternalError: Generic error in an external library")
+    assert "⚠ --accel cuda is in cameras.ini but the NVIDIA card has no kernel driver" in doctor.report(config=str(ini), gl=False)
+    monkeypatch.setattr(doctor, "cuda_error", lambda: "")                   # a build without cuda does not ask
+    assert "is in cameras.ini but the NVIDIA card" not in doctor.report(config=str(ini), gl=False)
+    loaded = []
+    monkeypatch.setattr(doctor, "cuda_error", lambda: loaded.append(1))     # it opened: the module is loaded now
+    monkeypatch.setattr(doctor, "nvidia_driver_missing", lambda: None if loaded else "the NVIDIA card has no kernel driver: …")
+    out = doctor.report(config=str(ini), gl=False)
+    assert loaded and "is in cameras.ini but the NVIDIA card" not in out
+
+
 def test_qt_modules_that_do_not_load_are_named():
     """openSUSE's minimal system has no libgssapi_krb5: QtNetwork did not load, and `nova start` started
     cameras that died at once; nova.py by hand ran fine, so nothing pointed at the library."""

@@ -293,6 +293,7 @@ def opengl_needs(have):
 KNOWN_HWACCELS = ("cuda", "vaapi", "vdpau", "qsv", "d3d11va", "dxva2", "d3d12va", "videotoolbox", "drm",
                   "opencl", "mediacodec", "vulkan", "amf")
 DRM_VENDORS = {"0x8086": "Intel", "0x1002": "AMD", "0x10de": "NVIDIA"}
+NVIDIA_ACCELS = ("cuda", "cuvid", "nvdec")      # --accel values that decode through NVIDIA's driver
 
 
 def drm_gpus(root="/sys/class/drm"):
@@ -422,7 +423,7 @@ def accel_obstacle(accel, gpus=None):
         gpus = pci_gpus() if LINUX and not WSL else []       # WSL reaches the GPU through /dev/dxg
     if not gpus:
         return None
-    if a in ("cuda", "cuvid", "nvdec"):
+    if a in NVIDIA_ACCELS:
         nvidia = [g for g in gpus if g[0] == "NVIDIA"]
         if not nvidia:
             return "this machine has no NVIDIA GPU"
@@ -432,6 +433,25 @@ def accel_obstacle(accel, gpus=None):
     if a == "qsv" and not any(g[0] == "Intel" for g in gpus):
         return "this machine has no Intel GPU, and Quick Sync is Intel's"
     return None
+
+
+def nvidia_driver_missing(gpus=None):
+    """The sentence for a Linux machine whose NVIDIA cards are on the PCI bus with no kernel driver at all:
+    NVIDIA's driver is not installed, or its module is not loaded (none built for the kernel an update
+    brought; one that Secure Boot refuses because the firmware does not hold its key, as after a new
+    mainboard or a BIOS update).  None when a card has a driver, or where that cannot be asked.  FFmpeg's
+    own words for it are "Generic error in an external library" (the decoder) and "Unknown error occurred"
+    (NVENC).  To be asked after a decoder or an encoder did not open, never in place of trying: on a
+    machine where nothing has needed the card yet (a server without a desktop) the module is loaded by
+    the first program that opens CUDA, and until then the card looks the same.  For that reason it is not
+    one of accel_obstacle's cases either, and a camera asks again.  `gpus`: pci_gpus()."""
+    if gpus is None:
+        gpus = pci_gpus() if LINUX and not WSL else []
+    nvidia = [g for g in gpus if g[0] == "NVIDIA"]
+    if not nvidia or any(g[2] != "no driver" for g in nvidia):
+        return None
+    return ("the NVIDIA card has no kernel driver: NVIDIA's driver is not installed, or its module is not "
+            "loaded; nova doctor says which")
 
 
 _ERR_LOG = re.compile(r"last error log:\s*(?:\[[^\]]*\]\s*)?(.+)$", re.S)

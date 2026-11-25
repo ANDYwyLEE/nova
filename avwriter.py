@@ -16,7 +16,7 @@ import logsync  # installs logging.verbose / logging.trace
 from campacket import wants_copy
 from ffparser import for_codec
 from util import (WINDOWS, MAC, IS_PI, MSYS, CONV_THREADS, get_os_type, vaapi_node, short_err as _short_err,
-                  hw_err as _hw_err)
+                  hw_err as _hw_err, nvidia_driver_missing)
 
 try: from filelock import FileLock, Timeout
 except ImportError:
@@ -372,7 +372,8 @@ class EncoderManager:
             ctx.open()
             return None
         except Exception as e:
-            return _hw_err(e)
+            # an NVIDIA card without its kernel driver: FFmpeg's words for that are "Unknown error occurred"
+            return ("nvenc" in encoder_name and nvidia_driver_missing()) or _hw_err(e)
         finally:
             if ctx is not None:
                 try:

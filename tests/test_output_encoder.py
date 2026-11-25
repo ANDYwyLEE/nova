@@ -239,6 +239,30 @@ def test_an_encoder_asked_for_that_does_not_open_is_named(monkeypatch, caplog):
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
+def test_nvenc_on_a_card_without_its_kernel_driver_says_so(monkeypatch, caplog):
+    """NVIDIA's module not loaded (Secure Boot refused it on a new mainboard): `-e h264_nvenc does not open
+    here (Unknown error occurred); using h264_qsv`."""
+    import types
+    said = "the NVIDIA card has no kernel driver: NVIDIA's driver is not installed, or its module is not loaded; nova doctor says which"
+    def refuse(*a, **k):
+        raise OSError("[Errno 1313558101] Unknown error occurred: 'avcodec_open2(\"h264_nvenc\", {})'")
+    monkeypatch.setattr(avwriter, "av", types.SimpleNamespace(Codec=lambda name, mode: name,
+                                                              CodecContext=types.SimpleNamespace(create=refuse)))
+    monkeypatch.setattr(avwriter, "nvidia_driver_missing", lambda: said)
+    assert avwriter.EncoderManager._try_open("h264_nvenc", {}) == said
+    assert avwriter.EncoderManager._try_open("hevc_qsv", {}) == "Unknown error occurred"      # not NVIDIA's: FFmpeg's words
+    monkeypatch.setattr(avwriter, "nvidia_driver_missing", lambda: None)
+    assert avwriter.EncoderManager._try_open("h264_nvenc", {}) == "Unknown error occurred"    # a card with its driver
+    # the whole sentence is in the line about -e
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(avwriter.EncoderManager, "_instance", None)
+    monkeypatch.setattr(avwriter.EncoderManager, "_try_open", staticmethod(
+        lambda name, opts, gpu_idx=None: said if "nvenc" in name else None))
+    assert avwriter.EncoderManager().get_encoder(None, "h264_nvenc", "h264", {}, ("h264",)) == "libx264"
+    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warns == [f"[EncoderManager] ⚠️ -e h264_nvenc does not open here ({said}); using libx264"]
+
+
 def test_an_accel_without_an_encoder_that_opens_is_named(monkeypatch, caplog):
     """`--accel vaapi` on a GPU that decodes and cannot encode (an NVIDIA ION on nouveau): the recording
     went to libx264, which that machine's CPU could not keep up with, and nothing said that a hardware

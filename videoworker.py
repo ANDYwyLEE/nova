@@ -23,7 +23,7 @@ from PySide6.QtCore import QThread, Signal
 import logsync  # installs logging.verbose / logging.trace
 from mytools import Skipper, FrameRator, Clock
 from util import (LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err as _short_err, hw_err as _hw_err,
-                  accel_obstacle, v4l2_decoders, KNOWN_HWACCELS, cpu_idle)
+                  accel_obstacle, v4l2_decoders, KNOWN_HWACCELS, cpu_idle, NVIDIA_ACCELS, nvidia_driver_missing)
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS, rgba_array
@@ -1204,9 +1204,16 @@ class VideoWorker(QThread):
     def _open_hw_decoder(self, base, codec_name):
         """(ctx, label, None) for an opened hardware decoder, else (None, None, reason).  An NVIDIA index
         that does not open (--gpu 1 on a machine with one card, a cameras.ini carried over from a machine
-        with more) is answered with GPU 0, not with software decoding and libx264 for that camera."""
+        with more) is answered with GPU 0, not with software decoding and libx264 for that camera.  A card
+        without a kernel driver is the reason where it is one: FFmpeg's is "Generic error in an external
+        library".  Looked at after the try, which is what loads NVIDIA's module on a machine where nothing
+        has needed it yet."""
         ctx, label, reason = self._open_hw_decoder_on(base, codec_name)
-        if ctx is None and self.accel in ("cuda", "cuvid", "nvdec") and self.gpu_idx != 0 and not self.ffopts.hw_device:
+        if ctx is None and self.accel in NVIDIA_ACCELS:
+            missing = nvidia_driver_missing()
+            if missing:
+                return None, None, missing
+        if ctx is None and self.accel in NVIDIA_ACCELS and self.gpu_idx != 0 and not self.ffopts.hw_device:
             asked, self.gpu_idx = self.gpu_idx, 0
             ctx, label, _ = self._open_hw_decoder_on(base, codec_name)
             if ctx is None:
