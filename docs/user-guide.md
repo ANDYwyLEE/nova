@@ -151,7 +151,7 @@ nova layout export NAME FORMAT   window rules that place the layout on a Wayland
 | `-n, --name, --camera-name` | Camera name: the window title becomes 'Nova - NAME', recordings go to videos/NAME/ and snapshots are named NAME_<time>.png. |
 | `--opengl` | Render with OpenGL shaders (zero-copy NV12/YUV upload; recommended). Needs OpenGL 2.1: where the GPU's driver offers less, the window is drawn without it and the log says so. |
 | `--accel` | Hardware decoding backend (cuda, qsv, vaapi, videotoolbox, d3d11va, dxva2, rkmpp, v4l2m2m, drm ...). |
-| `--gpu` | GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). Default: NOVA_GPU_DEVICES, else 0. It counts NVIDIA cards for cuda and NVENC (an index this machine does not have falls back to 0) and DRM render nodes for vaapi (N is /dev/dri/renderD(128+N); without --gpu, the first node that is not an NVIDIA card); Quick Sync, AMF and the Windows decoders use the system's GPU whatever it says. |
+| `--gpu` | GPU index for hardware decoding/encoding (e.g. 1; a list 0,1 picks one at random). Default: NOVA_GPU_DEVICES, else 0. It counts NVIDIA cards for cuda and NVENC, DRM render nodes for vaapi (N is /dev/dri/renderD(128+N); without --gpu, the first node that is not an NVIDIA card) and, on Windows, the GPUs in the order nova doctor lists them for d3d11va and d3d12va (0 is the GPU of the main display, which decodes without --gpu) and the monitors for dxva2. An NVIDIA or Windows index that does not open falls back to 0. Quick Sync and AMF use their maker's GPU whatever it says. |
 | `-f, --fps` | Target display frame rate. Default: 30. |
 | `-b, --border` | Enable the colored window border. |
 | `-g, --grid-size` | Grid size for window alignment in pixels. Default: 20. |

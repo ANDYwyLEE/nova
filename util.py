@@ -294,6 +294,59 @@ KNOWN_HWACCELS = ("cuda", "vaapi", "vdpau", "qsv", "d3d11va", "dxva2", "d3d12va"
                   "opencl", "mediacodec", "vulkan", "amf")
 DRM_VENDORS = {"0x8086": "Intel", "0x1002": "AMD", "0x10de": "NVIDIA"}
 NVIDIA_ACCELS = ("cuda", "cuvid", "nvdec")      # --accel values that decode through NVIDIA's driver
+ADAPTER_ACCELS = ("d3d11va", "d3d12va", "dxva2")    # Windows' decoders: --gpu N is one of Windows' adapters
+NVIDIA_VENDOR = 0x10DE
+
+
+def dxgi_adapters():
+    """[(name, PCI vendor id)] of the GPUs Windows has, in the order DXGI lists them: the order --gpu N
+    counts with --accel d3d11va and d3d12va (FFmpeg hands N to EnumAdapters), the one that drives the main
+    display first.  Without the "Microsoft Basic Render Driver", which is a software adapter and always
+    the last.  [] on another system, or when DXGI does not answer."""
+    if not (WINDOWS or MSYS):
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes as W
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("d1", W.DWORD), ("d2", W.WORD), ("d3", W.WORD), ("d4", ctypes.c_ubyte * 8)]
+
+        class DESC1(ctypes.Structure):                       # DXGI_ADAPTER_DESC1
+            _fields_ = [("Description", W.WCHAR * 128), ("VendorId", W.UINT), ("DeviceId", W.UINT),
+                        ("SubSysId", W.UINT), ("Revision", W.UINT), ("DedicatedVideoMemory", ctypes.c_size_t),
+                        ("DedicatedSystemMemory", ctypes.c_size_t), ("SharedSystemMemory", ctypes.c_size_t),
+                        ("LuidLow", W.DWORD), ("LuidHigh", W.LONG), ("Flags", W.UINT)]
+
+        def method(obj, index, restype, *argtypes):          # a COM object's method by its place in the vtable
+            vtbl = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+            return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtbl[index])
+
+        iid = GUID(0x770aae78, 0xf26f, 0x4dba, (ctypes.c_ubyte * 8)(0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87))
+        create = ctypes.WinDLL("dxgi").CreateDXGIFactory1    # IDXGIFactory1
+        create.argtypes, create.restype = [ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)], ctypes.c_long
+        factory = ctypes.c_void_p()
+        if create(ctypes.byref(iid), ctypes.byref(factory)) < 0 or not factory:
+            return []
+        found = []
+        try:
+            for i in range(16):
+                adapter = ctypes.c_void_p()
+                enum = method(factory, 12, ctypes.c_long, W.UINT, ctypes.POINTER(ctypes.c_void_p))     # EnumAdapters1
+                if enum(factory, i, ctypes.byref(adapter)) < 0 or not adapter:
+                    break
+                try:
+                    d = DESC1()
+                    if method(adapter, 10, ctypes.c_long, ctypes.POINTER(DESC1))(adapter, ctypes.byref(d)) >= 0 \
+                            and not d.Flags & 2:             # GetDesc1; DXGI_ADAPTER_FLAG_SOFTWARE
+                        found.append((d.Description.strip(), int(d.VendorId)))
+                finally:
+                    method(adapter, 2, W.ULONG)(adapter)     # Release
+        finally:
+            method(factory, 2, W.ULONG)(factory)
+        return found
+    except Exception:
+        return []
 
 
 def drm_gpus(root="/sys/class/drm"):

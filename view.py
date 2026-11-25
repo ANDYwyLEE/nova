@@ -741,9 +741,9 @@ class Nova(QOpenGLWindow):
     def _primary_rect(self) -> QRect:
         return QGuiApplication.primaryScreen().availableGeometry()
 
-    def _nearest_usable(self, r: QRect) -> QRect:
-        """The usable area of the screen nearest to r: the one r overlaps most, else the one r is
-        closest to; among equals the primary screen."""
+    def _nearest_screen(self, r: QRect):
+        """(whole area, usable area) of the screen nearest to r: the one r overlaps most, else the one r
+        is closest to; among equals the primary screen.  None without a screen."""
         best, best_key = None, None
         for whole, usable in self._screens():
             i = r.intersected(whole)
@@ -752,8 +752,13 @@ class Nova(QOpenGLWindow):
             dy = max(whole.top() - r.bottom(), r.top() - whole.bottom(), 0)
             key = (-overlap, dx * dx + dy * dy)
             if best_key is None or key < best_key:
-                best, best_key = usable, key
-        return best if best is not None else self._primary_rect()
+                best, best_key = (whole, usable), key
+        return best
+
+    def _nearest_usable(self, r: QRect) -> QRect:
+        """The usable area of the screen nearest to r (_nearest_screen)."""
+        s = self._nearest_screen(r)
+        return s[1] if s is not None else self._primary_rect()
 
     def _on_screen(self, r: QRect):
         """True when enough of r is on one screen to be seen and dragged."""
@@ -925,13 +930,18 @@ class Nova(QOpenGLWindow):
         if WSL: return
         G = self.grid
         vg = self._virtual_rect()
-        ox, oy = vg.left(), vg.top()                 # grid origin = top-left of the virtual desktop
         sw, sh = vg.left() + vg.width(), vg.top() + vg.height()
         x, y = self._curr_pos()
         w, h = self._widget_wh()
         r = w / h if h > 0 else 1
         nh = snap_to_grid(h, G)
         nw = round(nh * r)
+        # The lattice starts at the top-left corner of the monitor the window is on (most of it), so
+        # windows line up with the edges of their own monitor.  From the corner of all monitors together
+        # it did not where they are not level: beside a monitor 121 px higher, windows on the main one
+        # snapped to y = -1, 19, 39 ... (a Windows PC, November 2026).
+        on = self._nearest_screen(QRect(x, y, nw, nh))
+        ox, oy = (on[0].left(), on[0].top()) if on is not None else (vg.left(), vg.top())
         snap_x = lambda v: snap_to_grid(v - ox, G) + ox
         snap_y = lambda v: snap_to_grid(v - oy, G) + oy
         if x + nw >= sw and y + nh  >= sh:

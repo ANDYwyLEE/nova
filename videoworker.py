@@ -23,7 +23,8 @@ from PySide6.QtCore import QThread, Signal
 import logsync  # installs logging.verbose / logging.trace
 from mytools import Skipper, FrameRator, Clock
 from util import (LINUX, MAC, WSL, mask_url, display_url, vaapi_node, short_err as _short_err, hw_err as _hw_err,
-                  accel_obstacle, v4l2_decoders, KNOWN_HWACCELS, cpu_idle, NVIDIA_ACCELS, nvidia_driver_missing)
+                  accel_obstacle, v4l2_decoders, KNOWN_HWACCELS, cpu_idle, NVIDIA_ACCELS, ADAPTER_ACCELS,
+                  nvidia_driver_missing)
 from codec_names import get_friendly_codec_name
 from ffparser import FFmpegParser, for_codec
 from dispframe import DisplayFrame, GL_DIRECT_FORMATS, rgba_array
@@ -953,8 +954,10 @@ class VideoWorker(QThread):
         if self.ffopts.hw_device: return str(self.ffopts.hw_device)
         if accel in ("cuda", "nvdec"): return str(self.gpu_idx)
         if accel == "vaapi": return vaapi_node(self.gpu_idx if self._gpu_given else None)
-        # adapter index; only when asked for, so a single-GPU setup keeps FFmpeg's default adapter
-        if accel in ("d3d11va", "dxva2", "d3d12va") and self._gpu_given: return str(self.gpu_idx)
+        # Windows' adapter index, only when asked for: without it FFmpeg takes the adapter of the main
+        # display.  d3d11va and d3d12va count the GPUs as DXGI lists them (util.dxgi_adapters), dxva2
+        # counts Direct3D 9's adapters, which are the monitors (measured on a PC with two GPUs, 2026-11).
+        if accel in ADAPTER_ACCELS and self._gpu_given: return str(self.gpu_idx)
         if self._gpu_given: self._warn_gpu_ignored(accel)
         return None
 
@@ -1204,24 +1207,29 @@ class VideoWorker(QThread):
     def _open_hw_decoder(self, base, codec_name):
         """(ctx, label, None) for an opened hardware decoder, else (None, None, reason).  An NVIDIA index
         that does not open (--gpu 1 on a machine with one card, a cameras.ini carried over from a machine
-        with more) is answered with GPU 0, not with software decoding and libx264 for that camera.  A card
-        without a kernel driver is the reason where it is one: FFmpeg's is "Generic error in an external
-        library".  Looked at after the try, which is what loads NVIDIA's module on a machine where nothing
-        has needed it yet."""
+        with more) is answered with GPU 0, not with software decoding and libx264 for that camera; the
+        same for an index Windows' decoders cannot open (with one GPU, index 1 is Windows' software
+        adapter: "Failed to create Direct3D device").  A card without a kernel driver is the reason where
+        it is one: FFmpeg's is "Generic error in an external library".  Looked at after the try, which is
+        what loads NVIDIA's module on a machine where nothing has needed it yet."""
         ctx, label, reason = self._open_hw_decoder_on(base, codec_name)
         if ctx is None and self.accel in NVIDIA_ACCELS:
             missing = nvidia_driver_missing()
             if missing:
                 return None, None, missing
-        if ctx is None and self.accel in NVIDIA_ACCELS and self.gpu_idx != 0 and not self.ffopts.hw_device:
+        indexed = self.accel in NVIDIA_ACCELS or (self.accel in ADAPTER_ACCELS and self._gpu_given)
+        if ctx is None and indexed and self.gpu_idx != 0 and not self.ffopts.hw_device:
             asked, self.gpu_idx = self.gpu_idx, 0
             ctx, label, _ = self._open_hw_decoder_on(base, codec_name)
             if ctx is None:
                 self.gpu_idx = asked
             else:
                 reason = None
+                lists = ("nvidia-smi lists the cards there are" if self.accel in NVIDIA_ACCELS else
+                         "with dxva2 the index counts the monitors" if self.accel == "dxva2" else
+                         f"with {self.accel} the index counts Windows' GPUs, nova doctor lists them")
                 logging.warning(f"[VideoWorker] ⚠️ GPU {asked} (--gpu / NOVA_GPU_DEVICES) does not open on this "
-                                f"machine; using GPU 0 (nvidia-smi lists the cards there are)")
+                                f"machine; using GPU 0 ({lists})")
         return ctx, label, reason
 
     def _open_hw_decoder_on(self, base, codec_name):

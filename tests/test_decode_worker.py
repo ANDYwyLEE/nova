@@ -212,6 +212,30 @@ def test_an_nvidia_index_that_does_not_open_is_answered_with_gpu_0(qapp, caplog)
     assert calls == [1]
 
 
+def test_a_windows_adapter_index_that_does_not_open_is_answered_with_gpu_0(qapp, caplog, monkeypatch):
+    """The same cameras.ini on a Windows PC with one GPU and --accel d3d11va: index 1 is Windows' software
+    adapter there ("Failed to create Direct3D device (887a0004)"), and the camera decoded in software.
+    With dxva2 the index counts the monitors.  Without --gpu no index is handed over, so nothing is retried."""
+    for accel, words in (("d3d11va", "counts Windows' GPUs"), ("d3d12va", "counts Windows' GPUs"), ("dxva2", "counts the monitors")):
+        w = _worker(accel=accel, gpu="2")
+        seen = []
+        def on(base, codec_name, w=w, seen=seen):
+            seen.append(w._hw_device(w.accel))
+            return ("CTX", "h264 + hwaccel", None) if w.gpu_idx == 0 else (None, None, "Failed to create Direct3D device")
+        w._open_hw_decoder_on = on
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert w._open_hw_decoder(None, "h264") == ("CTX", "h264 + hwaccel", None)
+        assert seen == ["2", "0"] and w.get_gpu_idx() == 0
+        assert "GPU 2 (--gpu / NOVA_GPU_DEVICES) does not open on this machine; using GPU 0" in caplog.text
+        assert words in caplog.text
+    monkeypatch.delenv("NOVA_GPU_DEVICES", raising=False)
+    w = _worker(accel="d3d11va")                            # no index given: FFmpeg's own adapter, one try
+    calls = []
+    w._open_hw_decoder_on = lambda base, codec_name: calls.append(w._hw_device("d3d11va")) or (None, None, "no")
+    assert w._open_hw_decoder(None, "h264") == (None, None, "no") and calls == [None]
+
+
 def test_an_nvidia_card_without_its_kernel_driver_is_the_reason(qapp, monkeypatch):
     """A new mainboard did not hold the key NVIDIA's module is signed with, and Secure Boot refused the
     module: every camera said `No working HW decoder for --accel=cuda (h264_cuvid: Generic error in an external

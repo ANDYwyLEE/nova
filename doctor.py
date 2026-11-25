@@ -26,7 +26,7 @@ from collections import Counter
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from util import (opengl_shortfall, opengl_needs, mask_url, find_secrets, vaapi_node, drm_gpus, pci_gpus, accel_obstacle, DRM_VENDORS,    # noqa: E402,F401
-                  NVIDIA_ACCELS, nvidia_driver_missing,
+                  NVIDIA_ACCELS, ADAPTER_ACCELS, NVIDIA_VENDOR, dxgi_adapters, nvidia_driver_missing,
                   wheels_too_new_for_cpu, cpu_message, av_import_help, policy_block, POLICY_HELP, smart_app_control, v4l2_decoders, v4l2_obstacle, board_model,
                   LINUX, WINDOWS, MAC, WSL, MSYS, IS_PI)
 
@@ -500,6 +500,34 @@ def nvidia_index_check(indexes, count, accels):
                   f"GPU 0 and say so in their log")]
 
 
+def adapter_index_check(indexes, adapters, accels):
+    """The same for Windows' decoders, whose --gpu N is one of the GPUs Windows lists (util.dxgi_adapters):
+    with one GPU, index 1 is Windows' software adapter, which decodes nothing."""
+    beyond = sorted(i for i in indexes if i is not None and i >= len(adapters))
+    named = sorted(accels & {"d3d11va", "d3d12va"})
+    if not adapters or not beyond or not named:
+        return []
+    n = len(adapters)
+    return [("⚠", f"--gpu / NOVA_GPU_DEVICES name GPU {', '.join(map(str, beyond))}, but Windows lists {n} "
+                  f"GPU{'s' if n != 1 else ''} (0{'-' + str(n - 1) if n > 1 else ''}) for --accel {named[0]}: those "
+                  f"cameras use GPU 0")]
+
+
+def d3d11va_on_nvidia_check(indexes, adapters, accels):
+    """A line where --accel d3d11va decodes on an NVIDIA card.  Its Direct3D 11 driver waits for each
+    picture's copy to system memory with a busy CPU: 18 ms of CPU a picture on an RTX 4090 (driver 621.24,
+    November 2026) where cuda took 3 and dxva2 0.4 for the same pictures; six live windows cost 143 % of a
+    core with d3d11va, 34 % with cuda, 42 % with dxva2."""
+    if "d3d11va" not in accels or not adapters:
+        return []
+    used = {i if i is not None and i < len(adapters) else 0 for i in indexes} or {0}
+    if not any(adapters[i][1] == NVIDIA_VENDOR for i in used):
+        return []
+    return [("ℹ", "--accel d3d11va decodes on the NVIDIA card here, whose driver keeps the CPU busy while it waits "
+                  "for each picture: --accel cuda (or dxva2) decodes on the same card for a third of the CPU or "
+                  "less (docs/install.md)")]
+
+
 def quick_sync_error():
     """None when h264_qsv opens on this machine, else why not ("" when the FFmpeg build has no h264_qsv).
     Opening it starts a Quick Sync session, which needs the Intel runtime and driver, not just FFmpeg."""
@@ -630,6 +658,10 @@ def gpu_lines():
                 lines.append(("GPU", f"{vendor} {ids} (no kernel driver)"))
         nodes = sorted(os.path.basename(p) for p in glob.glob("/dev/dri/renderD*"))
         lines.append(("DRM nodes", " ".join(nodes) if nodes else "none (/dev/dri: no render node, VAAPI impossible)"))
+    adapters = dxgi_adapters()
+    if adapters and (len(adapters) > 1 or not answered):  # one NVIDIA card alone is in the line above
+        lines.append(("GPU", "Windows lists " + "; ".join(f"{i} {name}" for i, (name, _) in enumerate(adapters))
+                      + " (--gpu N for d3d11va and d3d12va; 0 has the main display)"))
     if not lines:
         lines.append(("GPU", "no nvidia-smi; the platform decoder (VideoToolbox, D3D11VA, QSV) uses the system GPU"))
     return lines
@@ -966,6 +998,10 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
                 out.append(("ℹ", f"--accel {' '.join(sorted(accels))}: could not check ({e})"))
         indexes = config_gpus(defaults, env, cs)
         out.extend(nvidia_index_check(indexes, len(re.findall(r"\d+ [^,;]+, \d+ MiB", gpu)), accels))
+        if accels & set(ADAPTER_ACCELS):
+            adapters = dxgi_adapters()
+            out.extend(adapter_index_check(indexes, adapters, accels))
+            out.extend(d3d11va_on_nvidia_check(indexes, adapters, accels))
         if LINUX and "vaapi" in accels:
             out.extend(vaapi_check(indexes, gpus, lambda node: "the node is closed to this user"
                                    if os.path.basename(node) in closed else vaapi_error(node)))

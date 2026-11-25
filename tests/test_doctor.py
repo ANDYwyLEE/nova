@@ -352,6 +352,35 @@ def test_an_nvidia_index_beyond_the_cards_is_said():
     assert check({1}, 1, {"vaapi"}) == [] and check({1}, 0, {"cuda"}) == []    # render nodes; no NVIDIA card at all
 
 
+def test_windows_gpus_and_what_d3d11va_costs_on_an_nvidia_card(monkeypatch):
+    """A Windows PC with an RTX 4090 beside the processor's Radeon (November 2026): the report listed the
+    NVIDIA card only, and nothing said that d3d11va, which the guide offers for any GPU, costs four times
+    the CPU of cuda on that card."""
+    two = [("NVIDIA GeForce RTX 4090", 0x10DE), ("AMD Radeon(TM) Graphics", 0x1002)]
+    monkeypatch.setattr(doctor, "dxgi_adapters", lambda: two)
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    monkeypatch.setattr(doctor, "LINUX", False)
+    assert doctor.gpu_lines() == [("GPU", "Windows lists 0 NVIDIA GeForce RTX 4090; 1 AMD Radeon(TM) Graphics "
+                                          "(--gpu N for d3d11va and d3d12va; 0 has the main display)")]
+    monkeypatch.setattr(doctor, "dxgi_adapters", lambda: [])
+    assert doctor.gpu_lines()[0][1].startswith("no nvidia-smi")
+
+    hint = doctor.d3d11va_on_nvidia_check
+    (mark, text), = hint({None}, two, {"d3d11va"})
+    assert mark == "ℹ" and "--accel cuda (or dxva2)" in text and "NVIDIA card" in text
+    assert hint({0, 5}, two, {"d3d11va"}) and hint(set(), two, {"d3d11va"})      # 5 is answered with GPU 0
+    assert hint({1}, two, {"d3d11va"}) == []                                     # every camera on the Radeon
+    assert hint({None}, two, {"cuda", "dxva2"}) == [] and hint({None}, [], {"d3d11va"}) == []
+    assert hint({None}, two[1:], {"d3d11va"}) == []                              # no NVIDIA card
+
+    beyond = doctor.adapter_index_check
+    (mark, text), = beyond({0, 1}, two[1:], {"d3d11va"})
+    assert mark == "⚠" and "name GPU 1, but Windows lists 1 GPU (0) for --accel d3d11va" in text
+    assert "2 GPUs (0-1) for --accel d3d12va" in beyond({2}, two, {"d3d12va"})[0][1]
+    assert beyond({0, 1}, two, {"d3d11va"}) == [] and beyond({None}, two, {"d3d11va"}) == []
+    assert beyond({3}, two, {"cuda", "dxva2"}) == [] and beyond({3}, [], {"d3d11va"}) == []
+
+
 def test_an_nvidia_card_without_its_kernel_driver_is_explained(tmp_path):
     """A PC on a new mainboard: Secure Boot refused NVIDIA's module, whose key the firmware did not hold.
     The report said `nvidia-smi present but gave no answer`, did not list the card, and had

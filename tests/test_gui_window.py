@@ -358,6 +358,35 @@ def test_a_place_off_every_screen_goes_to_the_nearest_monitor(make, monkeypatch)
     assert fit(6640, 1300, 480, 270) == (2960, 1122, 480, 270)
 
 
+def test_the_grid_starts_at_the_corner_of_the_windows_own_monitor(make, monkeypatch):
+    """The same two monitors. Counted from the corner of both together (y = -121) the lattice put windows on
+    the main monitor at y = -1, 19, 39 ...: a click on a window at y = 300 moved it to 299."""
+    w, _ = make("100,100,320,180", None)
+    left = (QRect(0, 0, 3440, 1440), QRect(0, 0, 3440, 1392))
+    right = (QRect(3440, -121, 3440, 1440), QRect(3440, -121, 3440, 1392))
+    monkeypatch.setattr(w, "_screens", lambda: [left, right])
+    monkeypatch.setattr(w, "_virtual_rect", lambda: QRect(0, -121, 6880, 1561))
+    monkeypatch.setattr(w, "_widget_wh", lambda: (498, 280))
+    put = []
+    monkeypatch.setattr(w, "_set_geometry", lambda *g: put.append(g))
+
+    def snap(x, y):
+        monkeypatch.setattr(w, "_curr_pos", lambda: (x, y))
+        w.align_grid()
+        return put[-1]
+
+    assert snap(700, 300) == (700, 300, 498, 280)                 # on the main monitor's lattice: stays
+    assert snap(707, 291) == (700, 300, 498, 280)
+    assert snap(3, 4) == (0, 0, 498, 280)                         # its top-left corner
+    assert snap(3840 + 6, 20) == (3840, 19, 498, 280)             # the raised monitor: its own rows
+    assert snap(3440 + 9, -121 + 8) == (3440, -121, 498, 280)     # and its own corner
+    assert snap(3100, 300) == (3100, 300, 498, 280)               # across the seam, most of it on the left
+    assert snap(3400, 300) == (3400, 299, 498, 280)               # most of it on the right one
+    monkeypatch.setattr(w, "_screens", lambda: [(QRect(0, 0, 1366, 768),) * 2, (QRect(1366, 0, 1920, 1080),) * 2])
+    monkeypatch.setattr(w, "_virtual_rect", lambda: QRect(0, 0, 3286, 1080))
+    assert snap(1366 + 47, 55) == (1366 + 40, 60, 498, 280)       # beside a monitor 1366 wide
+
+
 def test_a_user_move_during_the_hold_wins(make, app):
     w, core = make("100,100,320,180", None)
     w._on_screens_changed()
