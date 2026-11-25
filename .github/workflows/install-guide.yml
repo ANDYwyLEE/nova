@@ -140,7 +140,10 @@ jobs:
           wrap='xvfb-run -a -s "-screen 0 1280x720x24"'
           if command -v apt-get > /dev/null; then apt-get install -y xvfb xauth > /dev/null
           elif command -v pacman > /dev/null; then pacman -S --noconfirm --needed xorg-server-xvfb xorg-xauth > /dev/null
-          elif command -v zypper > /dev/null; then zypper install -y xorg-x11-server-Xvfb xauth xvfb-run > /dev/null
+          elif command -v zypper > /dev/null; then
+            # --force-resolution: in a Tumbleweed image git-core's awk becomes busybox-gawk, which xvfb-run
+            # does not accept and gawk conflicts with; zypper then swaps the two instead of stopping (exit 4)
+            zypper install -y --force-resolution xorg-x11-server-Xvfb xauth xvfb-run > /dev/null
           elif dnf install -y xorg-x11-server-Xvfb xauth > /dev/null 2>&1; then :
           else                    # RHEL 10 has no X server: Xwayland under a headless compositor, as its desktop runs Nova
             dnf install -y xwayland-run mutter mesa-dri-drivers > /dev/null; wrap='xwfb-run -c mutter --'
