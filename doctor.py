@@ -1014,7 +1014,8 @@ def checks(gl, ffmpeg, gpu, cfg, free, config_path, python=None):
         if LINUX and "vaapi" in accels:
             out.extend(vaapi_check(indexes, gpus, lambda node: "the node is closed to this user"
                                    if os.path.basename(node) in closed else vaapi_error(node)))
-        if ("qsv" in accels or any(g[0] == "Intel" for g in gpus)) and not any(b[0] == "Intel" for b in blocked):
+        if (("qsv" in accels and not accel_obstacle("qsv")) or any(g[0] == "Intel" for g in gpus)) \
+                and not any(b[0] == "Intel" for b in blocked):      # no Intel GPU: said above, and no driver to advise
             line = quick_sync_check(accels, gpus, quick_sync_error())
             if line:
                 out.append(line)

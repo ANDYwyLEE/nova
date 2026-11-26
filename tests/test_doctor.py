@@ -376,6 +376,33 @@ def test_a_windows_pc_whose_nvidia_card_was_taken_out(monkeypatch):
     assert doctor.gpu_lines() == [("GPU", "nvidia-smi: NVIDIA-SMI has failed because you do not have sufficient permissions")]
 
 
+def test_the_report_where_an_accel_is_of_a_maker_the_machine_has_no_gpu_of(tmp_path, monkeypatch):
+    """A Windows PC with a Radeon alone and `--accel cuda` in cameras.ini had `✓ --accel cuda has a decoder
+    in this FFmpeg build`; for `--accel qsv` a machine without an Intel GPU was told to update Intel's
+    driver (on Linux: to install Intel's packages) in a second line."""
+    import util
+    import videoworker
+    ini = tmp_path / "cameras.ini"
+    ini.write_text("[defaults]\nopts = --accel cuda\n[a]\nurl = rtsp://192.0.2.1/x\n"
+                   "[b]\nurl = rtsp://192.0.2.2/x\nopts = --accel qsv\n[c]\nurl = rtsp://192.0.2.3/x\nopts = --accel amf\n")
+    os.chmod(ini, 0o600)
+    radeon = [("AMD", "1002:1638", "amdwddmg")]
+    monkeypatch.setattr(util, "pci_gpus", lambda root=None: radeon)
+    monkeypatch.setattr(util, "windows_gpus", lambda: radeon)
+    monkeypatch.setattr(util, "WSL", False)
+    monkeypatch.setattr(videoworker, "accel_in_build", lambda a: True)
+    monkeypatch.setattr(doctor, "drm_gpus", lambda: [])
+    monkeypatch.setattr(doctor, "nvidia_driver_missing", lambda: None)
+    asked = []
+    monkeypatch.setattr(doctor, "quick_sync_error", lambda: asked.append(1) or "ExternalError: …")
+    out = doctor.report(config=str(ini), gl=False)
+    assert "⚠ --accel cuda is in cameras.ini but this machine has no NVIDIA GPU: software decoding" in out
+    assert "⚠ --accel qsv is in cameras.ini but this machine has no Intel GPU, and Quick Sync is Intel's: software decoding" in out
+    assert "✓ --accel amf has a decoder in this FFmpeg build" in out
+    assert "Quick Sync does not start" not in out and not asked
+    assert "--accel cuda has a decoder" not in out
+
+
 def test_windows_gpus_and_what_d3d11va_costs_on_an_nvidia_card(monkeypatch):
     """A Windows PC with an RTX 4090 beside the processor's Radeon (November 2026): the report listed the
     NVIDIA card only, and nothing said that d3d11va, which the guide offers for any GPU, costs four times

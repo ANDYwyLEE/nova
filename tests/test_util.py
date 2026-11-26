@@ -154,6 +154,103 @@ def test_what_stands_between_an_accel_and_the_machine():
     assert util.accel_obstacle("cuda", []) is None and util.accel_obstacle("", amd) is None    # nothing to go by
 
 
+class _PlugAndPlay:
+    """cfgmgr32 as util.windows_gpus asks it: the PCI devices that are present, {instance id: (hardware
+    ids, driver service)}."""
+
+    def __init__(self, devices, answers=True):
+        self.devices, self.order, self.answers = devices, list(devices), answers
+
+    def _ids(self):
+        return "\0".join(self.order) + "\0\0"
+
+    def CM_Get_Device_ID_List_SizeW(self, size, enumerator, flags):
+        assert enumerator == "PCI" and flags == 0x101           # this enumerator's devices, the present ones
+        size._obj.value = len(self._ids())
+        return 0 if self.answers else 0x13
+
+    def CM_Get_Device_ID_ListW(self, enumerator, buf, n, flags):
+        buf[0:n] = self._ids()
+        return 0
+
+    def CM_Locate_DevNodeW(self, node, dev, flags):
+        node._obj.value = self.order.index(dev) + 1
+        return 0
+
+    def CM_Get_DevNode_Registry_PropertyW(self, node, which, kind, text, n, flags):
+        value = self.devices[self.order[node.value - 1]][{2: 0, 5: 1}[which]]
+        if not value:
+            return 0x25                                         # CR_NO_SUCH_VALUE: no driver has the device
+        text[0:len(value) + 1] = value + "\0"
+        n._obj.value = 2 * (len(value) + 1)
+        return 0
+
+
+def _hw(vendor, device, cls):
+    return "\0".join(f"PCI\\VEN_{vendor}&DEV_{device}{tail}" for tail in ("&SUBSYS_00000000&REV_A1", f"&CC_{cls}00", f"&CC_{cls}"))
+
+
+def test_the_gpus_of_a_windows_pc(monkeypatch):
+    """A Windows PC whose RTX 4090 had left (November 2026): the card's driver, nvidia-smi and its entry in
+    the registry stayed, and what tells that it is gone is that Plug and Play does not have it as a present
+    device.  The list is of the display controllers on the PCI bus now, as util.pci_gpus' on Linux."""
+    import ctypes
+    windows_gpus = util.windows_gpus.real
+    pc = _PlugAndPlay({
+        r"PCI\VEN_1002&DEV_1638&SUBSYS_01231002&REV_C4\4&2ED5A9F5&0&0041": (_hw("1002", "1638", "0300"), "amdwddmg"),
+        r"PCI\VEN_10DE&DEV_2684&SUBSYS_41041458&REV_A1\4&1A2B3C4D&0&0009": (_hw("10DE", "2684", "0300"), "nvlddmkm"),
+        r"PCI\VEN_10DE&DEV_22BA&SUBSYS_41041458&REV_A1\4&1A2B3C4D&0&0109": (_hw("10DE", "22BA", "0403"), "NVHDA"),
+        r"PCI\VEN_10DE&DEV_2330&SUBSYS_16C110DE&REV_A1\4&5E6F7A8B&0&0010": (_hw("10DE", "2330", "0302"), ""),
+        r"PCI\VEN_8086&DEV_3E92&SUBSYS_86941043&REV_00\3&11583659&0&10": (_hw("8086", "3E92", "0300"), "BasicDisplay"),
+        r"PCI\VEN_10EC&DEV_8168&SUBSYS_012310EC&REV_15\01000000684CE00000": (_hw("10EC", "8168", "0200"), "rt640x64"),
+        r"PCI\VEN_1022&DEV_1639&SUBSYS_87E21043&REV_00\4&2ED5A9F5&0&0341": (_hw("1022", "1639", "0C03"), "USBXHCI"),
+    })
+    monkeypatch.setattr(util, "WINDOWS", True)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name: pc, raising=False)
+    monkeypatch.setattr(util, "dxgi_adapters", lambda: [("AMD Radeon(TM) Graphics", 0x1002)])
+    assert windows_gpus() == [("AMD", "1002:1638", "amdwddmg"), ("NVIDIA", "10de:2684", "nvlddmkm"),
+                              ("NVIDIA", "10de:2330", "no driver"), ("Intel", "8086:3e92", "BasicDisplay")]
+    # a virtual machine's share of its host's card is no PCI device: DXGI has it
+    del pc.devices[pc.order.pop(1)], pc.devices[pc.order.pop(2)]
+    monkeypatch.setattr(util, "dxgi_adapters", lambda: [("NVIDIA GeForce RTX 4090", 0x10DE), ("AMD Radeon(TM) Graphics", 0x1002)])
+    assert windows_gpus() == [("AMD", "1002:1638", "amdwddmg"), ("Intel", "8086:3e92", "BasicDisplay"),
+                              ("NVIDIA", "10de:----", "DXGI")]
+    # the bus not read: DXGI's list alone is no ground (it has no card that only computes)
+    pc.answers = False
+    assert windows_gpus() == []
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name: 1 / 0, raising=False)
+    assert windows_gpus() == []
+    monkeypatch.setattr(util, "WINDOWS", False)
+    monkeypatch.setattr(util, "MSYS", False)
+    assert windows_gpus() == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Plug and Play is Windows'")
+def test_windows_lists_its_gpus():
+    gpus = util.windows_gpus.real()
+    assert isinstance(gpus, list) and all(len(g) == 3 and g[0] and g[2] for g in gpus)
+    assert {name for name, _ in util.dxgi_adapters()} == set() or gpus          # a GPU DXGI has is in the list
+
+
+def test_an_accel_of_a_maker_whose_gpu_the_pc_has_not(monkeypatch):
+    """The same PC, the Radeon alone, `--accel cuda` in its cameras.ini: nothing knew a Windows PC's GPUs,
+    so the camera tried, failed and tried again every few minutes, and nova doctor said `✓ --accel cuda has
+    a decoder in this FFmpeg build`."""
+    radeon = [("AMD", "1002:1638", "amdwddmg")]
+    assert util.accel_obstacle("amf", radeon) is None
+    assert util.accel_obstacle("amf", [("NVIDIA", "10de:2684", "nvlddmkm")]) == "this machine has no AMD GPU, and AMF is AMD's"
+    assert util.accel_obstacle("d3d11va", radeon) is None and util.accel_obstacle("dxva2", radeon) is None
+    asked = []
+    monkeypatch.setattr(util, "windows_gpus", lambda: asked.append(1) or radeon)
+    monkeypatch.setattr(util, "LINUX", False)
+    assert util.accel_obstacle("cuda") == "this machine has no NVIDIA GPU"
+    assert util.accel_obstacle("qsv") == "this machine has no Intel GPU, and Quick Sync is Intel's"
+    assert util.accel_obstacle("amf") is None and len(asked) == 3
+    assert util.accel_obstacle("d3d11va") is None and util.accel_obstacle("") is None and len(asked) == 3    # not asked for these
+    monkeypatch.setattr(util, "windows_gpus", lambda: [])       # a Mac, or a Windows that does not answer
+    assert util.accel_obstacle("cuda") is None
+
+
 def test_an_nvidia_card_no_kernel_driver_has(monkeypatch):
     """A PC on a new mainboard, whose firmware did not hold the key NVIDIA's module is signed with: Secure
     Boot refused the module, and the cameras said `No working HW decoder for --accel=cuda (h264_cuvid: Generic

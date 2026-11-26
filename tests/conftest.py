@@ -29,10 +29,14 @@ def _no_gpus_of_this_machine(monkeypatch):
     """What sits on the PCI bus of the machine the tests run on is not theirs to go by: on a PC whose
     NVIDIA card had no kernel driver (a new mainboard that did not hold the module's key), every test
     that lets a stand-in cuda decoder fail was answered with that machine's trouble.  util.pci_gpus()
-    finds nothing here, unless a test gives it a tree of its own or puts cards there itself."""
+    finds nothing here, unless a test gives it a tree of its own or puts cards there itself; the same for
+    a Windows PC's (util.windows_gpus.real is the function itself)."""
     import util
     real = util.pci_gpus
     monkeypatch.setattr(util, "pci_gpus", lambda root=None: real(root) if root else [])
+    none = lambda: []                                      # noqa: E731
+    none.real = util.windows_gpus
+    monkeypatch.setattr(util, "windows_gpus", none)
 
 
 @pytest.fixture(scope="session")

@@ -393,6 +393,55 @@ def pci_gpus(root="/sys/bus/pci/devices"):
     return out
 
 
+def windows_gpus():
+    """pci_gpus' list on Windows: the display controllers Plug and Play has on the PCI bus now, each with
+    its driver's service ('nvlddmkm', 'amdwddmg', 'BasicDisplay'), and after them the adapters DXGI lists
+    whose maker is not among those (a virtual machine's share of its host's card is no PCI device).  A
+    card that was taken out is in neither, though its driver, nvidia-smi and its registry entries stay
+    (a PC whose RTX 4090 had left, November 2026); one that only computes is on the bus, and DXGI does
+    not list it.  [] on another system, or when Windows does not answer."""
+    if not (WINDOWS or MSYS):
+        return []
+    found = []
+    try:
+        import ctypes
+        cm = ctypes.WinDLL("cfgmgr32")
+        present = 0x1 | 0x100                                # CM_GETIDLIST_FILTER_ENUMERATOR | ..._PRESENT
+        size = ctypes.c_ulong()
+        if cm.CM_Get_Device_ID_List_SizeW(ctypes.byref(size), "PCI", present) or not size.value:
+            return []
+        buf = ctypes.create_unicode_buffer(size.value)
+        if cm.CM_Get_Device_ID_ListW("PCI", buf, size.value, present):
+            return []
+        ids = buf[:size.value]
+
+        def prop(node, which):                               # a device's property; NULs between its strings
+            text, n = ctypes.create_unicode_buffer(2048), ctypes.c_ulong(4096)
+            if cm.CM_Get_DevNode_Registry_PropertyW(node, which, None, text, ctypes.byref(n), 0):
+                return ""
+            return text[:n.value // 2].strip("\0")
+
+        for dev in filter(None, ids.split("\0")):
+            m = re.match(r"PCI\\VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})", dev.upper())
+            node = ctypes.c_ulong()
+            if not m or cm.CM_Locate_DevNodeW(ctypes.byref(node), dev, 0):
+                continue
+            if "&CC_03" not in prop(node, 2).upper():        # CM_DRP_HARDWAREID: ...&CC_030000 = display controller
+                continue
+            vendor = "0x" + m.group(1).lower()
+            found.append((DRM_VENDORS.get(vendor, vendor), f"{m.group(1)}:{m.group(2)}".lower(),
+                          prop(node, 5) or "no driver"))     # CM_DRP_SERVICE
+    except Exception:
+        return []                                            # the bus was not read: DXGI's list alone is no ground
+    makers = {g[0] for g in found}
+    for _, vendor_id in dxgi_adapters():
+        vendor = f"0x{vendor_id:04x}"
+        if DRM_VENDORS.get(vendor, vendor) not in makers:
+            makers.add(DRM_VENDORS.get(vendor, vendor))
+            found.append((DRM_VENDORS.get(vendor, vendor), f"{vendor_id:04x}:----", "DXGI"))
+    return found
+
+
 # What FFmpeg's ..._v4l2m2m decoders hand to the kernel: the camera's stream as it comes.  A device takes it
 # on its OUTPUT queue under one of these names.  A stateless decoder (a Raspberry Pi 5's for HEVC: 'S265')
 # wants the stream taken apart first, which this FFmpeg has no part for.
@@ -465,26 +514,34 @@ def board_model(path="/proc/device-tree/model"):
         return ""
 
 
+# --accel values that are one GPU maker's, and the sentence for a machine without a GPU of that maker
+ACCEL_MAKER = {**{a: "NVIDIA" for a in NVIDIA_ACCELS}, "qsv": "Intel", "amf": "AMD"}
+NO_GPU_OF = {"NVIDIA": "this machine has no NVIDIA GPU",
+             "Intel": "this machine has no Intel GPU, and Quick Sync is Intel's",
+             "AMD": "this machine has no AMD GPU, and AMF is AMD's"}
+
+
 def accel_obstacle(accel, gpus=None):
     """What stands between --accel and this machine whatever is installed in Python, in words for the log
-    and for nova doctor; None when nothing is known to (and always outside Linux; for a GPU's API also
-    where the kernel shows no display controller at all: a container, an ARM board).  `gpus`: pci_gpus()."""
+    and for nova doctor; None when nothing is known to (always on a Mac; for a GPU's API also where the
+    system shows no display controller at all: a container, an ARM board).  `gpus`: pci_gpus(), on
+    Windows windows_gpus()."""
     a = (accel or "").lower()
     if a == "v4l2m2m":
         return v4l2_obstacle(v4l2_decoders(), board_model())
+    maker = ACCEL_MAKER.get(a)
+    if not maker:
+        return None
     if gpus is None:
-        gpus = pci_gpus() if LINUX and not WSL else []       # WSL reaches the GPU through /dev/dxg
+        gpus = pci_gpus() if LINUX and not WSL else windows_gpus()      # WSL reaches the GPU through /dev/dxg
     if not gpus:
         return None
-    if a in NVIDIA_ACCELS:
-        nvidia = [g for g in gpus if g[0] == "NVIDIA"]
-        if not nvidia:
-            return "this machine has no NVIDIA GPU"
-        if all(g[2] == "nouveau" for g in nvidia):
-            return ("the NVIDIA card runs on the nouveau driver, and NVIDIA's decoder (NVDEC) comes with "
-                    "NVIDIA's own driver only")
-    if a == "qsv" and not any(g[0] == "Intel" for g in gpus):
-        return "this machine has no Intel GPU, and Quick Sync is Intel's"
+    theirs = [g for g in gpus if g[0] == maker]
+    if not theirs:
+        return NO_GPU_OF[maker]
+    if maker == "NVIDIA" and all(g[2] == "nouveau" for g in theirs):
+        return ("the NVIDIA card runs on the nouveau driver, and NVIDIA's decoder (NVDEC) comes with "
+                "NVIDIA's own driver only")
     return None
 
 
