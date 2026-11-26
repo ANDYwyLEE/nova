@@ -27,6 +27,7 @@ DVRIP_PORT = 34567                               # XMeye / XiongMai devices (cam
 WSD_GROUP = ("239.255.255.250", 3702)            # WS-Discovery, which ONVIF devices answer
 MAX_HOSTS = 1022                                 # a network larger than a /22 is searched only when it is named
 CONNECT_S = 0.7                                  # a camera on the LAN answers a connection in milliseconds
+RETRY_S = 1.0                                    # the second try for an address that did not answer the first
 ANSWER_S = 4.0                                   # ... and RTSP's OPTIONS as fast, but for one that is busy
 ASK_S = 4.0                                      # one RTSP question
 TRIES = 3                                        # user name and password are asked this often for one camera
@@ -384,6 +385,12 @@ def search(hosts, own=(), wait=2.5, ports=RTSP_PORTS, wsd_port=WSD_GROUP[1], dvr
     started = time.monotonic()
     probe(hosts, own)
     first = connects([(h, ports[0]) for h in hosts], hello=hello, answer_s=answer_s)
+    # Once more for the addresses that said nothing: a machine that has not talked to a camera yet asks
+    # for its hardware address first, and a camera on Wi-Fi may take a second over that answer (from
+    # a Mac new to the network, 54 addresses of a /22 answered within 0.7 s, 57 within 1.5 s, 60 within
+    # 3 s, and one camera was missed in five searches of five).  This fits into the wait for the probe.
+    first.update(connects([(h, ports[0]) for h in hosts if (h, ports[0]) not in first], timeout=RETRY_S,
+                          hello=hello, answer_s=answer_s))
     listen(time.monotonic())
     there = [h for h in hosts if (h, ports[0]) in first or h in found]
     probe([h for h in there if h not in found])          # once more, now that these are known to be there

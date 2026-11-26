@@ -262,6 +262,25 @@ def test_a_large_network_is_asked_through_several_sockets(monkeypatch):
     assert len(sent) == 11 and max(s.n for s in sent) <= 101 and sum(s.n for s in sent) == 1022     # 1021 + the group
 
 
+def test_an_address_that_said_nothing_is_asked_once_more(monkeypatch):
+    """A Mac that had not talked to the cameras before: one of them, on Wi-Fi, was not there within the
+    0.7 s of the first connection in five searches of five, and answered a second later."""
+    calls = []
+
+    def connects(targets, timeout=camfind.CONNECT_S, hello=None, answer_s=None):
+        calls.append((sorted(targets), timeout))
+        if len(calls) == 1:
+            return {("192.0.2.7", 554): b"RTSP/1.0 200 OK\r\nServer: A\r\n\r\n"}
+        if len(calls) == 2:
+            return {("192.0.2.8", 554): b"RTSP/1.0 200 OK\r\nServer: B\r\n\r\n"}
+        return {}
+    monkeypatch.setattr(camfind, "connects", connects)
+    found = camfind.search(["192.0.2.7", "192.0.2.8", "192.0.2.9"], wait=0, wsd_port=_closed_port())
+    assert [(d.ip, d.server) for d in found] == [("192.0.2.7", "A"), ("192.0.2.8", "B")]
+    assert calls[1] == ([("192.0.2.8", 554), ("192.0.2.9", 554)], camfind.RETRY_S)        # only those that said nothing
+    assert {h for h, _ in calls[2][0]} == {"192.0.2.7", "192.0.2.8"}                     # the other ports: of those that are there
+
+
 def test_which_addresses_a_word_names():
     assert camfind.hosts_of("192.168.7.9") == ["192.168.7.9"] and camfind.hosts_of("8.8.8.8") == ["8.8.8.8"]
     assert camfind.hosts_of("192.168.7.9/30") == ["192.168.7.9", "192.168.7.10"]        # the network it is in
