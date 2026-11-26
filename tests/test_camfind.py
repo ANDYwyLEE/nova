@@ -5,6 +5,7 @@ import os
 import re
 import socket
 import threading
+import time
 
 import pytest
 
@@ -151,14 +152,24 @@ def test_what_a_device_says_to_the_discovery_probe():
     assert name == "ared opts = -t x" and "\x1b" not in name and "\n" not in name
 
 
-def test_connections_tell_who_is_there(camera):
+def test_connections_tell_who_is_there(camera, monkeypatch):
     cam, closed = camera(), _closed_port()
-    answers = camfind.connects([("127.0.0.1", cam.port), ("127.0.0.1", closed)], window=1)       # one at a time
+    # Windows says "refused" only after trying again by itself: the second try's timeout is made for that
+    t0 = time.monotonic()
+    with socket.socket() as probe:
+        probe.settimeout(10)
+        probe.connect_ex(("127.0.0.1", closed))
+    took = time.monotonic() - t0
+    answers = camfind.connects([("127.0.0.1", cam.port), ("127.0.0.1", closed)], timeout=camfind.RETRY_S, window=1)   # one at a time
     assert answers[("127.0.0.1", cam.port)] is True
-    assert answers.get(("127.0.0.1", closed)) is False        # refused: nobody listens, the host is there
+    assert answers.get(("127.0.0.1", closed)) is False, f"a refusal takes {took:.2f} s here"      # nobody listens, the host is there
     # the question goes on the connection that was made: one connection for a camera that serves one at a time
-    said = camfind.connects([("127.0.0.1", cam.port), ("127.0.0.1", closed)], hello=camfind._options)
+    said = camfind.connects([("127.0.0.1", cam.port), ("127.0.0.1", closed)], timeout=camfind.RETRY_S, hello=camfind._options)
     assert said[("127.0.0.1", cam.port)].startswith(b"RTSP/1.0 200") and said[("127.0.0.1", closed)] is False
+    # more targets than one selector takes on Windows: lots side by side, the same answers
+    monkeypatch.setattr(camfind, "SIDE_BY_SIDE", True)
+    assert camfind.connects([("127.0.0.1", cam.port), ("127.0.0.1", closed)], timeout=camfind.RETRY_S, window=1) == answers
+    monkeypatch.setattr(camfind, "SIDE_BY_SIDE", os.name == "nt")
     assert camfind.server_line(said[("127.0.0.1", cam.port)]) == "Fake/1.0"         # cut before "(Build 7)"
     assert camfind.server_line(b"HTTP/1.1 400 Bad Request\r\n\r\n") is None and camfind.server_line(True) is None
     assert camfind.server_line(b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n") == "" and camfind.server_line(b"") is None

@@ -20,6 +20,7 @@ import hashlib
 import getpass
 import ipaddress
 import selectors
+import threading
 from urllib.parse import urlsplit, unquote
 
 RTSP_PORTS = (554, 8554, 10554, 5554, 7447)      # the first is asked of every address, the others of those that answer
@@ -27,7 +28,11 @@ DVRIP_PORT = 34567                               # XMeye / XiongMai devices (cam
 WSD_GROUP = ("239.255.255.250", 3702)            # WS-Discovery, which ONVIF devices answer
 MAX_HOSTS = 1022                                 # a network larger than a /22 is searched only when it is named
 CONNECT_S = 0.7                                  # a camera on the LAN answers a connection in milliseconds
-RETRY_S = 1.0                                    # the second try for an address that did not answer the first
+# The second try for an address that did not answer the first.  Longer on Windows, which tells of a
+# refused connection only after it has tried again by itself: on GitHub's Windows runner a closed port
+# of the loopback address was not refused within 0.7 s, where Linux and macOS say so at once.
+RETRY_S = 2.5 if os.name == "nt" else 1.0
+SIDE_BY_SIDE = os.name == "nt"                   # select() takes 512 sockets there: larger lots in threads
 ANSWER_S = 4.0                                   # ... and RTSP's OPTIONS as fast, but for one that is busy
 ASK_S = 4.0                                      # one RTSP question
 TRIES = 3                                        # user name and password are asked this often for one camera
@@ -180,6 +185,18 @@ def connects(targets, timeout=CONNECT_S, window=None, hello=None, answer_s=None)
     window = window or _window()
     answer_s = ANSWER_S if answer_s is None else answer_s
     answers, todo = {}, list(dict.fromkeys(targets))
+    if SIDE_BY_SIDE and len(todo) > window:
+        # a lot of `window` to a thread, each with a selector of its own: the addresses that are not
+        # there hold their place for the whole timeout, and a /22 in lots one after the other would
+        # take three timeouts
+        lots = [todo[i:i + window] for i in range(0, len(todo), window)]
+        threads = [threading.Thread(target=lambda lot=lot: answers.update(connects(lot, timeout, window, hello, answer_s)),
+                                    daemon=True) for lot in lots]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return answers
     sel = selectors.DefaultSelector()
     pending = {}                                         # socket: [target, deadline, None while connecting | bytes read]
 
