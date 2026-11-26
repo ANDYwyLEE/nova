@@ -636,9 +636,17 @@ def nvidia_smi_failure(said):
     return f"nvidia-smi: {first[:160]}" if first else "nvidia-smi present but gave no answer"
 
 
+# A Windows PC whose NVIDIA card was taken out while its driver stayed installed (November 2026): nvidia-smi
+# is still in System32, and its sentence was "…you do not have sufficient permissions" for a user and
+# "…couldn't communicate with the NVIDIA driver" for an administrator.  Neither is what is the matter.
+NO_NVIDIA_CARD = ("no NVIDIA card in Windows' list (nvidia-smi is installed and reaches none: the driver of a card "
+                  "that was taken out, or that Windows has disabled)")
+
+
 def gpu_lines():
     lines = []
     answered = False                                      # nvidia-smi listed the NVIDIA cards
+    adapters = dxgi_adapters()
     if shutil.which("nvidia-smi"):
         query = ["nvidia-smi", "--query-gpu=index,name,driver_version,memory.total,memory.used", "--format=csv,noheader"]
         out = _run(query)
@@ -647,6 +655,8 @@ def gpu_lines():
             gpus = [[c.strip() for c in row.split(",")] for row in out.splitlines()]
             drv = gpus[0][2] if gpus and len(gpus[0]) > 2 else "?"
             lines.append(("GPU", f"NVIDIA driver {drv}: " + "; ".join(f"{g[0]} {g[1]}, {g[3]} ({g[4]} used)" for g in gpus if len(g) >= 5)))
+        elif adapters and not any(vendor == NVIDIA_VENDOR for _, vendor in adapters):
+            lines.append(("GPU", NO_NVIDIA_CARD))         # Windows answered, and its list has none
         else:
             lines.append(("GPU", nvidia_smi_failure(_said(query))))
     if LINUX:
@@ -658,7 +668,6 @@ def gpu_lines():
                 lines.append(("GPU", f"{vendor} {ids} (no kernel driver)"))
         nodes = sorted(os.path.basename(p) for p in glob.glob("/dev/dri/renderD*"))
         lines.append(("DRM nodes", " ".join(nodes) if nodes else "none (/dev/dri: no render node, VAAPI impossible)"))
-    adapters = dxgi_adapters()
     if adapters and (len(adapters) > 1 or not answered):  # one NVIDIA card alone is in the line above
         lines.append(("GPU", "Windows lists " + "; ".join(f"{i} {name}" for i, (name, _) in enumerate(adapters))
                       + " (--gpu N for d3d11va and d3d12va; 0 has the main display)"))

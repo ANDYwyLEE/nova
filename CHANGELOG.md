@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-26 — A Windows PC whose NVIDIA card was taken out
+
+The RTX 4090 of the entry below went back to the Linux box, and NVIDIA's driver stayed installed on the Windows PC. Nova there is as it was on the Radeon alone: `--accel d3d11va` decodes on it (7 % of a core for a 1080p camera at 10 fps), the window places and the monitors' order are those of before the card.
+
+- **`nova doctor`** gave nvidia-smi's own sentence as its GPU line, and nvidia-smi, still in System32, said `NVIDIA-SMI has failed because you do not have sufficient permissions` to a user and `…couldn't communicate with the NVIDIA driver` to an administrator. Where Windows' list of GPUs (DXGI) has no NVIDIA card the line is now `no NVIDIA card in Windows' list (nvidia-smi is installed and reaches none: the driver of a card that was taken out, or that Windows has disabled)`. With a card in that list and an nvidia-smi that fails, the report keeps nvidia-smi's sentence.
+- **Tests**: that line, and the two cases that keep nvidia-smi's sentence.
+
 ## 2026-11-25 — Windows with an NVIDIA card
 
 The Windows test PC (Ryzen 9 5900HX with its Radeon) got an RTX 4090, driver 621.24, with both monitors on the card. NVIDIA on Windows was the line under "Not run on hardware" in the install guide. It ran with Option A (python.org's Python and the wheels): the test suite (572 passed, 58 skipped), every decoder and encoder below with real cameras, keys and mouse, windows moved across both monitors, the wall of thirteen cameras. Option B (MSYS2) ran the same evening, once Smart App Control was switched off there (the entry of 2026-11-20): 577 passed, 53 skipped, and the same results from its own FFmpeg package, decoder for decoder and file for file.

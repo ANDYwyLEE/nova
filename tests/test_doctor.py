@@ -352,6 +352,30 @@ def test_an_nvidia_index_beyond_the_cards_is_said():
     assert check({1}, 1, {"vaapi"}) == [] and check({1}, 0, {"cuda"}) == []    # render nodes; no NVIDIA card at all
 
 
+def test_a_windows_pc_whose_nvidia_card_was_taken_out(monkeypatch):
+    """The RTX 4090 left the Windows test PC and its driver stayed (November 2026).  nvidia-smi was still in
+    System32, and the report's GPU line was its sentence: "you do not have sufficient permissions" for a
+    user, "couldn't communicate with the NVIDIA driver" for an administrator.  Windows' own list says what
+    is the matter: it has no NVIDIA card."""
+    radeon = [("AMD Radeon(TM) Graphics", 0x1002)]
+    said = "NVIDIA-SMI has failed because you do not have sufficient permissions. Please try running as an administrator.\r\n"
+    monkeypatch.setattr(doctor, "LINUX", False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: r"C:\WINDOWS\system32\nvidia-smi.exe")
+    monkeypatch.setattr(doctor, "_run", lambda cmd, timeout=10: "")
+    monkeypatch.setattr(doctor, "_said", lambda cmd, timeout=10: said.strip())
+    monkeypatch.setattr(doctor, "dxgi_adapters", lambda: radeon)
+    (_, first), (_, second) = doctor.gpu_lines()
+    assert first.startswith("no NVIDIA card in Windows' list") and "permissions" not in first
+    assert second.startswith("Windows lists 0 AMD Radeon(TM) Graphics")
+    assert not doctor.NVIDIA_SMI_FAILED.search(first)             # no finding about a kernel driver from it
+    # a card Windows does list, and an nvidia-smi that fails all the same: its own sentence, as before
+    monkeypatch.setattr(doctor, "dxgi_adapters", lambda: [("NVIDIA GeForce RTX 4090", 0x10DE)] + radeon)
+    assert doctor.gpu_lines()[0][1] == "nvidia-smi: NVIDIA-SMI has failed because you do not have sufficient permissions"
+    # Windows gave no list (and another system has none): nothing to tell it from
+    monkeypatch.setattr(doctor, "dxgi_adapters", lambda: [])
+    assert doctor.gpu_lines() == [("GPU", "nvidia-smi: NVIDIA-SMI has failed because you do not have sufficient permissions")]
+
+
 def test_windows_gpus_and_what_d3d11va_costs_on_an_nvidia_card(monkeypatch):
     """A Windows PC with an RTX 4090 beside the processor's Radeon (November 2026): the report listed the
     NVIDIA card only, and nothing said that d3d11va, which the guide offers for any GPU, costs four times
