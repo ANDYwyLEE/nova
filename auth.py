@@ -1016,6 +1016,24 @@ def _public(resolver, default_port):
     resolve.__doc__ = f"{resolver.__name__} for a URI string; the resolved URL or None (no caching)."
     return resolve
 
+def find_stream(scheme, user, pwd, host, port=None, should_stop=None):
+    """The rtsp:// URL, credentials in it, that a shortcut scheme gives for the main stream of the device
+    at `host`; None when it gives none.  For `nova find`, which asks while the user looks on and tries
+    the next way itself: failures are logged at DEBUG and nothing is cached."""
+    scheme = SCHEME_ALIASES.get(scheme, scheme)
+    info = {'user': user, 'pwd': pwd, 'ip': host, 'host': _url_host(host),
+            'port': port or SHORTCUT_DEFAULT_PORTS[scheme], 'channel': 1, 'channel_given': False,
+            'stream': '0', 'stream_idx': 0}
+    _tls.last, _tls.quiet = None, True
+    try:
+        url, _ = _RESOLVERS[scheme](info, should_stop)
+    except ResolveStopped:
+        return None
+    finally:
+        _tls.quiet = False
+    return url if url and _points_to_camera(url, info) else None
+
+
 resolve_onvif = _public(_resolve_onvif, None)
 resolve_xmeye = _public(_resolve_xmeye, 34567)
 resolve_hikvision = _public(_resolve_hikvision, 80)

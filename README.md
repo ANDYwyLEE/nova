@@ -40,7 +40,8 @@ Press **H** in the window for the key map, **R** to record, **A** for audio, **S
 More than one camera: put them in `cameras.ini` (git-ignored, so passwords stay on your machine) and use the launcher.
 
 ```bash
-cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # one [section] per camera (it holds passwords)
+./nova find                             # looks for the cameras on your network and writes cameras.ini for the ones you pick
+cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # or by hand: one [section] per camera (it holds passwords)
 ./nova start                            # a window per enabled camera (Windows: nova start)
 ./nova record                           # the same without windows, recording from the first frame
 ./nova run frontdoor -r                 # one camera in this terminal; extra args go to nova.py
@@ -100,9 +101,10 @@ One `nova.py` process is one camera. The decoder thread hands frames to the GUI 
 | File | Role |
 |---|---|
 | `nova.py` | command line, logging, Qt application, shutdown |
-| `nova`, `nova.bat`, `cams.py`, `cameras.example.ini` | the launcher (`nova start / record / run / stop / restart / status / list / layout`), its implementation and the camera-list template (`cameras.ini` is git-ignored) |
+| `nova`, `nova.bat`, `cams.py`, `cameras.example.ini` | the launcher (`nova start / record / run / stop / restart / status / list / find / layout`), its implementation and the camera-list template (`cameras.ini` is git-ignored) |
 | `novacore.py` | per-camera controller: worker, recorder, streamer, audio, snapshots |
 | `control.py` | the camera's control channel (`nova stop / status / layout apply` talk to a running camera through it) |
+| `camfind.py` | `nova find`: the search for cameras on the network (ONVIF discovery, RTSP), the question to a camera for its stream, the section written to `cameras.ini` |
 | `doctor.py` | `nova doctor`: versions, GPU and OpenGL driver, the FFmpeg build, audio devices, a masked summary of the configuration, checks |
 | `videoworker.py` | connect / decode thread, HW decoder selection, URI resolution, frame fan-out |
 | `view.py`, `novagl.py` | frameless window, OSD, geometry, zoom; OpenGL shader renderer |

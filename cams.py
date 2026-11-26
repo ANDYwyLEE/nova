@@ -53,6 +53,8 @@ nova - start and stop the Nova cameras listed in cameras.ini (template: cameras.
   nova restart [ID ...] [nova.py options]  stop, then start again as launched (record stays record, layout stays)
   nova status                              launched cameras: running or exited, uptime, recording/stream state
   nova list                                cameras, enabled state and options (passwords masked)
+  nova find [NETWORK | ADDRESS ...]        look for cameras on the network (ONVIF, RTSP), ask for the user name and
+                                           password of the ones you pick, and add them to cameras.ini
   nova doctor                              versions, drivers, FFmpeg build, masked config: paste it into a bug report
   nova layout save NAME                    remember which cameras are open and where (layouts/NAME.json)
   nova layout list                         saved layouts
@@ -119,7 +121,8 @@ def load(path, quiet=False):
         copy = "copy" if WINDOWS else "cp"
         sys.exit(f"{os.path.basename(path)} not found.\n"
                  f"  {copy} {os.path.basename(EXAMPLE)} {os.path.basename(path)}   and put your cameras in it (it is git-ignored)"
-                 + ("." if WINDOWS else f";\n  chmod 600 {os.path.basename(path)}   since it holds their passwords."))
+                 + ("." if WINDOWS else f";\n  chmod 600 {os.path.basename(path)}   since it holds their passwords.")
+                 + "\n  Or let Nova look for the cameras and write it: nova find")
     if not WINDOWS and not quiet and os.stat(path).st_mode & 0o077:
         print(f"warning: {os.path.basename(path)} holds passwords but other users can read it: "
               f"chmod 600 {os.path.basename(path)}", file=sys.stderr)
@@ -1292,6 +1295,10 @@ def main(argv=None):
         return 0
     if cmd == "desktop":
         return cmd_desktop(tokens)
+    if cmd == "find":                                # works without cameras.ini: it can write the first one
+        import camfind
+        cams = load(config, quiet=True)[2] if os.path.exists(config) else []
+        return camfind.main(config, tokens, cams, EXAMPLE)
     if cmd not in COMMANDS:
         sys.exit(f"unknown command '{cmd}'\n\n{USAGE.rstrip()}")
     if cmd in ("start", "record", "run", "restart", "layout") and util.cpu_message():

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-26 — nova find: the cameras of the network into cameras.ini
+
+Until now a camera came into `cameras.ini` by typing its URL, which means knowing its address, port and RTSP path. `nova find` looks for the cameras, asks for the user name and password of the ones picked, finds each one's stream and writes the sections ([user guide](docs/user-guide.md#finding-cameras-nova-find)).
+
+- **The search** takes about three seconds for a /22 and needs no password: the ONVIF discovery probe, a connection to port 554 of every address and to four more RTSP ports of those that answer, and RTSP's `OPTIONS` on that same connection. On the network this was written on it lists seven devices, the six cameras that were switched on and a recorder `cameras.ini` did not have. One of the cameras, after many questions in a row, answered `OPTIONS` in 0.02 s, in 3 s, or not within 6 s: a camera whose port 554 takes the connection and stays silent for four seconds is listed as `port 554 open, no answer to RTSP yet`.
+- **A firewall drops the answers to a multicast probe.** With firewalld's default zone five cameras answered on the wire and none reached the socket: the answer comes from an address the outgoing packet did not go to. The probe is therefore also sent to every address by itself.
+- **A thousand probes do not fit through one socket.** A packet to an address nobody has waits in the socket's send buffer for ARP: of 1021 probes 167 were sent and 854 refused with `EAGAIN`, and no answer came at all. A hundred addresses to a socket.
+- **A refused password is one failed login.** Cameras count them and lock the account. The first question to a camera is one `DESCRIBE` with the user name and password typed; a refusal ends it there, before the ONVIF service and the seventeen usual paths are asked, and after three refusals the camera is left out. Nothing is tried that the user did not type.
+- **The stream**: the camera's own answer first (ONVIF, with the port it announced), XMeye's URL form for such a device, the main-stream paths of the makers Nova has shortcuts for and of some others, then ONVIF on the usual ports. For the six cameras here it found the path `cameras.ini` has, in 2 to 9 seconds each (one RTSP server takes most of a second to say that it has no such path, and several questions at once took it longer than one after the other: 22 s for two at a time, 7 s in turn). A server that plays whatever path is asked is not asked for the usual ones: its ONVIF answer counts, else `/`.
+- **What comes from a device is not trusted with the file.** A stream URI or a name with a line end in it would be a line of its own in the camera's section, and `opts = -t rtmp://…` is where that camera's picture is sent: such a URL is refused, a name is cut to one clean line, and what is printed has no escape sequences.
+- `cameras.ini` is appended to and otherwise left byte for byte; without one it is made from the template, readable by its owner only. `nova find` outside a terminal prints the list and asks nothing; a public range is not searched.
+- **Docs**: user guide (a section, the launcher's list), README, install.md, the template's head.
+- **Tests**: a camera's RTSP server and a discovery responder on the loopback address: the search, Digest (MD5, SHA-256) and Basic, the count of refused logins, each way to the stream, the lines a device may not write, the file, the questions and answers of the command.
+
 ## 2026-11-26 — A Windows PC whose NVIDIA card was taken out
 
 The RTX 4090 of the entry below went back to the Linux box, and NVIDIA's driver stayed installed on the Windows PC. Nova there is as it was on the Radeon alone: `--accel d3d11va` decodes on it (7 % of a core for a 1080p camera at 10 fps), the window places and the monitors' order are those of before the card.

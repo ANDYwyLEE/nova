@@ -16,7 +16,7 @@
 
 ## The camera list: cameras.ini
 
-`cameras.ini` is the only file you edit. It is listed in `.gitignore`, so the camera passwords in it never reach the repository; `cameras.example.ini` is the committed template.
+`cameras.ini` is the only file you edit. It is listed in `.gitignore`, so the camera passwords in it never reach the repository; `cameras.example.ini` is the committed template. `nova find` writes the camera sections for you ([Finding cameras](#finding-cameras-nova-find)).
 
 ```ini
 [defaults]
@@ -54,6 +54,53 @@ A section name is the camera id: it names the log file and the control socket, s
 
 Comments are whole lines starting with `;` or `#`. A `;` after a value is part of the value.
 
+## Finding cameras: nova find
+
+`nova find` looks for the cameras on the networks this machine is on and writes the `cameras.ini` sections of the ones you pick, so that no address, port or RTSP path has to be known:
+
+```
+$ ./nova find
+Looking for cameras on 192.168.1.0/24 (253 addresses) ...
+4 found in 3 s:
+
+   #  address          what answers                                cameras.ini
+   1  192.168.1.10     ONVIF "Front door", RTSP "Rtsp Server/3.0"  frontdoor
+   2  192.168.1.11     RTSP "H264DVR 1.0", XMeye                   new
+   3  192.168.1.12     ONVIF "IPC-B2", RTSP                        new
+   4  192.168.1.14     RTSP on 8554                                new
+
+Add which to cameras.ini? Numbers ("all" for the 3 new; Enter: none): 2 3
+User name for these 2 cameras [admin]:
+Password (not shown; a camera that refuses it is asked for its own):
+
+192.168.1.11  RTSP "H264DVR 1.0", XMeye
+  found: rtsp://admin:***@192.168.1.11/user=admin&password=***&channel=1&stream=0.sdp?real_stream  (H.264, sound G.711 A-law)
+  id, as typed after nova start [cam11]: yard
+  name of the window [yard]: Back yard
+  added [yard] to cameras.ini
+
+192.168.1.12  ONVIF "IPC-B2", RTSP
+  asking its ONVIF service ...
+  the camera refused this user name and password
+  its own user name (Enter: leave this camera out): viewer
+  its password:
+  asking its ONVIF service ...
+  found: rtsp://viewer:***@192.168.1.12/stream_0  (H.265)
+  id, as typed after nova start [cam12]:
+  name of the window [IPC-B2]:
+  added [cam12] to cameras.ini
+
+2 added. nova start yard opens the first; nova list has them all.
+```
+
+- **Where it looks**: every address of this machine's networks, a network of up to 1022 addresses (a /22) each; that takes about three seconds. Another network, a part of a larger one or single addresses are named: `nova find 192.168.2.0/24 10.0.0.15`. A range must be a private one; a single address can be anywhere.
+- **What counts as a camera**: a device that answers the ONVIF discovery probe as a video device, or an RTSP server on port 554, 8554, 10554, 5554 or 7447. The probe goes to every address by itself as well as to the multicast group: a firewall lets in the answer to a packet it saw leave, and drops the answers to a multicast probe (with firewalld's default zone five cameras answered on the wire and none reached Nova). The search sends no password and needs none. A camera that `cameras.ini` already has is shown with its id; one whose port 554 takes the connection and does not answer within four seconds (a busy RTSP server) is listed as `port 554 open, no answer to RTSP yet` and can be picked all the same.
+- **The user name and password** are asked once for the cameras you picked and go to those addresses only; the password is not shown, and is asked again for a camera that refuses it. Nova tries nothing you did not type: no default passwords, no guessing. A refusal is the last question to a camera with that password, and after three refusals the camera is left out, because cameras count failed logins and lock the account.
+- **How the stream is found**: first the camera's own answer (its ONVIF service: the first profile, which is the main stream), for an XMeye device the form its URL has, then the main-stream paths of the makers in [Camera brands](#camera-brands) and of some others, asked of the camera's RTSP server one after the other, and last an ONVIF service on the usual ports for a camera that did not answer the probe. A path counts when the server offers a stream there to your user; what it sends is shown beside the URL (`H.265, sound G.711 A-law`). A camera whose server takes a second to refuse each wrong path needs some seconds for this.
+- **What is written**: one section at the end of `cameras.ini` per camera (`[id]`, `name`, `url` with the `rtsp://` URL that was found); the rest of the file stays byte for byte. Without a `cameras.ini` the file is made from `cameras.example.ini`, with its `[defaults]` and `[env]` and without its example cameras, readable by you only: look at the presets under `[defaults]` then. A URL or a name that comes from a device is written only when it is one line without control characters.
+- **A recorder** (NVR, DVR) is added with its first channel. Its other channels are one more section each, written by hand with a shortcut: `xmeye://user:pw@192.168.1.11/2` ([Camera brands](#camera-brands)).
+- Run outside a terminal (a pipe, a script) it prints the list and asks nothing.
+
 ## Camera brands
 
 The RTSP path differs by maker and the port by setup. For the brands below, write a shortcut instead of an `rtsp://` URL: Nova asks the device for its port and stream, or builds the URL from the maker's documented form.
@@ -89,6 +136,7 @@ nova stop   [ID ...] [--timeout S]   stop cameras started by start/record (saves
 nova restart [ID ...] [options]      stop, then start again as launched (record stays record, layout stays)
 nova status                          launched cameras: running or exited, uptime, and what each is doing now
 nova list                            cameras, enabled state and options (passwords masked)
+nova find [NETWORK | ADDRESS ...]    look for cameras on the network and add the ones you pick to cameras.ini
 nova doctor                          versions, drivers, the FFmpeg build, cameras.ini summary: paste it into a bug report
 nova desktop install                 Linux: a desktop entry and Nova's icon in ~/.local/share (the icon on a Wayland task bar)
 nova desktop remove                  take them away again
@@ -109,6 +157,7 @@ nova -c FILE <command>               use FILE instead of cameras.ini
 - `stop` only touches processes it started and waits for them to exit cleanly (window geometry, zoom and open recordings are saved); `--timeout` defaults to 2 × `NOVA_TIMEOUT` + 5 s (25 s with the example config), the longest a camera needs while its stream is stalled, and 30 s more for cameras with a stream target (one caught in the stream's connect).
 - `restart` stops the launched cameras (or the given ids) and starts them again the way they were launched: a camera from `record` stays headless, a window keeps its layout (`--layout NAME` switches), and the options from `cameras.ini` apply as always. Options typed after `start` are not remembered, so give them again. A camera that is not running is simply started; a missing layout ends the command before anything is stopped.
 - `status` lists every camera the launcher started: pid, running or exited, uptime, mode as launched (window / headless, rec, stream), GPU and layout, and below it what the camera reports right now: video size, recording and stream `on` / `waiting` (reconnecting) / `off`, and the overlay message while it has no picture (`Unreachable: …`).
+- `find` is described under [Finding cameras](#finding-cameras-nova-find); it works without a `cameras.ini` and writes the first one.
 - `doctor` prints what this machine runs Nova with, on one screen: Nova, Python, Qt and PyAV versions, the FFmpeg build inside PyAV and what it was built with, the desktop session and the OpenGL driver Nova's windows get, hardware decoders and encoders, GPUs, audio devices, a summary of `cameras.ini` (passwords and stream keys masked), where settings and recordings live and how much space is left, the last warnings in `logs/`, and a few checks with a verdict. It is what a bug report needs; `python doctor.py` does the same without the launcher.
 - `run` keeps one camera in the foreground: the log appears in the terminal (`nova run ID -l DEBUG` for diagnosis) and Ctrl-C quits. Without an id it runs `[defaults] camera`, or the first enabled camera.
 

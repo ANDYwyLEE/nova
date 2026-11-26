@@ -75,7 +75,7 @@ python3 -m venv venv && . venv/bin/activate         # 24.04: Python 3.12, 26.04:
 pip install -U pip && pip install -r requirements.txt
 
 python nova.py --help
-cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # then edit it: see the user guide
+cp cameras.example.ini cameras.ini && chmod 600 cameras.ini   # then edit it (see the user guide), or let ./nova find write it
 ./nova start                                # a window per enabled camera; ./nova -h lists the commands
 ```
 
