@@ -269,8 +269,46 @@ def test_a_large_network_is_asked_through_several_sockets(monkeypatch):
     monkeypatch.setattr(camfind.socket, "socket", Udp)
     monkeypatch.setattr(camfind, "connects", lambda targets, **kw: {})
     hosts = [str(h) for h in ipaddress.ip_network("192.0.2.0/22", strict=False).hosts()][:1021]
-    assert camfind.search(hosts, own=["192.0.2.200"], wait=0) == []
+    assert camfind.search(hosts, own=["192.0.2.200"], wait=0, rate=0) == []
     assert len(sent) == 11 and max(s.n for s in sent) <= 101 and sum(s.n for s in sent) == 1022     # 1021 + the group
+
+
+def test_the_first_packets_keep_a_pace_and_the_group_is_asked_first(monkeypatch):
+    """A machine new to the network asks who has each address (ARP, a broadcast, repeated twice): for a
+    /22 at once that was a thousand broadcasts within 7 ms, two cameras on Wi-Fi did not get theirs, and
+    the search listed five of seven devices.  Asked alone, or among 500 a second, they answered in 20 ms."""
+    sent = []
+
+    class Udp:
+        def __init__(self, *a): pass
+        def bind(self, addr): pass
+        def setblocking(self, flag): pass
+        def setsockopt(self, *a): pass
+        def close(self): pass
+
+        def sendto(self, data, addr):
+            sent.append((time.monotonic(), addr[0], re.search(rb"<w:MessageID>uuid:([0-9a-f-]+)<", data).group(1)))
+
+        def recvfrom(self, n):
+            raise BlockingIOError
+
+    monkeypatch.setattr(camfind.socket, "socket", Udp)
+    monkeypatch.setattr(camfind, "connects", lambda targets, **kw: {})
+    hosts = [f"192.0.2.{n}" for n in range(1, 41)]
+    assert camfind.search(hosts, own=["192.0.2.200"], wait=0, rate=100) == []
+    assert [to for _, to, _ in sent] == ["239.255.255.250"] + hosts       # the group first
+    when = [t for t, _, _ in sent[1:]]
+    assert all(when[n] - when[0] >= n / 100 - 0.01 for n in range(40))    # none before its turn: 100 a second
+    # the group's probe has an id of its own: a device may answer a message once, and a firewall drops that answer
+    assert sent[0][2] != sent[1][2] and len({i for _, _, i in sent[1:]}) == 1
+    # the pace is for addresses nobody has asked for yet: those found there are asked again at once
+    del sent[:]
+    monkeypatch.setattr(camfind, "connects", lambda targets, **kw: {t: False for t in targets})
+    began = time.monotonic()
+    camfind.search(hosts, wait=0, rate=100)
+    again = [t for t, _, _ in sent[40:]]
+    assert len(sent) == 80 and again[-1] - again[0] < 0.2 and again[0] - began >= 0.39
+    assert camfind.duration(1021) - camfind.duration(1) == pytest.approx(1020 / camfind.PROBE_RATE)      # said before the search
 
 
 def test_an_address_that_said_nothing_is_asked_once_more(monkeypatch):
@@ -514,7 +552,7 @@ def test_find_lists_asks_and_adds(tmp_path, camera, monkeypatch):
     assert f"[cam1]\nname = Porch\nurl = rtsp://admin:secret@127.0.0.1:{one.port}/stream1\n" in text
     assert text.endswith(f"[gate]\nname = Gate 2\nurl = rtsp://viewer:other@127.0.0.1:{two.port}/live/main\n")
     assert "secret" not in talk.text and "other@" not in talk.text and "rtsp://admin:***@127.0.0.1" in talk.text
-    assert "Looking for cameras on 192.0.2.0/24 (253 addresses)" in talk.text and "2 found" in talk.text
+    assert "Looking for cameras on 192.0.2.0/24 (253 addresses, about " in talk.text and "2 found" in talk.text
     assert "the camera refused this user name and password" in talk.text and two.refused == 1 and one.refused == 0
     assert "2 added. nova start cam1 opens the first" in talk.text
     assert 'Numbers ("all" for the 2 new; Enter: none)' in talk.asked[0] and "these 2 cameras" in talk.asked[1]

@@ -60,8 +60,8 @@ Comments are whole lines starting with `;` or `#`. A `;` after a value is part o
 
 ```
 $ ./nova find
-Looking for cameras on 192.168.1.0/24 (253 addresses) ...
-4 found in 3 s:
+Looking for cameras on 192.168.1.0/24 (253 addresses, about 4 s) ...
+4 found in 4 s:
 
    #  address          what answers                                cameras.ini
    1  192.168.1.10     ONVIF "Front door", RTSP "Rtsp Server/3.0"  frontdoor
@@ -93,7 +93,7 @@ Password (not shown; a camera that refuses it is asked for its own):
 2 added. nova start yard opens the first; nova list has them all.
 ```
 
-- **Where it looks**: every address of this machine's networks, a network of up to 1022 addresses (a /22) each; that takes about three seconds, on Windows about two more (Windows tells of a refused connection later than Linux and macOS do, and the search waits for it: a refusal is how it knows that an address is there and looks at its other RTSP ports). Another network, a part of a larger one or single addresses are named: `nova find 192.168.2.0/24 10.0.0.15`. A range must be a private one; a single address can be anywhere.
+- **Where it looks**: every address of this machine's networks, a network of up to 1022 addresses (a /22) each. A network of 254 addresses takes about four seconds and one of 1022 about nine, on Windows two more (Windows tells of a refused connection later than Linux and macOS do, and the search waits for it: a refusal is how it knows that an address is there and looks at its other RTSP ports); the first line says how long. Most of that time is a pace the search keeps on purpose, 170 addresses a second: a machine that has not talked to an address yet asks the whole network who has it, and of a thousand such questions at once not all reach the cameras on Wi-Fi (a machine new to the network listed five of seven devices that way, and all seven at this pace). Another network, a part of a larger one or single addresses are named: `nova find 192.168.2.0/24 10.0.0.15`. A range must be a private one; a single address can be anywhere.
 - **What counts as a camera**: a device that answers the ONVIF discovery probe as a video device, or an RTSP server on port 554, 8554, 10554, 5554 or 7447. The probe goes to every address by itself as well as to the multicast group: a firewall lets in the answer to a packet it saw leave, and drops the answers to a multicast probe (with firewalld's default zone five cameras answered on the wire and none reached Nova). The search sends no password and needs none. A camera that `cameras.ini` already has is shown with its id; one whose port 554 takes the connection and does not answer within four seconds (a busy RTSP server) is listed as `port 554 open, no answer to RTSP yet` and can be picked all the same.
 - **The user name and password** are asked once for the cameras you picked and go to those addresses only; the password is not shown, and is asked again for a camera that refuses it. Nova tries nothing you did not type: no default passwords, no guessing. A refusal is the last question to a camera with that password, and after three refusals the camera is left out, because cameras count failed logins and lock the account.
 - **How the stream is found**: first the camera's own answer (its ONVIF service: the first profile, which is the main stream), for an XMeye device the form its URL has, then the main-stream paths of the makers in [Camera brands](#camera-brands) and of some others, asked of the camera's RTSP server one after the other, and last an ONVIF service on the usual ports for a camera that did not answer the probe. A path counts when the server offers a stream there to your user; what it sends is shown beside the URL (`H.265, sound G.711 A-law`). A camera whose server takes a second to refuse each wrong path needs some seconds for this.

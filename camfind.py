@@ -33,6 +33,17 @@ CONNECT_S = 0.7                                  # a camera on the LAN answers a
 # of the loopback address was not refused within 0.7 s, where Linux and macOS say so at once.
 RETRY_S = 2.5 if os.name == "nt" else 1.0
 SIDE_BY_SIDE = os.name == "nt"                   # select() takes 512 sockets there: larger lots in threads
+# How many addresses a second get their first packet.  For an address this machine has not talked to,
+# the system asks the whole network who has it (ARP, a broadcast), three times, a second apart: a /22
+# asked at once is a thousand broadcasts within 7 ms, and again a second and two seconds later, and
+# an access point hands only so many on to its Wi-Fi clients.  Measured with two cameras on Wi-Fi among
+# seven devices: asked alone they answered in 20 ms; among 200 to 500 questions a second as fast, in
+# 13 rounds of 14; among 1000 a second half of the time; in a burst for all 1021 addresses neither
+# answered in four rounds of six, the system's two repeats included.  A search from a machine new to
+# the network (Linux, Windows) listed five or six of the seven more often than all, and every later
+# one seven: by then the machine knew the cameras.  170 addresses a second are, with the system's
+# two repeats, 500 broadcasts a second.
+PROBE_RATE = 170
 ANSWER_S = 4.0                                   # ... and RTSP's OPTIONS as fast, but for one that is busy
 ASK_S = 4.0                                      # one RTSP question
 TRIES = 3                                        # user name and password are asked this often for one camera
@@ -336,10 +347,18 @@ def rtsp_server(host, port, answer_s=None):
     return server_line(connects([(host, port)], hello=_options, answer_s=answer_s).get((host, port)))
 
 
-def search(hosts, own=(), wait=2.5, ports=RTSP_PORTS, wsd_port=WSD_GROUP[1], dvrip_port=DVRIP_PORT, answer_s=None):
+def duration(count, wait=2.5):
+    """About how many seconds a search of `count` addresses takes: the first packets, two tries at the
+    RTSP port, the other ports of those that are there."""
+    return max(wait, count / PROBE_RATE + 2 * CONNECT_S + RETRY_S + 0.5)
+
+
+def search(hosts, own=(), wait=2.5, ports=RTSP_PORTS, wsd_port=WSD_GROUP[1], dvrip_port=DVRIP_PORT, answer_s=None,
+           rate=PROBE_RATE):
     """[Device], by address, of what looks like a camera among `hosts`: it answered the ONVIF probe as a
     video device, or RTSP answers on one of `ports`.  `own`: this machine's addresses, from each of
-    which the probe also goes to the multicast group (for a camera the direct one did not reach)."""
+    which the probe also goes to the multicast group (for a camera the direct one did not reach).
+    `rate`: addresses a second for the first packet to each (PROBE_RATE says why; 0: all at once)."""
     hosts = list(dict.fromkeys(hosts))
     wanted = set(hosts)
     found = {}
@@ -349,13 +368,14 @@ def search(hosts, own=(), wait=2.5, ports=RTSP_PORTS, wsd_port=WSD_GROUP[1], dvr
 
     socks = []
 
-    def probe(some, groups=()):
-        """The probe to each of these addresses, a hundred to a socket: a packet to an address nobody
-        has waits in its socket's send buffer for an answer to ARP, and a buffer holds about 160 of
-        them (a /22 asked through one socket: 167 sent, 854 refused with EAGAIN, no answer at all)."""
+    def probe(some, groups=(), rate=0):
+        """The probe to the multicast group, then to each of these addresses, `rate` of them a second
+        and a hundred to a socket: a packet to an address nobody has waits in its socket's send
+        buffer for an answer to ARP, and a buffer holds about 160 of them (a /22 asked through one
+        socket: 167 sent, 854 refused with EAGAIN, no answer at all).  The answers are read meanwhile."""
         if not some and not groups:
             return
-        packet = PROBE.format(id=uuid.uuid4()).encode()
+        began = time.monotonic()
         for i in range(0, max(len(some), 1), 100):
             try:
                 udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -364,18 +384,24 @@ def search(hosts, own=(), wait=2.5, ports=RTSP_PORTS, wsd_port=WSD_GROUP[1], dvr
             except OSError:
                 return
             socks.append(udp)
-            for h in some[i:i + 100]:
-                try:
-                    udp.sendto(packet, (h, wsd_port))
-                except OSError:
-                    pass
             if i == 0:
+                # an id of its own: a device may answer a message it has seen once only, and a
+                # firewall drops the answer to this one
+                packet = PROBE.format(id=uuid.uuid4()).encode()
                 for mine in groups:
                     try:
                         udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(str(mine)))
                         udp.sendto(packet, (WSD_GROUP[0], wsd_port))
                     except OSError:
                         pass
+                packet = PROBE.format(id=uuid.uuid4()).encode()
+            for n, h in enumerate(some[i:i + 100], i):
+                if rate and began + n / rate > time.monotonic():
+                    listen(began + n / rate)
+                try:
+                    udp.sendto(packet, (h, wsd_port))
+                except OSError:
+                    pass
 
     def listen(until):
         while socks:
@@ -400,12 +426,12 @@ def search(hosts, own=(), wait=2.5, ports=RTSP_PORTS, wsd_port=WSD_GROUP[1], dvr
         return _options(target) if target[1] in ports else None
 
     started = time.monotonic()
-    probe(hosts, own)
+    probe(hosts, own, rate)                              # after this the system knows who is there
     first = connects([(h, ports[0]) for h in hosts], hello=hello, answer_s=answer_s)
-    # Once more for the addresses that said nothing: a machine that has not talked to a camera yet asks
-    # for its hardware address first, and a camera on Wi-Fi may take a second over that answer (from
-    # a Mac new to the network, 54 addresses of a /22 answered within 0.7 s, 57 within 1.5 s, 60 within
-    # 3 s, and one camera was missed in five searches of five).  This fits into the wait for the probe.
+    # Once more for the addresses that said nothing: one whose first question was lost on the way gets
+    # the system's next a second later (from a Mac new to the network, before the first packets had
+    # their pace, 54 addresses of a /22 answered within 0.7 s, 57 within 1.5 s, 60 within 3 s), and
+    # Windows tells of a refusal after two seconds.
     first.update(connects([(h, ports[0]) for h in hosts if (h, ports[0]) not in first], timeout=RETRY_S,
                           hello=hello, answer_s=answer_s))
     listen(time.monotonic())
@@ -812,7 +838,8 @@ def main(config, words, cameras, example, out=print, ask=input, ask_hidden=getpa
         out(f"nova find: {e}")
         return 1
     hosts = list(dict.fromkeys(hosts))
-    out(f"Looking for cameras on {where} ({len(hosts)} address{'es' if len(hosts) != 1 else ''}) ...")
+    out(f"Looking for cameras on {where} ({len(hosts)} address{'es' if len(hosts) != 1 else ''}, "
+        f"about {duration(len(hosts)):.0f} s) ...")
     t0 = time.monotonic()
     found = search(hosts, own)
     if not found:
